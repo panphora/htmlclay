@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (without v prefix, e.g. 1.2.3)"
+        required: true
+        type: string
+
+jobs:
+  # ── Linux: build binary, package as tar.gz ──
+  build-linux:
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            cc: ""
+          - goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libayatana-appindicator3-dev libgtk-3-dev
+
+      - name: Install ARM64 cross-compiler
+        if: matrix.goarch == 'arm64'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+          sudo apt-get update
+          sudo apt-get install -y libayatana-appindicator3-dev:arm64 libgtk-3-dev:arm64
+
+      - name: Build
+        run: |
+          CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.goarch }} \
+            CC="${{ matrix.cc }}" \
+            go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay .
+        env:
+          CGO_ENABLED: "1"
+
+      - name: Package
+        run: |
+          mkdir -p htmlclay-linux-${{ matrix.goarch }}
+          cp htmlclay htmlclay-linux-${{ matrix.goarch }}/
+          cp dist/linux/htmlclay.desktop htmlclay-linux-${{ matrix.goarch }}/
+          cp dist/linux/htmlclay-mime.xml htmlclay-linux-${{ matrix.goarch }}/
+          tar czf htmlclay-linux-${{ matrix.goarch }}.tar.gz -C htmlclay-linux-${{ matrix.goarch }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: htmlclay-linux-${{ matrix.goarch }}.tar.gz
+          path: htmlclay-linux-${{ matrix.goarch }}.tar.gz
+
+  # ── Windows: build, sign with Azure Trusted Signing ──
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build
+        run: |
+          $env:CGO_ENABLED = "1"
+          go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay.exe .
+        shell: pwsh
+
+      - name: Install TrustedSigning module
+        run: Install-Module -Name TrustedSigning -Force -Scope CurrentUser -AcceptLicense
+        shell: pwsh
+
+      - name: Sign with Azure Trusted Signing
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          Invoke-TrustedSigning `
+            -Endpoint "https://eus.codesigning.azure.net" `
+            -CodeSigningAccountName "Hyperclay" `
+            -CertificateProfileName "HyperclayLocalPublicCertProfile" `
+            -Files "htmlclay.exe" `
+            -FileDigest SHA256 `
+            -Verbose
+        shell: pwsh
+
+      - name: Verify signature
+        run: |
+          $sig = Get-AuthenticodeSignature "htmlclay.exe"
+          Write-Host "Status: $($sig.Status)"
+          Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne "Valid") {
+            Write-Error "Signature verification failed!"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Package
+        run: Compress-Archive -Path htmlclay.exe,dist\windows\register.bat -DestinationPath htmlclay-windows-amd64.zip
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: htmlclay-windows-amd64.zip
+          path: htmlclay-windows-amd64.zip
+
+  # ── Upload to R2 ──
+  upload:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          pip install awscli --quiet
+          aws configure set aws_access_key_id "$R2_ACCESS_KEY"
+          aws configure set aws_secret_access_key "$R2_SECRET_KEY"
+          aws configure set region auto
+
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          for file in artifacts/*; do
+            filename=$(basename "$file")
+            echo "Uploading $filename..."
+            aws s3 cp "$file" "s3://${R2_BUCKET}/$filename" \
+              --endpoint-url "$ENDPOINT"
+          done
+
+          echo "All artifacts uploaded to R2"
+
+      - name: Upload release-info.json
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY: ${{ secrets.R2_ACCESS_KEY }}
+          R2_SECRET_KEY: ${{ secrets.R2_SECRET_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          FILES=$(ls artifacts/ | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          cat > htmlclay-release-info.json <<EOF
+          {
+            "latest": "${{ inputs.version }}",
+            "url": "https://htmlclay.com/download",
+            "date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "files": ${FILES}
+          }
+EOF
+
+          aws s3 cp htmlclay-release-info.json "s3://${R2_BUCKET}/htmlclay-release-info.json" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/json"
+
+          echo "Uploaded htmlclay-release-info.json"

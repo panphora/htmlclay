@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=HTML Clay
+Comment=Edit .htmlclay files
+Exec=htmlclay %f
+Icon=htmlclay
+Terminal=false
+Categories=Development;WebDevelopment;
+MimeType=application/x-htmlclay;

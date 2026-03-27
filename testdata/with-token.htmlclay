@@ -1,0 +1,5 @@
+<!DOCTYPE html>
+<html htmlclaytoken="old-value" lang="en">
+<head><title>Has Token</title></head>
+<body><p>This file already has htmlclaytoken on the html tag.</p></body>
+</html>

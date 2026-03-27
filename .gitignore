@@ -1,0 +1,8 @@
+.env
+node_modules/
+htmlclay
+HTMLClay.app
+*.dmg
+executables/
+.notarization-submissions.json
+.DS_Store

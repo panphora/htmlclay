@@ -1,0 +1,117 @@
+abhor                afinn=-3
+abuse                afinn=-3
+anal                 profanity
+anger                afinn=-3
+angry                afinn=-3
+anus                 profanity
+ass                  profanity, afinn=-4
+awful                afinn=-3
+bad                  afinn=-3
+badly                afinn=-3
+bitch                profanity, afinn=-5
+boner                profanity
+boob                 profanity
+boobs                profanity
+bribe                afinn=-3
+busty                profanity
+butt                 profanity
+cheat                afinn=-3
+chide                afinn=-3
+cock                 profanity, afinn=-5
+cocks                profanity
+coon                 profanity
+coons                profanity
+crap                 afinn=-3
+crime                afinn=-3
+cruel                afinn=-3
+cum                  profanity
+cunt                 profanity, afinn=-5
+dead                 afinn=-3
+dick                 profanity, afinn=-4
+die                  afinn=-3
+died                 afinn=-3
+dildo                profanity
+dire                 afinn=-3
+dumb                 afinn=-3
+dying                afinn=-3
+evil                 afinn=-3
+fag                  profanity, afinn=-3
+fake                 afinn=-3
+faker                afinn=-3
+fakes                afinn=-3
+fatal                afinn=-3
+fecal                profanity
+foul                 afinn=-3
+fraud                afinn=-4
+fuck                 profanity, afinn=-4
+greed                afinn=-3
+grope                profanity
+guilt                afinn=-3
+hate                 afinn=-3
+hated                afinn=-3
+hater                afinn=-3
+hates                afinn=-3
+hell                 afinn=-4
+horny                profanity
+icky                 afinn=-3
+idiot                afinn=-3
+irate                afinn=-3
+jerk                 afinn=-3
+kike                 profanity
+kill                 afinn=-3
+kills                afinn=-3
+kinky                profanity
+liar                 afinn=-3
+liars                afinn=-3
+loose                afinn=-3
+loser                afinn=-3
+loss                 afinn=-3
+lost                 afinn=-3
+mad                  afinn=-3
+madly                afinn=-3
+moron                afinn=-3
+nasty                afinn=-3
+negro                profanity
+nude                 profanity
+nuts                 afinn=-3
+orgy                 profanity
+panic                afinn=-3
+penis                profanity
+piss                 afinn=-4
+poof                 profanity
+porn                 profanity
+porno                profanity
+prick                afinn=-5
+pussy                profanity
+rant                 afinn=-3
+rants                afinn=-3
+rape                 profanity, afinn=-4
+raped                afinn=-4
+scat                 profanity
+scum                 afinn=-3
+semen                profanity
+sex                  profanity
+sexy                 profanity
+shit                 profanity, afinn=-4
+shrew                afinn=-4
+slave                afinn=-3
+slut                 profanity, afinn=-5
+smut                 profanity
+spic                 profanity
+spunk                profanity
+suck                 profanity, afinn=-3
+sucks                profanity, afinn=-3
+tit                  profanity
+tits                 profanity
+titty                profanity
+toxic                afinn=-3
+twat                 profanity, afinn=-5
+ugly                 afinn=-3
+vile                 afinn=-3
+vomit                afinn=-3
+vulva                profanity
+wank                 profanity
+whore                profanity, afinn=-4
+worry                afinn=-3
+worse                afinn=-3
+worst                afinn=-3

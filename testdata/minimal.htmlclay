@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <title>Test File</title>
+</head>
+<body>
+  <h1 contenteditable="">Edit me 2 5</h1>
+  <button id="save">Save</button>
+  <script>
+    const token = document.documentElement.getAttribute('htmlclaytoken');
+    document.getElementById('save').addEventListener('click', async () => {
+      const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+      const res = await fetch('/save/' + token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/html' },
+        body: html
+      });
+      if (res.ok) document.title = 'Saved!';
+    });
+  </script>
+
+
+</body></html>

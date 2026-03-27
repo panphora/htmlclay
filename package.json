@@ -1,0 +1,25 @@
+{
+  "name": "malleable-html-file",
+  "version": "1.0.0",
+  "description": "",
+  "main": "filter-words.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panphora/malleable-html-file.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/panphora/malleable-html-file/issues"
+  },
+  "homepage": "https://github.com/panphora/malleable-html-file#readme",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "fast-xml-parser": "^5.5.9"
+  }
+}
