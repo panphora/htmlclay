@@ -3,7 +3,7 @@
 A desktop app that makes self-saving HTML files a native OS feature.
 
 - **Website:** [htmlclay.com](https://htmlclay.com)
-- **File extension:** `.clayhtml`
+- **File extension:** `.htmlclay`
 - **Parent platform:** [Hyperclay](https://hyperclay.com)
 
 ## What is it?
@@ -15,7 +15,7 @@ HTML is the most powerful document format ever created. It can render rich inter
 **How it works:**
 
 1. Install HTML Clay (one time)
-2. Double-click any `.clayhtml` file
+2. Double-click any `.htmlclay` file
 3. It opens in a window — edit it however you like
 4. Hit save — your changes write back to the same file on disk
 
@@ -24,13 +24,13 @@ No cloud. No accounts. No build step. The file is just HTML.
 ## Project goals
 
 1. **Self-saving HTML files** — The file knows where it lives on disk. Edit and save without "Save As" dialogs or cloud storage.
-2. **True portability** — A `.clayhtml` file works offline, locally, with no infrastructure. Email it, Dropbox it, AirDrop it, git it.
-3. **Low barrier for developers** — Write HTML + a small JS save call + rename to `.clayhtml`. That's it.
+2. **True portability** — A `.htmlclay` file works offline, locally, with no infrastructure. Email it, Dropbox it, AirDrop it, git it.
+3. **Low barrier for developers** — Write HTML + a small JS save call + rename to `.htmlclay`. That's it.
 4. **One-click OS integration** — File extension associates with the app. Double-click to open. No registration, no login.
 5. **App-like experience** — Opens in a chromeless window that looks and feels like a native app, not a browser tab.
-6. **Platform potential** — The same `.clayhtml` file could eventually run both locally and on a web hosting platform.
+6. **Platform potential** — The same `.htmlclay` file could eventually run both locally and on a web hosting platform.
 
-## What does a `.clayhtml` file look like?
+## What does a `.htmlclay` file look like?
 
 It's just HTML. Here's a minimal example — a page with editable text and a save button:
 
@@ -62,7 +62,7 @@ The key line is `fetch('/save/' + token, ...)` — that's the save call. HTML Cl
 
 ## What can you build with it?
 
-A `.clayhtml` file can be anything you'd build as a web page that benefits from being opened, edited, and saved like a document. Here are some ideas:
+A `.htmlclay` file can be anything you'd build as a web page that benefits from being opened, edited, and saved like a document. Here are some ideas:
 
 - Flashcard deck with spaced repetition
 - Kanban board
@@ -120,8 +120,8 @@ For a deeper exploration of the problem and the landscape of existing solutions,
 HTML Clay is a Go application with a simple architecture: a localhost HTTP server that bridges the browser sandbox with the filesystem.
 
 ```
-User double-clicks .clayhtml file
-  → OS launches HTML Clay (registered handler for .clayhtml)
+User double-clicks .htmlclay file
+  → OS launches HTML Clay (registered handler for .htmlclay)
     → App generates a cryptographic session token for the file
       → App opens Chrome in app mode (chromeless window) or default browser
         → Browser loads file from localhost server
@@ -134,7 +134,7 @@ User double-clicks .clayhtml file
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| `GET` | `/f/{path}` | Serve a `.clayhtml` file with session token injected |
+| `GET` | `/f/{path}` | Serve a `.htmlclay` file with session token injected |
 | `GET` | `/read/{token}` | Return raw file contents |
 | `POST` | `/save/{token}` | Write updated HTML back to disk (atomic write) |
 | `GET` | `/meta/{token}` | Return file metadata (path, size, modification time) |

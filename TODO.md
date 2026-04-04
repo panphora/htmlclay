@@ -36,7 +36,7 @@ GitHub secrets to add to `panphora/htmlclay` (same values as hyperclay-local unl
 
 ### macOS
 - [ ] `dist/macos/htmlclay.icns` — Regenerate from master icon at proper resolution (current file is only 8 bytes, likely a placeholder). Must contain 16x16, 32x32, 128x128, 256x256, 512x512, 1024x1024 variants.
-- [ ] `dist/macos/doc.icns` — Document icon for `.clayhtml` files. Referenced in `Info.plist` (`CFBundleTypeIconFile`) and conditionally copied in `dist/macos/build.sh`. Should visually represent a Clay HTML document (e.g., the app icon on a document shape).
+- [ ] `dist/macos/doc.icns` — Document icon for `.htmlclay` files. Referenced in `Info.plist` (`CFBundleTypeIconFile`) and conditionally copied in `dist/macos/build.sh`. Should visually represent a Clay HTML document (e.g., the app icon on a document shape).
 
 ### Linux
 - [ ] `dist/linux/htmlclay.png` — 256x256 PNG app icon. Referenced in `dist/linux/install-icon.sh` and `dist/linux/htmlclay.desktop` (`Icon=htmlclay`). Installed to `~/.local/share/icons/hicolor/256x256/apps/`.

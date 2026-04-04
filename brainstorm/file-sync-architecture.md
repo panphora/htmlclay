@@ -2,7 +2,7 @@
 
 ## Problem
 
-We want a user to update a `.clayhtml` file on their system and have a friend receive
+We want a user to update a `.htmlclay` file on their system and have a friend receive
 a live update of that change on their own copy. The frontend code for live syncing
 already exists. We need:
 
@@ -20,7 +20,7 @@ already exists. We need:
 | `data-` attr on `<html>` tag | Yes | Yes | Same |
 | HTML comment `<!-- id: ... -->` | Yes | Yes | Stripped by minifiers |
 | OS extended attributes (xattr/ADS) | No — stripped by zip, email, git, cloud | Inconsistent | High |
-| Sidecar file (`.clayhtml.meta`) | No — easily separated | Yes | High |
+| Sidecar file (`.htmlclay.meta`) | No — easily separated | Yes | High |
 | Central registry in config dir | No — path-dependent, breaks on move | Yes | Medium |
 
 ### Recommendation: `<meta>` tag
@@ -30,14 +30,14 @@ directly from the DOM with zero backend involvement:
 
 ```html
 <head>
-  <meta name="clayhtml-id" content="b3f7a2e1-9c04-4d8b-af12-8e3b5c6d7f90">
+  <meta name="htmlclay-id" content="b3f7a2e1-9c04-4d8b-af12-8e3b5c6d7f90">
 </head>
 ```
 
 The frontend reads it with:
 
 ```js
-document.querySelector('meta[name="clayhtml-id"]').content
+document.querySelector('meta[name="htmlclay-id"]').content
 ```
 
 This is the same pattern used by Google Docs (stores doc ID in the URL/metadata),
@@ -51,8 +51,8 @@ is: **the ID should be intrinsic to the content, not to where it's stored.**
   get silently stripped by zip archives, email attachments, git, most cloud storage
   (Dropbox, Google Drive), and many file copy operations. You'd lose the ID constantly.
 
-- **Sidecar file (`.clayhtml.meta`):** Creates clutter in the user's directory. Easy
-  to accidentally delete or forget to copy. If someone moves the `.clayhtml` file
+- **Sidecar file (`.htmlclay.meta`):** Creates clutter in the user's directory. Easy
+  to accidentally delete or forget to copy. If someone moves the `.htmlclay` file
   without the `.meta` file, the ID is gone.
 
 - **Central registry in config dir:** A database/JSON file that maps file paths to
@@ -79,7 +79,7 @@ browser-to-relay, not through the Go backend.
 ┌─────────────────────────────────────────────┐
 │  User A's machine                           │
 │                                             │
-│  .clayhtml file ◄──► Go local server ──► Browser
+│  .htmlclay file ◄──► Go local server ──► Browser
 │  (has <meta> ID)     (read/write file)      │ │
 └─────────────────────────────────────────────┘ │
                                                 │ WebSocket
@@ -93,7 +93,7 @@ browser-to-relay, not through the Go backend.
 ┌─────────────────────────────────────────────┐ │
 │  User B's machine                           │ │
 │                                             │ │
-│  .clayhtml file ◄──► Go local server ──► Browser
+│  .htmlclay file ◄──► Go local server ──► Browser
 │  (same <meta> ID)    (read/write file)      │
 └─────────────────────────────────────────────┘
 ```
@@ -101,13 +101,13 @@ browser-to-relay, not through the Go backend.
 ### What each piece does
 
 **Go local server (already exists, small changes needed):**
-- Reads/writes `.clayhtml` files from disk
+- Reads/writes `.htmlclay` files from disk
 - Auto-assigns a UUID to files that don't have one
 - Exposes the file ID to the frontend via the `/meta/{token}` endpoint
 - Does NOT handle sync traffic — that's browser ↔ relay directly
 
 **Browser/frontend (already built):**
-- Reads the file ID from the DOM (`<meta name="clayhtml-id">`)
+- Reads the file ID from the DOM (`<meta name="htmlclay-id">`)
 - Opens a WebSocket connection to the relay server
 - Subscribes to a room using the file ID
 - Sends local changes to the relay, receives remote changes from the relay
@@ -129,10 +129,10 @@ browser-to-relay, not through the Go backend.
 ```
 User opens file
   → Go reads file from disk
-  → Does it have <meta name="clayhtml-id">?
+  → Does it have <meta name="htmlclay-id">?
      YES → serve as-is (with appname injected as usual)
      NO  → generate UUID v4
-         → inject <meta name="clayhtml-id" content="uuid"> into <head>
+         → inject <meta name="htmlclay-id" content="uuid"> into <head>
          → write the modified file back to disk (one-time)
          → serve it
 ```
@@ -154,7 +154,7 @@ with key differences:
 - Targets `<meta>` tag inside `<head>`, not an attribute on `<html>`
 - Only injects if absent (idempotent — never overwrites an existing ID)
 - **Persists to disk** — the ID is written into the actual file permanently. Unlike
-  `appname` (which is injected on serve and stripped on save), the `clayhtml-id` is
+  `appname` (which is injected on serve and stripped on save), the `htmlclay-id` is
   part of the file's content.
 
 ### Handling edge cases
@@ -171,7 +171,7 @@ Inject the `<meta>` tag as the first child of `<head>`:
 
 <!-- After: -->
 <head>
-<meta name="clayhtml-id" content="b3f7a2e1-9c04-4d8b-af12-8e3b5c6d7f90">
+<meta name="htmlclay-id" content="b3f7a2e1-9c04-4d8b-af12-8e3b5c6d7f90">
   <title>My Page</title>
 </head>
 ```
@@ -188,7 +188,7 @@ Inject a `<head>` block after the `<html>` tag:
 
 <!-- After: -->
 <html lang="en">
-<head><meta name="clayhtml-id" content="b3f7a2e1-..."></head>
+<head><meta name="htmlclay-id" content="b3f7a2e1-..."></head>
 <body>...</body>
 </html>
 ```
@@ -202,11 +202,11 @@ Prepend a `<head>` block:
 <div>my content</div>
 
 <!-- After: -->
-<head><meta name="clayhtml-id" content="b3f7a2e1-..."></head>
+<head><meta name="htmlclay-id" content="b3f7a2e1-..."></head>
 <div>my content</div>
 ```
 
-Since we control the `.clayhtml` format, we could also enforce that all files have a
+Since we control the `.htmlclay` format, we could also enforce that all files have a
 `<head>`. But handling the edge case is cheap.
 
 ### Changes to existing code
@@ -275,7 +275,7 @@ meta := fileMeta{
 **`server/handlers.go` — `handleSave` stays mostly the same:**
 
 The `StripAppName` call already strips the `appname` attribute before saving. The
-`clayhtml-id` meta tag is NOT stripped — it stays in the saved file permanently.
+`htmlclay-id` meta tag is NOT stripped — it stays in the saved file permanently.
 No changes needed to the save handler for the ID.
 
 ### UUID generation

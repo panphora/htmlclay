@@ -645,35 +645,35 @@ bash -n dist/linux/build.sh
 
 ### 3.4 — File association registration
 
-Users need to double-click `.clayhtml` files and have them open in HTML Clay.
+Users need to double-click `.htmlclay` files and have them open in HTML Clay.
 
 #### macOS — already done
 
-`dist/macos/Info.plist` already declares `CFBundleDocumentTypes` with the `clayhtml`
+`dist/macos/Info.plist` already declares `CFBundleDocumentTypes` with the `htmlclay`
 extension. macOS reads this from the `.app` bundle automatically.
 
 #### Linux — create `dist/linux/htmlclay.desktop`
 
 This file tells Linux desktop environments (GNOME, KDE, etc.) that HTML Clay exists
-and can open `.clayhtml` files.
+and can open `.htmlclay` files.
 
 ```ini
 [Desktop Entry]
 Type=Application
 Name=HTML Clay
-Comment=Edit .clayhtml files
+Comment=Edit .htmlclay files
 Exec=htmlclay %f
 Icon=htmlclay
 Terminal=false
 Categories=Development;WebDevelopment;
-MimeType=application/x-clayhtml;
+MimeType=application/x-htmlclay;
 ```
 
 **What each field means:**
 - `Exec=htmlclay %f` — `%f` is replaced by the file path when the user double-clicks
-  a `.clayhtml` file. The binary must be on PATH (e.g., in `/usr/local/bin/`).
-- `MimeType=application/x-clayhtml;` — declares that this app handles the
-  `application/x-clayhtml` MIME type
+  a `.htmlclay` file. The binary must be on PATH (e.g., in `/usr/local/bin/`).
+- `MimeType=application/x-htmlclay;` — declares that this app handles the
+  `application/x-htmlclay` MIME type
 - `Terminal=false` — don't open a terminal window
 - `Icon=htmlclay` — looks for `htmlclay.png` in the system icon dirs
 
@@ -681,15 +681,15 @@ MimeType=application/x-clayhtml;
 
 #### Linux — create `dist/linux/htmlclay-mime.xml`
 
-This file registers the `.clayhtml` extension with the system MIME database so the
+This file registers the `.htmlclay` extension with the system MIME database so the
 OS knows what type of file it is.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
-  <mime-type type="application/x-clayhtml">
+  <mime-type type="application/x-htmlclay">
     <comment>Clay HTML File</comment>
-    <glob pattern="*.clayhtml"/>
+    <glob pattern="*.htmlclay"/>
   </mime-type>
 </mime-info>
 ```
@@ -700,15 +700,15 @@ OS knows what type of file it is.
 
 ```bash
 update-mime-database ~/.local/share/mime
-xdg-mime default htmlclay.desktop application/x-clayhtml
+xdg-mime default htmlclay.desktop application/x-htmlclay
 ```
 
 The first command rebuilds the MIME database. The second sets HTML Clay as the default
-app for `.clayhtml` files.
+app for `.htmlclay` files.
 
 #### Windows — create `dist/windows/register.bat`
 
-This script registers the `.clayhtml` file association in the Windows registry. Run
+This script registers the `.htmlclay` file association in the Windows registry. Run
 it once after installing the binary.
 
 ```batch
@@ -718,16 +718,16 @@ setlocal
 set "EXE=%~dp0htmlclay.exe"
 
 :: Register the file type
-reg add "HKCU\Software\Classes\.clayhtml" /ve /d "HTMLClay.Document" /f
+reg add "HKCU\Software\Classes\.htmlclay" /ve /d "HTMLClay.Document" /f
 reg add "HKCU\Software\Classes\HTMLClay.Document" /ve /d "Clay HTML File" /f
 reg add "HKCU\Software\Classes\HTMLClay.Document\shell\open\command" /ve /d "\"%EXE%\" \"%%1\"" /f
 
-echo File association registered for .clayhtml
+echo File association registered for .htmlclay
 echo Restart Explorer or log out/in for changes to take effect.
 ```
 
 **What this does:**
-- `HKCU\Software\Classes\.clayhtml` — maps the `.clayhtml` extension to a file type
+- `HKCU\Software\Classes\.htmlclay` — maps the `.htmlclay` extension to a file type
   ID (`HTMLClay.Document`)
 - `HTMLClay.Document` — the file type ID, with a human-readable name
 - `HTMLClay.Document\shell\open\command` — tells Windows what command to run when the
@@ -737,7 +737,7 @@ echo Restart Explorer or log out/in for changes to take effect.
   `.bat` must be in the same folder.
 
 **Verify (on a Windows machine):** Double-click the `.bat`, then double-click a
-`.clayhtml` file — it should open in HTML Clay.
+`.htmlclay` file — it should open in HTML Clay.
 
 ---
 
@@ -934,8 +934,8 @@ Use this as a checklist. Check off each item after completing it.
 - [ ] `go test ./...` passes on macOS
 - [ ] CI passes on all three platforms (GitHub Actions)
 - [ ] Tag a test release, verify artifacts are published
-- [ ] Test on a real Windows machine: install, launch, open `.clayhtml`, tray menu works
-- [ ] Test on a real Linux machine (Ubuntu): install, launch, open `.clayhtml`, tray icon shows
+- [ ] Test on a real Windows machine: install, launch, open `.htmlclay`, tray menu works
+- [ ] Test on a real Linux machine (Ubuntu): install, launch, open `.htmlclay`, tray icon shows
 
 ---
 
