@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"fyne.io/systray"
 	"github.com/panphora/htmlclay/browser"
@@ -35,6 +37,13 @@ func Run(cfg *config.Config, onQuit func(), updateCh <-chan UpdateInfo) {
 func (t *Tray) onReady() {
 	systray.SetIcon(iconBytes)
 	systray.SetTooltip("HTML Clay")
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		systray.Quit()
+	}()
 
 	t.updateItem = systray.AddMenuItem("", "")
 	t.updateItem.Hide()
@@ -86,7 +95,11 @@ func (t *Tray) setMode(mode string, check, uncheck *systray.MenuItem) {
 
 func (t *Tray) toggleLoginItem(loginItem *systray.MenuItem) {
 	newVal := !t.cfg.StartOnLogin
-	execPath, _ := os.Executable()
+	execPath, err := os.Executable()
+	if err != nil || execPath == "" {
+		fmt.Fprintf(os.Stderr, "[htmlclay] cannot determine executable path: %v\n", err)
+		return
+	}
 
 	if err := platform.SetLoginItem(newVal, execPath); err != nil {
 		return

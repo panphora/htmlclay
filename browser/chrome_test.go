@@ -2,16 +2,17 @@ package browser
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestFindChromiumEnvOverride(t *testing.T) {
-	fake := "/tmp/malleable-test-fake-chrome"
-	os.WriteFile(fake, []byte("#!/bin/sh\n"), 0755)
-	defer os.Remove(fake)
+	fake := filepath.Join(t.TempDir(), "fake-chrome")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
-	os.Setenv("HTMLCLAY_BROWSER", fake)
-	defer os.Unsetenv("HTMLCLAY_BROWSER")
+	t.Setenv("HTMLCLAY_BROWSER", fake)
 
 	result := FindChromium()
 	if result != fake {
@@ -20,11 +21,10 @@ func TestFindChromiumEnvOverride(t *testing.T) {
 }
 
 func TestFindChromiumEnvOverrideNotExists(t *testing.T) {
-	os.Setenv("HTMLCLAY_BROWSER", "/nonexistent/browser")
-	defer os.Unsetenv("HTMLCLAY_BROWSER")
+	t.Setenv("HTMLCLAY_BROWSER", filepath.Join(t.TempDir(), "nonexistent"))
 
 	result := FindChromium()
-	if result == "/nonexistent/browser" {
+	if result != "" && result == os.Getenv("HTMLCLAY_BROWSER") {
 		t.Error("should not return nonexistent path")
 	}
 }

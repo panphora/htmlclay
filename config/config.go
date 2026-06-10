@@ -78,7 +78,9 @@ func LoadFrom(baseDir string) (*Config, error) {
 	}
 
 	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, err
+		// A corrupt config must not brick startup: warn and fall back to defaults.
+		fmt.Fprintf(os.Stderr, "[htmlclay] config.json is corrupt (%v), using defaults\n", err)
+		return &Config{Mode: "app", StartOnLogin: false, Port: 0, baseDir: baseDir}, nil
 	}
 	return cfg, nil
 }
@@ -93,7 +95,25 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+
+	tmp, err := os.CreateTemp(dir, ".config-*.json")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func (c *Config) ResolvePort() (net.Listener, error) {

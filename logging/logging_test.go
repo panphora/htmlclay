@@ -87,14 +87,7 @@ func TestConcurrentWrites(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if _, errR := os.Stat(path + ".1"); errR == nil {
-			data, err = os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-		} else {
-			t.Fatal(err)
-		}
+		t.Fatal(err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")

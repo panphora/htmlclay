@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const DefaultVersionURL = "https://htmlclay.com/version.json"
+const DefaultVersionURL = "https://htmlclay.com/htmlclay-release-info.json"
 
 type Info struct {
 	Version string `json:"latest"`

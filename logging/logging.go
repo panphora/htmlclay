@@ -19,7 +19,7 @@ type Logger struct {
 }
 
 func New(path string) (*Logger, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (l *Logger) rotate() {
 	if err := os.Rename(l.path, l.path+".1"); err != nil {
 		fmt.Fprintf(os.Stderr, "[htmlclay] log rotation rename failed: %v\n", err)
 	}
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[htmlclay] log rotation failed, falling back to stderr: %v\n", err)
 		l.file = os.Stderr

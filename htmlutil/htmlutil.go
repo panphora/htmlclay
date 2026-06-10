@@ -1,29 +1,68 @@
 package htmlutil
 
 import (
+	"bytes"
 	"crypto/rand"
 	"fmt"
 	htmlpkg "html"
 	"regexp"
 )
 
-var htmlTagPrefix = regexp.MustCompile(`(?i)<html[\s>]`)
 var tokenAttr = regexp.MustCompile(`(?i)\s+htmlclaytoken=("[^"]*"|'[^']*'|\S+)`)
 var htmlclayidAttr = regexp.MustCompile(`(?i)\s+htmlclayid=("[^"]*"|'[^']*'|\S+)`)
 
-func findHTMLTagRange(data []byte) (tagStart, closeAngle int, ok bool) {
-	loc := htmlTagPrefix.FindIndex(data)
-	if loc == nil {
-		return 0, 0, false
-	}
-	tagStart = loc[0]
+func isHTMLSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
+}
 
-	if data[loc[1]-1] == '>' {
-		return tagStart, loc[1] - 1, true
+func equalFoldHTML(b []byte) bool {
+	const name = "html"
+	if len(b) != len(name) {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := b[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != name[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// findHTMLTagStart returns the byte offset of the real top-level <html> start
+// tag, skipping any <html occurrence inside an HTML comment. Returns -1 if none.
+func findHTMLTagStart(data []byte) int {
+	n := len(data)
+	for i := 0; i < n; i++ {
+		if data[i] != '<' {
+			continue
+		}
+		if i+3 < n && data[i+1] == '!' && data[i+2] == '-' && data[i+3] == '-' {
+			end := bytes.Index(data[i+4:], []byte("-->"))
+			if end < 0 {
+				return -1
+			}
+			i += 4 + end + 2
+			continue
+		}
+		if i+5 < n && equalFoldHTML(data[i+1:i+5]) && (isHTMLSpace(data[i+5]) || data[i+5] == '>') {
+			return i
+		}
+	}
+	return -1
+}
+
+func findHTMLTagRange(data []byte) (tagStart, closeAngle int, ok bool) {
+	tagStart = findHTMLTagStart(data)
+	if tagStart < 0 {
+		return 0, 0, false
 	}
 
 	inDouble, inSingle := false, false
-	for i := loc[1]; i < len(data); i++ {
+	for i := tagStart + 5; i < len(data); i++ {
 		switch data[i] {
 		case '"':
 			if !inSingle {
@@ -82,12 +121,12 @@ func stripAttr(data []byte, attrRegex *regexp.Regexp) []byte {
 }
 
 func readAttr(data []byte, attrRegex *regexp.Regexp) string {
-	_, closeAngle, ok := findHTMLTagRange(data)
+	tagStart, closeAngle, ok := findHTMLTagRange(data)
 	if !ok {
 		return ""
 	}
 
-	loc := attrRegex.FindSubmatch(data[:closeAngle+1])
+	loc := attrRegex.FindSubmatch(data[tagStart : closeAngle+1])
 	if loc == nil {
 		return ""
 	}

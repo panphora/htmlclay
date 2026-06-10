@@ -315,3 +315,40 @@ func TestGenerateHTMLClayIDUnique(t *testing.T) {
 		t.Error("two generated IDs should not be equal")
 	}
 }
+
+// --- commented-out <html> tag should be skipped ---
+
+func TestInjectTokenSkipsCommentedHTMLTag(t *testing.T) {
+	in := []byte(`<!-- <html> --><html lang="en">`)
+	out := InjectToken(in, "tok")
+	expected := []byte(`<!-- <html> --><html htmlclaytoken="tok" lang="en">`)
+	if !bytes.Equal(out, expected) {
+		t.Errorf("got %q, want %q", out, expected)
+	}
+}
+
+func TestStripTokenSkipsCommentedHTMLTag(t *testing.T) {
+	in := []byte(`<!-- <html foo> --><html htmlclaytoken="tok" lang="en">`)
+	out := StripToken(in)
+	expected := []byte(`<!-- <html foo> --><html lang="en">`)
+	if !bytes.Equal(out, expected) {
+		t.Errorf("got %q, want %q", out, expected)
+	}
+}
+
+func TestReadHTMLClayIDSkipsCommentedTag(t *testing.T) {
+	in := []byte(`<!-- <html htmlclayid="fake"> --><html htmlclayid="real" lang="en">`)
+	id := ReadHTMLClayID(in)
+	if id != "real" {
+		t.Errorf("got %q, want %q", id, "real")
+	}
+}
+
+func TestInjectTokenCommentRoundTrip(t *testing.T) {
+	original := []byte(`<!-- <html> --><html lang="en">`)
+	injected := InjectToken(original, "tok123")
+	stripped := StripToken(injected)
+	if !bytes.Equal(stripped, original) {
+		t.Errorf("round-trip failed: got %q, want %q", stripped, original)
+	}
+}

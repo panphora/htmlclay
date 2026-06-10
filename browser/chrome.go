@@ -143,5 +143,8 @@ func LaunchAppMode(browserPath, url, profileDir string) (*exec.Cmd, error) {
 		return nil, err
 	}
 
+	// Reap the child when its window closes so it does not linger as a zombie.
+	go cmd.Wait()
+
 	return cmd, nil
 }
