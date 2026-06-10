@@ -42,7 +42,7 @@ func setupHandlerTest(t *testing.T) (*Server, *session.File, string) {
 func TestServeFile(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
-	req := httptest.NewRequest("GET", "/f/test.htmlclay", nil)
+	req := httptest.NewRequest("GET", "/test.htmlclay", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("path", "test.htmlclay")
 
@@ -65,7 +65,7 @@ func TestServeFile(t *testing.T) {
 func TestServeFileNotRegistered(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 
-	req := httptest.NewRequest("GET", "/f/nonexistent.htmlclay", nil)
+	req := httptest.NewRequest("GET", "/nonexistent.htmlclay", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("path", "nonexistent.htmlclay")
 
@@ -80,7 +80,7 @@ func TestServeFileNotRegistered(t *testing.T) {
 func TestServeFilePathTraversal(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 
-	req := httptest.NewRequest("GET", "/f/../../../etc/passwd", nil)
+	req := httptest.NewRequest("GET", "/../../../etc/passwd", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("path", "../../../etc/passwd")
 
@@ -95,7 +95,7 @@ func TestServeFilePathTraversal(t *testing.T) {
 func TestReadValid(t *testing.T) {
 	srv, f, content := setupHandlerTest(t)
 
-	req := httptest.NewRequest("GET", "/read/"+f.Token, nil)
+	req := httptest.NewRequest("GET", "/_/read/"+f.Token, nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("token", f.Token)
 
@@ -113,7 +113,7 @@ func TestReadValid(t *testing.T) {
 func TestReadInvalidToken(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 
-	req := httptest.NewRequest("GET", "/read/invalid-token", nil)
+	req := httptest.NewRequest("GET", "/_/read/invalid-token", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("token", "invalid-token")
 
@@ -129,7 +129,7 @@ func TestSaveValid(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	newContent := `<!DOCTYPE html><html htmlclaytoken="tok"><body>Updated!</body></html>`
-	req := httptest.NewRequest("POST", "/save/"+f.Token, strings.NewReader(newContent))
+	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(newContent))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("token", f.Token)
 
@@ -159,7 +159,7 @@ func TestSaveValid(t *testing.T) {
 func TestSaveInvalidToken(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 
-	req := httptest.NewRequest("POST", "/save/bad-token", strings.NewReader("test"))
+	req := httptest.NewRequest("POST", "/_/save/bad-token", strings.NewReader("test"))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("token", "bad-token")
 
@@ -174,7 +174,7 @@ func TestSaveInvalidToken(t *testing.T) {
 func TestMetaValid(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
-	req := httptest.NewRequest("GET", "/meta/"+f.Token, nil)
+	req := httptest.NewRequest("GET", "/_/meta/"+f.Token, nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("token", f.Token)
 
@@ -197,7 +197,7 @@ func TestMetaValid(t *testing.T) {
 func TestMetaInvalidToken(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 
-	req := httptest.NewRequest("GET", "/meta/bad-token", nil)
+	req := httptest.NewRequest("GET", "/_/meta/bad-token", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("token", "bad-token")
 

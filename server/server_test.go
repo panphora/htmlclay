@@ -21,7 +21,7 @@ func TestHostValidationMiddleware(t *testing.T) {
 	defer ln.Close()
 	srv := New(ln, mgr, logger)
 
-	req := httptest.NewRequest("GET", "/f/test.htmlclay", nil)
+	req := httptest.NewRequest("GET", "/test.htmlclay", nil)
 	req.Host = "evil.com:12345"
 	w := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(w, req)
@@ -41,7 +41,7 @@ func TestHostValidationAccepts(t *testing.T) {
 	defer ln.Close()
 	srv := New(ln, mgr, logger)
 
-	req := httptest.NewRequest("GET", "/f/nonexistent", nil)
+	req := httptest.NewRequest("GET", "/nonexistent", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	w := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(w, req)

@@ -15,7 +15,14 @@ type File struct {
 	AbsPath string
 	RelPath string
 	Name    string
+
+	writeMu sync.Mutex
 }
+
+// Lock and Unlock serialize read-modify-write operations on this file (saves and
+// on-serve htmlclayid injection) so concurrent handlers cannot clobber each other.
+func (f *File) Lock()   { f.writeMu.Lock() }
+func (f *File) Unlock() { f.writeMu.Unlock() }
 
 type Manager struct {
 	mu      sync.RWMutex
@@ -29,18 +36,24 @@ func NewManager() (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return &Manager{
-		byToken: make(map[string]*File),
-		byPath:  make(map[string]string),
-		homeDir: home,
-	}, nil
+	return NewManagerWithHome(home), nil
+}
+
+// normalizeHome resolves symlinks in the home directory so the path-prefix
+// check in resolveAndValidate matches symlink-resolved file paths. Without this,
+// a home dir located under a symlinked path would reject every file.
+func normalizeHome(homeDir string) string {
+	if resolved, err := filepath.EvalSymlinks(homeDir); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(homeDir)
 }
 
 func NewManagerWithHome(homeDir string) *Manager {
 	return &Manager{
 		byToken: make(map[string]*File),
 		byPath:  make(map[string]string),
-		homeDir: homeDir,
+		homeDir: normalizeHome(homeDir),
 	}
 }
 

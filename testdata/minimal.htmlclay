@@ -10,7 +10,7 @@
     const token = document.documentElement.getAttribute('htmlclaytoken');
     document.getElementById('save').addEventListener('click', async () => {
       const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-      const res = await fetch('/save/' + token, {
+      const res = await fetch('/_/save/' + token, {
         method: 'POST',
         headers: { 'Content-Type': 'text/html' },
         body: html

@@ -31,10 +31,16 @@ func ValidatePath(relPath string, homeDir string) (string, error) {
 }
 
 func HostValidationMiddleware(next http.Handler, port int) http.Handler {
-	allowed1 := fmt.Sprintf("127.0.0.1:%d", port)
-	allowed2 := fmt.Sprintf("localhost:%d", port)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Host != allowed1 && r.Host != allowed2 {
+		if !ValidateHost(r, port) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		// Defense in depth: reject cross-site requests so another website in the
+		// user's browser cannot drive the save endpoint even if a token leaks.
+		// Browsers send Sec-Fetch-Site: same-origin for the page's own fetches
+		// and none for direct navigation; only cross-site is rejected.
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}

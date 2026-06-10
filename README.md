@@ -47,7 +47,7 @@ It's just HTML. Here's a minimal example — a page with editable text and a sav
     document.getElementById('save').addEventListener('click', async () => {
       const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
       const token = document.documentElement.getAttribute('htmlclaytoken');
-      const res = await fetch('/save/' + token, {
+      const res = await fetch('/_/save/' + token, {
         method: 'POST',
         headers: { 'Content-Type': 'text/html' },
         body: html
@@ -58,7 +58,7 @@ It's just HTML. Here's a minimal example — a page with editable text and a sav
 </body></html>
 ```
 
-The key line is `fetch('/save/' + token, ...)` — that's the save call. HTML Clay injects an `htmlclaytoken` attribute into the `<html>` tag when serving the file, and the page reads it to know where to save. The token is a cryptographic session identifier that maps to the file on disk.
+The key line is `fetch('/_/save/' + token, ...)` — that's the save call. HTML Clay injects an `htmlclaytoken` attribute into the `<html>` tag when serving the file, and the page reads it to know where to save. The token is a cryptographic session identifier that maps to the file on disk.
 
 ## What can you build with it?
 
@@ -126,7 +126,7 @@ User double-clicks .htmlclay file
       → App opens Chrome in app mode (chromeless window) or default browser
         → Browser loads file from localhost server
           → User edits, hits save
-            → JS reads htmlclaytoken, calls POST /save/{token}
+            → JS reads htmlclaytoken, calls POST /_/save/{token}
               → Server writes changes back to disk
 ```
 
@@ -134,10 +134,12 @@ User double-clicks .htmlclay file
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| `GET` | `/f/{path}` | Serve a `.htmlclay` file with session token injected |
-| `GET` | `/read/{token}` | Return raw file contents |
-| `POST` | `/save/{token}` | Write updated HTML back to disk (atomic write) |
-| `GET` | `/meta/{token}` | Return file metadata (path, size, modification time) |
+| `GET` | `/{path}` | Serve a `.htmlclay` file with session token injected |
+| `GET` | `/_/read/{token}` | Return raw file contents |
+| `POST` | `/_/save/{token}` | Write updated HTML back to disk (atomic write) |
+| `GET` | `/_/meta/{token}` | Return file metadata (path, size, modification time) |
+
+Content is served at the top level; actions live under the `/_/` marker, matching the [Hyperclay](https://hyperclay.com) platform convention. The save endpoint accepts either a plain-text HTML body or a JSON `{content, snapshotHtml}` body (it persists `content`), so the same [hyperclayjs](https://www.npmjs.com/package/hyperclayjs) save client works against both htmlclay and the platform.
 
 ### Package structure
 
@@ -159,8 +161,8 @@ dist/windows/        File association registration script
 
 ### Security model
 
-- **Localhost only** — The server binds to `127.0.0.1` and rejects any request not from the loopback address.
-- **256-bit session tokens** — Each opened file gets a cryptographically random token. All endpoints require a valid token.
+- **Localhost only** — The server binds to `127.0.0.1`, validates the `Host` header, and rejects cross-site requests (`Sec-Fetch-Site: cross-site`).
+- **256-bit session tokens** — Each opened file gets a cryptographically random token. The read, save, and meta endpoints (under `/_/`) require a valid token; the top-level file-serving route only resolves paths that match an already-open file.
 - **Path traversal prevention** — All file paths are validated as relative and within the user's home directory. Symlinks are resolved before validation.
 - **Atomic writes** — Files are written to a temp file first, then renamed into place, preventing corruption on crash.
 - **Single instance** — A Unix socket (or TCP on Windows) ensures only one server runs at a time. Additional launches forward their file paths to the running instance.
@@ -189,11 +191,11 @@ The port is auto-selected if the saved one isn't available.
 The app lives in the system tray with controls for:
 - Switching between app mode and browser mode
 - Toggling Start on Login (LaunchAgent on macOS, autostart desktop entry on Linux, registry key on Windows)
-- Checking for updates
+- A notification when a new version is available (click to open the download page)
 
 ### Building from source
 
-Requires Go 1.26+. Linux builds need `libayatana-appindicator3-dev` and `libgtk-3-dev`.
+Requires Go 1.26+. Linux and Windows build as pure Go (no system libraries needed); macOS builds use cgo for the system tray and Finder integration.
 
 ```bash
 # Build the binary
@@ -205,7 +207,7 @@ make test
 # Build macOS .app bundle
 make dist-macos
 
-# Build Linux tarball
+# Build Linux binary (prints install steps; CI assembles the tarball)
 make dist-linux
 
 # Build Windows executable

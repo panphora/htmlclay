@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -71,8 +72,10 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	f.Lock()
 	data, err := os.ReadFile(f.AbsPath)
 	if err != nil {
+		f.Unlock()
 		s.logger.Printf("Error reading %s: %v", f.AbsPath, err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -91,6 +94,7 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	f.Unlock()
 
 	data = htmlutil.InjectToken(data, f.Token)
 
@@ -134,9 +138,36 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(body) == 0 {
+		s.writeError(w, http.StatusBadRequest, "empty body")
+		return
+	}
+
+	// hyperclayjs sends a JSON {content, snapshotHtml} body when a live-sync
+	// snapshot is present (it treats 127.0.0.1 as a local host). Persist only
+	// content; snapshotHtml is for a future live-sync broadcast htmlclay does
+	// not yet implement. Any non-JSON body is the raw HTML, written as-is.
+	if isJSONContentType(r.Header.Get("Content-Type")) {
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		if payload.Content == "" {
+			s.writeError(w, http.StatusBadRequest, "empty content")
+			return
+		}
+		body = []byte(payload.Content)
+	}
+
 	body = htmlutil.StripToken(body)
 
-	if err := atomicWriteFile(f.AbsPath, body); err != nil {
+	f.Lock()
+	err = atomicWriteFile(f.AbsPath, body)
+	f.Unlock()
+	if err != nil {
 		s.logger.Printf("Error saving %s: %v", f.AbsPath, err)
 		s.writeError(w, http.StatusInternalServerError, "write error")
 		return
@@ -144,7 +175,18 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Printf("Saved %s (%d bytes)", f.RelPath, len(body))
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"ok":true}`))
+	w.Write([]byte(`{"ok":true,"msg":"Saved","msgType":"success"}`))
+}
+
+func isJSONContentType(ct string) bool {
+	if ct == "" {
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return false
+	}
+	return mediaType == "application/json"
 }
 
 func atomicWriteFile(targetPath string, data []byte) error {
@@ -182,6 +224,14 @@ func atomicWriteFile(targetPath string, data []byte) error {
 	}
 
 	tmpPath = ""
+
+	// Fsync the directory so the rename is durable: without this, a crash right
+	// after a successful save can revert the file to its previous contents.
+	if dirFile, err := os.Open(dir); err == nil {
+		dirFile.Sync()
+		dirFile.Close()
+	}
+
 	return nil
 }
 
