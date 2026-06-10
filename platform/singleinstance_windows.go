@@ -11,15 +11,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
+const mutexName = `Local\htmlclay-single-instance`
+
 type tcpSingleInstance struct {
-	configDir string
-	addrFile  string
-	listener  net.Listener
-	mu        sync.Mutex
-	callback  func(string)
-	pending   []string
+	configDir   string
+	addrFile    string
+	listener    net.Listener
+	mutexHandle windows.Handle
+	mu          sync.Mutex
+	callback    func(string)
+	pending     []string
 }
 
 func NewSingleInstance(configDir string) SingleInstance {
@@ -30,14 +35,18 @@ func NewSingleInstance(configDir string) SingleInstance {
 }
 
 func (s *tcpSingleInstance) TryLock() (bool, error) {
-	data, err := os.ReadFile(s.addrFile)
-	if err == nil {
-		addr := strings.TrimSpace(string(data))
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
-		if err == nil {
-			conn.Close()
-			return false, nil
-		}
+	// A named mutex gives true mutual exclusion: even two simultaneous launches
+	// cannot both become primary, unlike the addr-file check-then-listen below.
+	name, err := windows.UTF16PtrFromString(mutexName)
+	if err != nil {
+		return false, fmt.Errorf("cannot encode mutex name: %w", err)
+	}
+	handle, err := windows.CreateMutex(nil, false, name)
+	if handle != 0 {
+		s.mutexHandle = handle
+	}
+	if err == windows.ERROR_ALREADY_EXISTS {
+		return false, nil
 	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -67,6 +76,7 @@ func (s *tcpSingleInstance) acceptLoop() {
 
 func (s *tcpSingleInstance) handleConnection(c net.Conn) {
 	defer c.Close()
+	writeBanner(c)
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	data, err := io.ReadAll(io.LimitReader(c, 64<<10))
 	if err != nil || len(data) == 0 {
@@ -96,6 +106,9 @@ func (s *tcpSingleInstance) SendFilePath(path string) error {
 		return err
 	}
 	defer conn.Close()
+	if !verifyBanner(conn) {
+		return fmt.Errorf("peer on %s is not an htmlclay instance", addr)
+	}
 	_, err = conn.Write([]byte(path))
 	return err
 }
@@ -117,5 +130,9 @@ func (s *tcpSingleInstance) Unlock() error {
 		s.listener.Close()
 	}
 	os.Remove(s.addrFile)
+	if s.mutexHandle != 0 {
+		windows.CloseHandle(s.mutexHandle)
+		s.mutexHandle = 0
+	}
 	return nil
 }

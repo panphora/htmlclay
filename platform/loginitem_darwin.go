@@ -5,9 +5,9 @@ package platform
 import (
 	"bytes"
 	"fmt"
+	"html/template"
 	"os"
 	"path/filepath"
-	"html/template"
 )
 
 const launchAgentLabel = "com.htmlclay"

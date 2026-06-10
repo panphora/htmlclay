@@ -34,8 +34,11 @@ func NewSingleInstance(configDir string) SingleInstance {
 func (s *socketSingleInstance) TryLock() (bool, error) {
 	conn, err := net.Dial("unix", s.sockPath)
 	if err == nil {
+		alive := verifyBanner(conn)
 		conn.Close()
-		return false, nil
+		if alive {
+			return false, nil
+		}
 	}
 
 	if s.isExistingInstanceAlive() {
@@ -90,7 +93,13 @@ func (s *socketSingleInstance) isExistingInstanceAlive() bool {
 		os.Remove(s.lockPath)
 		return false
 	}
+	alive := verifyBanner(conn)
 	conn.Close()
+	if !alive {
+		os.Remove(s.sockPath)
+		os.Remove(s.lockPath)
+		return false
+	}
 	return true
 }
 
@@ -106,6 +115,7 @@ func (s *socketSingleInstance) acceptLoop() {
 
 func (s *socketSingleInstance) handleConnection(c net.Conn) {
 	defer c.Close()
+	writeBanner(c)
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	data, err := io.ReadAll(io.LimitReader(c, 64<<10))
 	if err != nil || len(data) == 0 {
@@ -130,6 +140,9 @@ func (s *socketSingleInstance) SendFilePath(path string) error {
 		return err
 	}
 	defer conn.Close()
+	if !verifyBanner(conn) {
+		return fmt.Errorf("peer on %s is not an htmlclay instance", s.sockPath)
+	}
 	_, err = conn.Write([]byte(path))
 	return err
 }

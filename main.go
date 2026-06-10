@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/panphora/htmlclay/browser"
 	"github.com/panphora/htmlclay/config"
@@ -96,16 +97,20 @@ func main() {
 	a.initConfig()
 	defer a.si.Unlock()
 
+	a.initLogger()
+	defer a.logger.Close()
+
+	a.startServer()
+
+	// Apply one-shot CLI mode overrides after ResolvePort has persisted the
+	// config, so an ephemeral -app/-browser run does not rewrite the saved mode.
 	if *appMode {
 		a.cfg.Mode = "app"
 	} else if *browserMode {
 		a.cfg.Mode = "browser"
 	}
 
-	a.initLogger()
-	defer a.logger.Close()
-
-	a.startServer()
+	a.refreshLoginItem()
 
 	args := flag.Args()
 	if len(args) > 0 {
@@ -115,6 +120,13 @@ func main() {
 
 	a.si.OnFileReceived(func(path string) {
 		a.logger.Printf("Received file from another instance: %s", path)
+		a.openFile(path)
+	})
+
+	// macOS delivers Finder double-clicks as Apple Events, not argv; this hooks
+	// them into the same open path. No-op on other platforms.
+	platform.OnOpenFile(func(path string) {
+		a.logger.Printf("Received open-file event: %s", path)
 		a.openFile(path)
 	})
 
@@ -226,8 +238,9 @@ func (a *app) openFile(filePath string) {
 		return
 	}
 
-	if _, ok := a.sessions.LookupByPath(absPath); ok {
-		a.logger.Printf("File already open, skipping: %s", absPath)
+	if existing, ok := a.sessions.LookupByPath(absPath); ok {
+		a.logger.Printf("File already open, re-launching window: %s", absPath)
+		a.launchBrowser(fileURL(a.port, existing.RelPath))
 		return
 	}
 
@@ -259,14 +272,33 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 	}
 }
 
+func (a *app) refreshLoginItem() {
+	if !a.cfg.StartOnLogin {
+		return
+	}
+	execPath, err := os.Executable()
+	if err != nil || execPath == "" {
+		return
+	}
+	// Re-register on every launch so a moved or updated binary keeps a valid path.
+	if err := platform.SetLoginItem(true, execPath); err != nil {
+		a.logger.Printf("Could not refresh login item: %v", err)
+	}
+}
+
 func (a *app) shutdown() {
 	a.logger.Printf("Shutting down...")
 	a.sessions.RevokeAll()
-	a.srv.Shutdown(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.srv.Shutdown(ctx); err != nil {
+		a.logger.Printf("Graceful shutdown timed out (%v), forcing close", err)
+		a.srv.Close()
+	}
 }
 
 func fileURL(port int, relPath string) string {
-	base := fmt.Sprintf("http://127.0.0.1:%d/f/", port)
+	base := fmt.Sprintf("http://127.0.0.1:%d/", port)
 	result, err := url.JoinPath(base, relPath)
 	if err != nil {
 		return base + relPath
