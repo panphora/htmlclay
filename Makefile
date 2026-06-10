@@ -3,18 +3,24 @@
 VERSION ?= $(shell grep 'var version' main.go | sed 's/.*"\(.*\)"/\1/')
 LDFLAGS = -s -w -X main.version=$(VERSION)
 BINARY = htmlclay
+# macOS needs cgo for the systray and the Apple Event handler; elsewhere the
+# build is pure Go.
+CGO = 0
 ifeq ($(OS),Windows_NT)
 	BINARY = htmlclay.exe
 endif
+ifeq ($(shell uname -s),Darwin)
+	CGO = 1
+endif
 
 build:
-	CGO_ENABLED=1 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) .
+	CGO_ENABLED=$(CGO) go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) .
 ifeq ($(shell uname -s),Darwin)
 	codesign -f -s - $(BINARY)
 endif
 
 test:
-	go test ./... -count=1
+	CGO_ENABLED=1 go test -race ./... -count=1
 
 clean:
 	rm -f htmlclay htmlclay.exe

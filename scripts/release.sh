@@ -122,9 +122,13 @@ git add main.go
 git commit -m "chore: release v${NEW_VERSION}"
 success "Committed version bump"
 
+git tag "v${NEW_VERSION}"
+success "Tagged v${NEW_VERSION}"
+
 info "Pushing to remote..."
 git push origin HEAD
-success "Pushed commit"
+git push origin "v${NEW_VERSION}"
+success "Pushed commit and tag"
 
 # ══════════════════════════════════════════════════
 section "Step 4: Build macOS Locally"
@@ -175,12 +179,17 @@ section "Step 6: Wait for CI (Linux + Windows)"
 # ══════════════════════════════════════════════════
 
 info "Triggering release workflow on GitHub Actions..."
+BRANCH="$(git branch --show-current)"
 gh workflow run release.yml -f version="${NEW_VERSION}"
 
-info "Waiting for workflow to initialize..."
-sleep 5
-
-RUN_ID=$(gh run list --workflow=release.yml --limit 1 --json databaseId -q ".[0].databaseId" 2>/dev/null || echo "")
+info "Waiting for workflow run to appear..."
+RUN_ID=""
+for _ in $(seq 1 15); do
+  sleep 3
+  RUN_ID=$(gh run list --workflow=release.yml --branch "$BRANCH" --event workflow_dispatch \
+    --limit 1 --json databaseId,status -q '.[0].databaseId' 2>/dev/null || echo "")
+  [ -n "$RUN_ID" ] && break
+done
 
 if [ -n "$RUN_ID" ]; then
   info "Watching run ${RUN_ID}..."
@@ -207,9 +216,10 @@ SECONDS=$((DURATION % 60))
 log "Version:  ${NEW_VERSION}"
 log "Duration: ${MINUTES}m ${SECONDS}s"
 log ""
-log "macOS builds:  executables/"
-log "Linux/Windows: GitHub Release + R2 (uploaded by CI)"
+log "macOS builds:  executables/ + R2"
+log "Linux/Windows: R2 (uploaded by CI)"
 log ""
-log "GitHub Release: https://github.com/panphora/htmlclay/releases/tag/v${NEW_VERSION}"
+log "Git tag:  v${NEW_VERSION}"
+log "Download: https://htmlclay.com/download"
 log ""
 success "Release v${NEW_VERSION} complete!"
