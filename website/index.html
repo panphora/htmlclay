@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTML Clay — apps that live in a single file</title>
+  <meta name="description" content="An .htmlclay file is a little app in a single file: notes, a tracker, a journal. HTML Clay opens it in its own window and saves your changes straight back into the file. Free, offline, no account.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="HTML Clay — apps that live in a single file">
+  <meta property="og:description" content="Open an .htmlclay file, edit it, and your changes save straight back into the file. Free, offline, no account.">
+  <meta property="og:url" content="https://htmlclay.com">
+  <meta property="og:image" content="https://htmlclay.com/favicon.svg">
+  <meta name="twitter:card" content="summary">
+
+  <style>
+    :root {
+      --bg: #faf8f3;
+      --ink: #1b1a17;
+      --muted: #6f6b62;
+      --line: #e7e3d8;
+      --card: #ffffff;
+      --accent: #c2410c;
+      --btn: #161512;
+      --btn-ink: #faf8f3;
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      font-size: 17px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 640px; margin: 0 auto; padding: 0 22px; }
+    a { color: var(--accent); text-underline-offset: 2px; }
+    a:hover { text-decoration: none; }
+
+    h1, h2 {
+      font-family: ui-rounded, "SF Pro Rounded", system-ui, "Segoe UI", sans-serif;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+    }
+
+    /* Hero */
+    .hero { text-align: center; padding: 56px 0 8px; }
+    .hero img { width: 116px; height: 116px; display: block; margin: 0 auto 22px; }
+    .hero h1 { font-size: 38px; margin: 0 0 16px; }
+    .hero p.lede { font-size: 19px; color: var(--ink); margin: 0 auto; max-width: 30em; }
+    .filechip {
+      display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px; color: var(--muted); background: #f1ede2;
+      border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; white-space: nowrap;
+    }
+
+    /* Download */
+    .cta { text-align: center; padding: 34px 0 8px; }
+    .btn {
+      display: inline-block; background: var(--btn); color: var(--btn-ink);
+      font-size: 19px; font-weight: 600; text-decoration: none;
+      padding: 14px 30px; border-radius: 11px; transition: transform .06s ease, background .15s ease;
+    }
+    .btn:hover { background: #000; }
+    .btn:active { transform: translateY(1px); }
+    .cta .sub { color: var(--muted); font-size: 14px; margin-top: 12px; }
+    .cta .sub a { color: var(--muted); }
+    .trust { color: var(--muted); font-size: 14px; margin-top: 4px; }
+
+    /* Sections */
+    section { padding: 28px 0; }
+    h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); margin: 0 0 18px; }
+    .points { display: grid; gap: 18px; }
+    .point { background: var(--card); border: 1px solid var(--line); border-radius: 13px; padding: 18px 20px; }
+    .point h3 { margin: 0 0 5px; font-size: 18px; }
+    .point p { margin: 0; color: var(--muted); }
+
+    .steps { counter-reset: step; display: grid; gap: 16px; }
+    .step { display: flex; gap: 15px; align-items: baseline; }
+    .step::before {
+      counter-increment: step; content: counter(step);
+      flex: 0 0 30px; height: 30px; line-height: 30px; text-align: center;
+      background: var(--btn); color: var(--btn-ink); border-radius: 50%;
+      font-size: 15px; font-weight: 600;
+    }
+    .step b { font-size: 17px; }
+    .step p { margin: 2px 0 0; color: var(--muted); }
+
+    .safe, .callout { background: var(--card); border: 1px solid var(--line); border-radius: 13px; padding: 20px 22px; }
+    .safe p, .callout p { margin: 0; color: var(--muted); }
+    .safe p + p, .callout p + p { margin-top: 12px; }
+    .safe b, .callout b { color: var(--ink); }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 9px; }
+    .chip { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 7px 15px; font-size: 15px; }
+
+    .closer { text-align: center; padding: 40px 0 4px; }
+    .closer p { font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; font-size: 24px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+
+    /* Downloads list */
+    .dl { border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--card); }
+    .dl-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px 18px; border-top: 1px solid var(--line); }
+    .dl-row:first-child { border-top: none; }
+    .dl-row .os { font-weight: 600; }
+    .dl-row .os span { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
+    .dl-row a.file { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+
+    footer { padding: 40px 0 64px; text-align: center; color: var(--muted); font-size: 14px; }
+    footer p { margin: 0 0 8px; }
+
+    @media (max-width: 480px) {
+      .hero h1 { font-size: 31px; }
+      .hero { padding-top: 40px; }
+      .dl-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+
+    <div class="hero">
+      <img src="htmlclay-blob.svg" alt="HTML Clay" width="116" height="116">
+      <h1>Apps that live in a single file</h1>
+      <p class="lede">An <span class="filechip">.htmlclay</span> file is a whole app in one file. HTML Clay opens it in its own window and saves your changes straight back into the file, the way a document should.</p>
+    </div>
+
+    <div class="cta">
+      <a id="download-btn" class="btn" href="#downloads" download><span id="download-label">Download</span></a>
+      <div class="trust">Free. No account. Works offline.</div>
+      <div class="sub" id="download-sub"><a href="#downloads">See all downloads</a></div>
+    </div>
+
+    <section>
+      <h2>It's just a web page</h2>
+      <div class="callout">
+        <p>Plain HTML, the same stuff every website is made of. Rename it <span class="filechip">.html</span> and it opens in any browser. HTML Clay only adds what a web page can't do alone: <b>it saves your edits back into the file.</b></p>
+      </div>
+    </section>
+
+    <section>
+      <h2>What people make</h2>
+      <div class="chips">
+        <span class="chip">To-do list</span>
+        <span class="chip">Journal</span>
+        <span class="chip">Budget tracker</span>
+        <span class="chip">Recipe box</span>
+        <span class="chip">Habit tracker</span>
+        <span class="chip">Reading list</span>
+        <span class="chip">Personal wiki</span>
+        <span class="chip">A little game</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>A file you own</h2>
+      <div class="points">
+        <div class="point">
+          <h3>One file, start to finish</h3>
+          <p>Email it, back it up, drop it in any folder. No account, no cloud, no app store. The file is the whole app, and it belongs to you.</p>
+        </div>
+        <div class="point">
+          <h3>Your changes stick</h3>
+          <p>Jot a note, check a box, drag things around. It saves itself right back into the file. Reopen it next week and it's exactly as you left it.</p>
+        </div>
+        <div class="point">
+          <h3>Quiet and private</h3>
+          <p>It runs entirely on your computer. No sign-up, no tracking, nothing leaves your machine. It even works on a plane.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>How it works</h2>
+      <div class="steps">
+        <div class="step">
+          <div>
+            <b>Install HTML Clay</b>
+            <p>One small, free app. One time.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <b>Double-click a file</b>
+            <p>Any <span class="filechip">.htmlclay</span> file opens in its own clean window. No browser tabs, no clutter.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <b>Just use it</b>
+            <p>Type, edit, organize. It saves automatically, back into the same file.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Is it safe?</h2>
+      <div class="safe">
+        <p><b>As safe as a web page</b>, because that's all it is. It runs in your browser's sandbox, can't reach into your computer, and the only file it can change is its own.</p>
+        <p>The one real risk is the same as anywhere online: be cautious if a page asks you to download and run a separate program.</p>
+      </div>
+    </section>
+
+    <section id="downloads">
+      <h2>Download <span id="version-tag" style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+      <div class="dl">
+        <div class="dl-row">
+          <div class="os">macOS <span>Apple Silicon (M1–M4)</span></div>
+          <a class="file" data-mac-dmg href="HTMLClay-1.0.0-arm64.dmg" download>HTMLClay-1.0.0-arm64.dmg</a>
+        </div>
+        <div class="dl-row">
+          <div class="os">Windows <span>64-bit</span></div>
+          <a class="file" href="htmlclay-windows-amd64.zip" download>htmlclay-windows-amd64.zip</a>
+        </div>
+        <div class="dl-row">
+          <div class="os">Linux <span>x86_64</span></div>
+          <a class="file" href="htmlclay-linux-amd64.tar.gz" download>htmlclay-linux-amd64.tar.gz</a>
+        </div>
+        <div class="dl-row">
+          <div class="os">Linux <span>ARM64</span></div>
+          <a class="file" href="htmlclay-linux-arm64.tar.gz" download>htmlclay-linux-arm64.tar.gz</a>
+        </div>
+      </div>
+    </section>
+
+    <div class="closer">
+      <p>The simplest way to run software.</p>
+    </div>
+
+    <footer>
+      <p>Building your own <span class="filechip">.htmlclay</span> files? A developer guide is coming soon.</p>
+      <p>Open source: <a href="https://github.com/panphora/htmlclay">github.com/panphora/htmlclay</a></p>
+    </footer>
+
+  </main>
+
+  <script>
+    (function () {
+      var FALLBACK_VERSION = '1.0.0';
+      var ua = navigator.userAgent;
+
+      function macDmg(v) { return 'HTMLClay-' + v + '-arm64.dmg'; }
+
+      var os = 'other';
+      if (/Mac/.test(ua) && !/iPhone|iPad|iPod/.test(ua)) os = 'mac';
+      else if (/Win/.test(ua)) os = 'windows';
+      else if (/Linux|Android|CrOS/.test(ua)) os = 'linux';
+
+      var btn = document.getElementById('download-btn');
+      var label = document.getElementById('download-label');
+      var sub = document.getElementById('download-sub');
+
+      var primary = {
+        mac:     { url: macDmg(FALLBACK_VERSION), label: 'Download for macOS', note: 'Apple Silicon' },
+        windows: { url: 'htmlclay-windows-amd64.zip', label: 'Download for Windows', note: '64-bit' },
+        linux:   { url: 'htmlclay-linux-amd64.tar.gz', label: 'Download for Linux', note: 'x86_64' }
+      };
+
+      if (primary[os]) {
+        btn.href = primary[os].url;
+        label.textContent = primary[os].label;
+        sub.innerHTML = primary[os].note + ' &middot; <a href="#downloads">all downloads</a>';
+      } else {
+        btn.href = '#downloads';
+        btn.removeAttribute('download');
+        label.textContent = 'Download';
+        sub.innerHTML = '<a href="#downloads">See all downloads</a>';
+      }
+
+      // Only the macOS dmg filename carries the version. Pull the current version
+      // from the release manifest so the link tracks releases without editing
+      // this page. Falls back to FALLBACK_VERSION if the manifest is unavailable.
+      fetch('htmlclay-release-info.json', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data || !data.latest) return;
+          var v = data.latest;
+          var url = macDmg(v);
+          document.querySelectorAll('[data-mac-dmg]').forEach(function (el) {
+            el.setAttribute('href', url);
+            el.textContent = url;
+          });
+          if (os === 'mac') btn.href = url;
+          var tag = document.getElementById('version-tag');
+          if (tag) tag.textContent = 'v' + v;
+        })
+        .catch(function () {});
+    })();
+  </script>
+</body>
+</html>
