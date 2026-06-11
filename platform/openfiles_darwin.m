@@ -29,6 +29,18 @@
         }
     }
 }
+
+- (void)registerAppleEventHandler {
+    [[NSAppleEventManager sharedAppleEventManager]
+        setEventHandler:self
+            andSelector:@selector(handleOpenDocuments:withReplyEvent:)
+          forEventClass:kCoreEventClass
+             andEventID:kAEOpenDocuments];
+}
+
+- (void)appWillFinishLaunching:(NSNotification *)note {
+    [self registerAppleEventHandler];
+}
 @end
 
 static HCOpenFileHandler *hcHandler = nil;
@@ -38,9 +50,20 @@ void installOpenFileHandler(void) {
         return;
     }
     hcHandler = [[HCOpenFileHandler alloc] init];
-    [[NSAppleEventManager sharedAppleEventManager]
-        setEventHandler:hcHandler
-            andSelector:@selector(handleOpenDocuments:withReplyEvent:)
-          forEventClass:kCoreEventClass
-             andEventID:kAEOpenDocuments];
+
+    // AppKit installs its own default kAEOpenDocuments handler while the app
+    // finishes launching; one set now (before [NSApp run]) would be overwritten,
+    // so the cold-launch event would hit AppKit's default and fail with "cannot
+    // open files in the ... format". Installing from applicationWillFinishLaunching:
+    // is the documented time that replaces that default, so both the queued
+    // cold-launch event and later warm events reach our handler.
+    if (NSApp != nil && [NSApp isRunning]) {
+        [hcHandler registerAppleEventHandler];
+    } else {
+        [[NSNotificationCenter defaultCenter]
+            addObserver:hcHandler
+               selector:@selector(appWillFinishLaunching:)
+                   name:NSApplicationWillFinishLaunchingNotification
+                 object:nil];
+    }
 }
