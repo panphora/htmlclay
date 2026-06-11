@@ -5,10 +5,18 @@ import (
 )
 
 func TestIconEmbedded(t *testing.T) {
-	if len(iconBytes) == 0 {
-		t.Fatal("icon.png not embedded")
-	}
-	if iconBytes[0] != 0x89 || iconBytes[1] != 'P' || iconBytes[2] != 'N' || iconBytes[3] != 'G' {
-		t.Fatal("embedded icon is not a valid PNG")
+	for _, c := range []struct {
+		name string
+		data []byte
+	}{
+		{"icon.png", iconBytes},
+		{"icon-template.png", iconTemplateBytes},
+	} {
+		if len(c.data) == 0 {
+			t.Fatalf("%s not embedded", c.name)
+		}
+		if c.data[0] != 0x89 || c.data[1] != 'P' || c.data[2] != 'N' || c.data[3] != 'G' {
+			t.Fatalf("embedded %s is not a valid PNG", c.name)
+		}
 	}
 }

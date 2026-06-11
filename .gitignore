@@ -6,3 +6,4 @@ HTMLClay.app
 executables/
 .notarization-submissions.json
 .DS_Store
+resource_windows_amd64.syso

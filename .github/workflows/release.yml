@@ -66,6 +66,22 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Embed icon resource
+        run: |
+          $nums = [regex]::Matches("${{ inputs.version }}", '\d+') | ForEach-Object { $_.Value }
+          $maj = if ($nums.Count -gt 0) { $nums[0] } else { "0" }
+          $min = if ($nums.Count -gt 1) { $nums[1] } else { "0" }
+          $pat = if ($nums.Count -gt 2) { $nums[2] } else { "0" }
+          go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1 `
+            -64 -o resource_windows_amd64.syso `
+            -icon dist/windows/htmlclay.ico `
+            -file-version "${{ inputs.version }}" -product-version "${{ inputs.version }}" `
+            -ver-major $maj -ver-minor $min -ver-patch $pat `
+            -product-ver-major $maj -product-ver-minor $min -product-ver-patch $pat `
+            dist/windows/versioninfo.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        shell: pwsh
+
       - name: Build
         run: |
           $env:CGO_ENABLED = "0"

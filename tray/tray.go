@@ -16,6 +16,9 @@ import (
 //go:embed icon.png
 var iconBytes []byte
 
+//go:embed icon-template.png
+var iconTemplateBytes []byte
+
 type UpdateInfo struct {
 	Version string
 	URL     string
@@ -35,7 +38,9 @@ func Run(cfg *config.Config, onQuit func(), updateCh <-chan UpdateInfo) {
 }
 
 func (t *Tray) onReady() {
-	systray.SetIcon(iconBytes)
+	// macOS uses the template (auto-inverts for light/dark menu bars); Windows and
+	// Linux ignore it and fall back to the colored icon.
+	systray.SetTemplateIcon(iconTemplateBytes, iconBytes)
 	systray.SetTooltip("HTML Clay")
 
 	sigCh := make(chan os.Signal, 1)
