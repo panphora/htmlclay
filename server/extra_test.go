@@ -122,6 +122,24 @@ func TestSaveEmptyBodyRejected(t *testing.T) {
 	}
 }
 
+func TestSaveNonHTMLBodyRejected(t *testing.T) {
+	srv, f, content := setupHandlerTest(t)
+
+	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader("<p>Hello</p>"))
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("token", f.Token)
+
+	w := httptest.NewRecorder()
+	srv.handleSave(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for non-HTML body, got %d", w.Code)
+	}
+	if string(mustRead(t, f.AbsPath)) != content {
+		t.Error("file should be unchanged after a rejected non-HTML save")
+	}
+}
+
 func TestCrossSiteRequestRejected(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 

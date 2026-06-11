@@ -162,10 +162,11 @@ dist/windows/        File association registration script
 ### Security model
 
 - **Localhost only** — The server binds to `127.0.0.1`, validates the `Host` header, and rejects cross-site requests (`Sec-Fetch-Site: cross-site`).
-- **256-bit session tokens** — Each opened file gets a cryptographically random token. The read, save, and meta endpoints (under `/_/`) require a valid token; the top-level file-serving route only resolves paths that match an already-open file.
+- **256-bit session tokens** — Each opened file gets a cryptographically random token. The read, save, and meta endpoints (under `/_/`) require a valid token; the top-level file-serving route only resolves paths that match an already-open file. Tokens are redacted from the log and live for the lifetime of the process (there is no per-file expiry); on a single-user desktop this is fine, since they never leave loopback.
 - **Path traversal prevention** — All file paths are validated as relative and within the user's home directory. Symlinks are resolved before validation.
 - **Atomic writes** — Files are written to a temp file first, then renamed into place, preventing corruption on crash.
 - **Single instance** — A Unix socket (or TCP on Windows) ensures only one server runs at a time. Additional launches forward their file paths to the running instance.
+- **Local trust boundary** — The bridge listens on loopback, so any process running as your user can reach `127.0.0.1:<port>`. Saving requires the per-file token, but the top-level serve route returns a currently-open file by path with no token, so a malicious local process (or a page you already have open) can read other open documents. This is inherent to the localhost-bridge model: htmlclay only serves files you have explicitly opened, and nothing is exposed off the machine.
 
 ### Browser modes
 

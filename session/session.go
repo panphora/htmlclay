@@ -3,12 +3,17 @@ package session
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
+
+// ErrOutsideHome is returned by Register when a file resolves to a path outside
+// the user's home directory. Callers use it to surface a clear user-facing error.
+var ErrOutsideHome = errors.New("path is outside home directory")
 
 type File struct {
 	Token   string
@@ -69,7 +74,7 @@ func resolveAndValidate(absPath, homeDir string) (string, error) {
 	cleaned = filepath.Clean(cleaned)
 
 	if !strings.HasPrefix(cleaned, homeDir+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path %q is outside home directory", cleaned)
+		return "", fmt.Errorf("path %q is outside home directory: %w", cleaned, ErrOutsideHome)
 	}
 
 	return cleaned, nil

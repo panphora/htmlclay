@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -247,6 +248,15 @@ func (a *app) openFile(filePath string) {
 	f, err := a.sessions.Register(absPath)
 	if err != nil {
 		a.logger.Printf("Error registering file: %v", err)
+		if errors.Is(err, session.ErrOutsideHome) {
+			msg := fmt.Sprintf("%s is outside your home folder. HTML Clay only opens files inside %s.",
+				filepath.Base(absPath), a.sessions.HomeDir())
+			go func() {
+				if nErr := platform.Notify("HTML Clay can't open this file", msg); nErr != nil {
+					a.logger.Printf("Could not show notification: %v", nErr)
+				}
+			}()
+		}
 		return
 	}
 

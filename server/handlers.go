@@ -164,6 +164,14 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 
 	body = htmlutil.StripToken(body)
 
+	// A valid save is always a full document (the browser serializes
+	// documentElement.outerHTML). Reject anything without an <html> tag so a
+	// stray request cannot overwrite the file with a fragment or junk.
+	if !htmlutil.HasHTMLTag(body) {
+		s.writeError(w, http.StatusBadRequest, "body is not an HTML document")
+		return
+	}
+
 	f.Lock()
 	err = atomicWriteFile(f.AbsPath, body)
 	f.Unlock()

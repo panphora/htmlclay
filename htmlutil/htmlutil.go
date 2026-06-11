@@ -81,6 +81,14 @@ func findHTMLTagRange(data []byte) (tagStart, closeAngle int, ok bool) {
 	return 0, 0, false
 }
 
+// HasHTMLTag reports whether data contains a real top-level <html> start tag,
+// ignoring any <html occurrence inside a comment. Used to reject a save body
+// that is not a full HTML document before it overwrites a file.
+func HasHTMLTag(data []byte) bool {
+	_, _, ok := findHTMLTagRange(data)
+	return ok
+}
+
 func injectAttr(data []byte, attrRegex *regexp.Regexp, attrName, value string) []byte {
 	tagStart, closeAngle, ok := findHTMLTagRange(data)
 	if !ok {

@@ -5,6 +5,25 @@ import (
 	"testing"
 )
 
+func TestHasHTMLTag(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"full doc", "<!DOCTYPE html><html><body>x</body></html>", true},
+		{"bare html tag", "<html>", true},
+		{"fragment", "<p>Hello</p>", false},
+		{"only commented html", "<!-- <html> --><p>x</p>", false},
+		{"empty", "", false},
+	}
+	for _, c := range cases {
+		if got := HasHTMLTag([]byte(c.in)); got != c.want {
+			t.Errorf("%s: HasHTMLTag = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // --- InjectToken / StripToken tests ---
 
 func TestInjectTokenBareHTML(t *testing.T) {
