@@ -43,11 +43,18 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p htmlclay-linux-${{ matrix.goarch }}
-          cp htmlclay htmlclay-linux-${{ matrix.goarch }}/
-          cp dist/linux/htmlclay.desktop htmlclay-linux-${{ matrix.goarch }}/
-          cp dist/linux/htmlclay-mime.xml htmlclay-linux-${{ matrix.goarch }}/
-          tar czf htmlclay-linux-${{ matrix.goarch }}.tar.gz -C htmlclay-linux-${{ matrix.goarch }} .
+          stage=htmlclay-linux-${{ matrix.goarch }}
+          mkdir -p "$stage"
+          cp htmlclay "$stage/"
+          cp dist/linux/htmlclay.desktop \
+             dist/linux/htmlclay-mime.xml \
+             dist/linux/htmlclay.png \
+             dist/linux/htmlclay.svg \
+             dist/linux/install-icon.sh \
+             dist/linux/install.sh \
+             "$stage/"
+          chmod +x "$stage/install.sh" "$stage/install-icon.sh"
+          tar czf "$stage.tar.gz" -C "$stage" .
 
       - uses: actions/upload-artifact@v4
         with:
