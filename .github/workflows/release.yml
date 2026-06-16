@@ -181,7 +181,7 @@ jobs:
           FILES=$(ls artifacts/ | jq -R -s -c 'split("\n") | map(select(. != ""))')
           jq -n \
             --arg latest "${{ inputs.version }}" \
-            --arg url "https://htmlclay.com/download" \
+            --arg url "https://htmlclay.com/#downloads" \
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson files "$FILES" \
             '{latest: $latest, url: $url, date: $date, files: $files}' > htmlclay-release-info.json

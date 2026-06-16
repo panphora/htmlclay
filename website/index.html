@@ -209,19 +209,19 @@
       <div class="dl">
         <div class="dl-row">
           <div class="os">macOS <span>Apple Silicon (M1–M4)</span></div>
-          <a class="file" data-mac-dmg href="HTMLClay-1.0.0-arm64.dmg" download>HTMLClay-1.0.0-arm64.dmg</a>
+          <a class="file" data-mac-dmg href="https://download.htmlclay.com/HTMLClay-1.0.0-arm64.dmg" download>HTMLClay-1.0.0-arm64.dmg</a>
         </div>
         <div class="dl-row">
           <div class="os">Windows <span>64-bit</span></div>
-          <a class="file" href="htmlclay-windows-amd64.zip" download>htmlclay-windows-amd64.zip</a>
+          <a class="file" href="https://download.htmlclay.com/htmlclay-windows-amd64.zip" download>htmlclay-windows-amd64.zip</a>
         </div>
         <div class="dl-row">
           <div class="os">Linux <span>x86_64</span></div>
-          <a class="file" href="htmlclay-linux-amd64.tar.gz" download>htmlclay-linux-amd64.tar.gz</a>
+          <a class="file" href="https://download.htmlclay.com/htmlclay-linux-amd64.tar.gz" download>htmlclay-linux-amd64.tar.gz</a>
         </div>
         <div class="dl-row">
           <div class="os">Linux <span>ARM64</span></div>
-          <a class="file" href="htmlclay-linux-arm64.tar.gz" download>htmlclay-linux-arm64.tar.gz</a>
+          <a class="file" href="https://download.htmlclay.com/htmlclay-linux-arm64.tar.gz" download>htmlclay-linux-arm64.tar.gz</a>
         </div>
       </div>
     </section>
@@ -240,9 +240,10 @@
   <script>
     (function () {
       var FALLBACK_VERSION = '1.0.0';
+      var DL = 'https://download.htmlclay.com/';
       var ua = navigator.userAgent;
 
-      function macDmg(v) { return 'HTMLClay-' + v + '-arm64.dmg'; }
+      function macDmg(v) { return DL + 'HTMLClay-' + v + '-arm64.dmg'; }
 
       var os = 'other';
       if (/Mac/.test(ua) && !/iPhone|iPad|iPod/.test(ua)) os = 'mac';
@@ -255,8 +256,8 @@
 
       var primary = {
         mac:     { url: macDmg(FALLBACK_VERSION), label: 'Download for macOS', note: 'Apple Silicon' },
-        windows: { url: 'htmlclay-windows-amd64.zip', label: 'Download for Windows', note: '64-bit' },
-        linux:   { url: 'htmlclay-linux-amd64.tar.gz', label: 'Download for Linux', note: 'x86_64' }
+        windows: { url: DL + 'htmlclay-windows-amd64.zip', label: 'Download for Windows', note: '64-bit' },
+        linux:   { url: DL + 'htmlclay-linux-amd64.tar.gz', label: 'Download for Linux', note: 'x86_64' }
       };
 
       if (primary[os]) {
@@ -273,7 +274,7 @@
       // Only the macOS dmg filename carries the version. Pull the current version
       // from the release manifest so the link tracks releases without editing
       // this page. Falls back to FALLBACK_VERSION if the manifest is unavailable.
-      fetch('htmlclay-release-info.json', { cache: 'no-store' })
+      fetch(DL + 'htmlclay-release-info.json', { cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (data) {
           if (!data || !data.latest) return;
