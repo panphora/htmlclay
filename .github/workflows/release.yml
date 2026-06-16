@@ -9,15 +9,20 @@ on:
         type: string
 
 jobs:
-  # ── Test gate: nothing is released unless the suite passes ──
+  # ── Test gate: nothing is released unless the suite passes on every OS ──
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
-      - run: go test -race ./... -count=1
+      - run: go test ./... -count=1
+        env:
+          CGO_ENABLED: ${{ runner.os == 'macOS' && '1' || '0' }}
 
   # ── Linux: build binary, package as tar.gz ──
   build-linux:
@@ -135,9 +140,53 @@ jobs:
           name: htmlclay-windows-amd64.zip
           path: htmlclay-windows-amd64.zip
 
+  # ── macOS: build universal binary, sign + notarize with Apple ──
+  build-macos:
+    needs: test
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KPW="$(openssl rand -base64 24)"
+          security create-keychain -p "$KPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KPW" "$KEYCHAIN"
+          echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KPW" "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Build, sign & notarize (universal)
+        env:
+          VERSION: ${{ inputs.version }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash dist/macos/build.sh --universal
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HTMLClay-universal.dmg
+          path: HTMLClay-*.dmg
+
   # ── Upload to R2 ──
   upload:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
 
     steps:

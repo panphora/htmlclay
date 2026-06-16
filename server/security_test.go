@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"path/filepath"
 	"testing"
 )
 
@@ -48,32 +49,38 @@ func TestValidateHostEmpty(t *testing.T) {
 }
 
 func TestValidatePathSuccess(t *testing.T) {
-	p, err := ValidatePath("Documents/file.htmlclay", "/Users/david")
+	home := t.TempDir()
+	p, err := ValidatePath("Documents/file.htmlclay", home)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p != "/Users/david/Documents/file.htmlclay" {
-		t.Errorf("got %q", p)
+	want := filepath.Join(home, "Documents", "file.htmlclay")
+	if p != want {
+		t.Errorf("got %q, want %q", p, want)
 	}
 }
 
 func TestValidatePathSimple(t *testing.T) {
-	p, err := ValidatePath("file.htmlclay", "/Users/david")
+	home := t.TempDir()
+	p, err := ValidatePath("file.htmlclay", home)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p != "/Users/david/file.htmlclay" {
-		t.Errorf("got %q", p)
+	want := filepath.Join(home, "file.htmlclay")
+	if p != want {
+		t.Errorf("got %q, want %q", p, want)
 	}
 }
 
 func TestValidatePathNested(t *testing.T) {
-	p, err := ValidatePath("a/b/c/file.htmlclay", "/Users/david")
+	home := t.TempDir()
+	p, err := ValidatePath("a/b/c/file.htmlclay", home)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p != "/Users/david/a/b/c/file.htmlclay" {
-		t.Errorf("got %q", p)
+	want := filepath.Join(home, "a", "b", "c", "file.htmlclay")
+	if p != want {
+		t.Errorf("got %q, want %q", p, want)
 	}
 }
 
@@ -106,11 +113,13 @@ func TestValidatePathNullByte(t *testing.T) {
 }
 
 func TestValidatePathNormalized(t *testing.T) {
-	p, err := ValidatePath("Documents/../Documents/file.htmlclay", "/Users/david")
+	home := t.TempDir()
+	p, err := ValidatePath("Documents/../Documents/file.htmlclay", home)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p != "/Users/david/Documents/file.htmlclay" {
-		t.Errorf("got %q", p)
+	want := filepath.Join(home, "Documents", "file.htmlclay")
+	if p != want {
+		t.Errorf("got %q, want %q", p, want)
 	}
 }

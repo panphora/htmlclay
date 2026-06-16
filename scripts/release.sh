@@ -47,13 +47,6 @@ if [ -z "$BUMP_TYPE" ]; then
   info "No bump type specified, defaulting to --patch"
 fi
 
-# ── Load .env ──
-if [ -f .env ]; then
-  set -a
-  source .env
-  set +a
-fi
-
 START_TIME=$(date +%s)
 
 # ══════════════════════════════════════════════════
@@ -61,7 +54,7 @@ section "Step 1: Pre-flight Checks"
 # ══════════════════════════════════════════════════
 
 # Check required tools
-for tool in go gh codesign xcrun hdiutil; do
+for tool in go gh; do
   if ! command -v "$tool" &>/dev/null; then
     error "Required tool not found: $tool"
     exit 1
@@ -78,14 +71,6 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 success "Working directory clean"
-
-# Check Apple credentials
-if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ] || [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
-  error "Missing Apple credentials in .env"
-  echo "Required: APPLE_ID, APPLE_TEAM_ID, APPLE_APP_SPECIFIC_PASSWORD"
-  exit 1
-fi
-success "Apple credentials found"
 
 # Check gh auth
 if ! gh auth status &>/dev/null; then
@@ -131,51 +116,7 @@ git push origin "v${NEW_VERSION}"
 success "Pushed commit and tag"
 
 # ══════════════════════════════════════════════════
-section "Step 4: Build macOS Locally"
-# ══════════════════════════════════════════════════
-
-mkdir -p executables
-
-# Build for native architecture
-info "Building macOS (native arch)..."
-VERSION="${NEW_VERSION}" bash dist/macos/build.sh
-mv HTMLClay-*.dmg executables/
-rm -rf HTMLClay.app
-success "macOS build complete"
-
-# List what we built
-log ""
-log "macOS executables:"
-ls -lh executables/*.dmg 2>/dev/null | while read -r line; do
-  log "  ${line}"
-done
-
-# ══════════════════════════════════════════════════
-section "Step 5: Upload macOS to R2"
-# ══════════════════════════════════════════════════
-
-if [ -n "${R2_ACCOUNT_ID:-}" ] && [ -n "${R2_ACCESS_KEY:-}" ] && [ -n "${R2_SECRET_KEY:-}" ] && [ -n "${R2_BUCKET:-}" ]; then
-  ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-
-  export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY"
-  export AWS_SECRET_ACCESS_KEY="$R2_SECRET_KEY"
-  export AWS_DEFAULT_REGION="auto"
-
-  for dmg in executables/*.dmg; do
-    filename=$(basename "$dmg")
-    info "Uploading $filename to R2..."
-    aws s3 cp "$dmg" "s3://${R2_BUCKET}/$filename" \
-      --endpoint-url "$ENDPOINT" \
-      --content-type "application/x-apple-diskimage"
-    success "Uploaded $filename"
-  done
-else
-  warn "R2 credentials not found, skipping macOS upload"
-  warn "CI will upload Linux + Windows"
-fi
-
-# ══════════════════════════════════════════════════
-section "Step 6: Wait for CI (Linux + Windows)"
+section "Step 4: Build & Publish via CI"
 # ══════════════════════════════════════════════════
 
 info "Triggering release workflow on GitHub Actions..."
@@ -195,17 +136,15 @@ if [ -n "$RUN_ID" ]; then
   info "Watching run ${RUN_ID}..."
   gh run watch "$RUN_ID" --exit-status || {
     error "CI workflow failed! Check: gh run view $RUN_ID"
-    warn "macOS builds are in executables/ — Linux and Windows need re-running"
     exit 1
   }
   success "CI workflow completed"
 else
   warn "Could not find CI run — check GitHub Actions manually"
-  warn "macOS builds are ready in executables/"
 fi
 
 # ══════════════════════════════════════════════════
-section "Step 7: Done"
+section "Step 5: Done"
 # ══════════════════════════════════════════════════
 
 END_TIME=$(date +%s)
@@ -216,10 +155,9 @@ SECONDS=$((DURATION % 60))
 log "Version:  ${NEW_VERSION}"
 log "Duration: ${MINUTES}m ${SECONDS}s"
 log ""
-log "macOS builds:  executables/ + R2"
-log "Linux/Windows: R2 (uploaded by CI)"
+log "All platforms (macOS universal, Linux, Windows): R2 via CI"
 log ""
 log "Git tag:  v${NEW_VERSION}"
-log "Download: https://htmlclay.com/download"
+log "Download: https://htmlclay.com/#downloads"
 log ""
 success "Release v${NEW_VERSION} complete!"

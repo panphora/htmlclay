@@ -208,8 +208,8 @@
       <h2>Download <span id="version-tag" style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
       <div class="dl">
         <div class="dl-row">
-          <div class="os">macOS <span>Apple Silicon (M1–M4)</span></div>
-          <a class="file" data-mac-dmg href="https://download.htmlclay.com/HTMLClay-1.0.0-arm64.dmg" download>HTMLClay-1.0.0-arm64.dmg</a>
+          <div class="os">macOS <span>Universal (Apple Silicon + Intel)</span></div>
+          <a class="file" data-mac-dmg href="https://download.htmlclay.com/HTMLClay-1.0.0-universal.dmg" download>HTMLClay-1.0.0-universal.dmg</a>
         </div>
         <div class="dl-row">
           <div class="os">Windows <span>64-bit</span></div>
@@ -243,7 +243,7 @@
       var DL = 'https://download.htmlclay.com/';
       var ua = navigator.userAgent;
 
-      function macDmg(v) { return DL + 'HTMLClay-' + v + '-arm64.dmg'; }
+      function macDmg(v) { return DL + 'HTMLClay-' + v + '-universal.dmg'; }
 
       var os = 'other';
       if (/Mac/.test(ua) && !/iPhone|iPad|iPod/.test(ua)) os = 'mac';
@@ -255,7 +255,7 @@
       var sub = document.getElementById('download-sub');
 
       var primary = {
-        mac:     { url: macDmg(FALLBACK_VERSION), label: 'Download for macOS', note: 'Apple Silicon' },
+        mac:     { url: macDmg(FALLBACK_VERSION), label: 'Download for macOS', note: 'Universal' },
         windows: { url: DL + 'htmlclay-windows-amd64.zip', label: 'Download for Windows', note: '64-bit' },
         linux:   { url: DL + 'htmlclay-linux-amd64.tar.gz', label: 'Download for Linux', note: 'x86_64' }
       };
@@ -282,7 +282,7 @@
           var url = macDmg(v);
           document.querySelectorAll('[data-mac-dmg]').forEach(function (el) {
             el.setAttribute('href', url);
-            el.textContent = url;
+            el.textContent = url.split('/').pop();
           });
           if (os === 'mac') btn.href = url;
           var tag = document.getElementById('version-tag');

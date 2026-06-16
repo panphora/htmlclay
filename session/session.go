@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -66,6 +67,35 @@ func (m *Manager) HomeDir() string {
 	return m.homeDir
 }
 
+// caseInsensitiveFS reports whether the host platform's default filesystem
+// ignores case (Windows and macOS). On those, two paths that differ only in case
+// name the same file, so home-containment checks must fold case.
+func caseInsensitiveFS() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+}
+
+// ContainWithinHome reports whether child is strictly inside home. When it is, it
+// returns child rebuilt with home's exact casing on the prefix, so derived
+// relative paths and map keys stay stable no matter how child was cased (e.g. a
+// lowercase Windows drive letter, or macOS symlink resolution that preserves
+// input casing). The containment test folds case on case-insensitive platforms
+// and is exact on case-sensitive ones (Linux).
+func ContainWithinHome(home, child string) (string, bool) {
+	prefix := home + string(os.PathSeparator)
+	if len(child) < len(prefix) {
+		return "", false
+	}
+	head, rest := child[:len(prefix)], child[len(prefix):]
+	if caseInsensitiveFS() {
+		if !strings.EqualFold(head, prefix) {
+			return "", false
+		}
+	} else if head != prefix {
+		return "", false
+	}
+	return prefix + rest, true
+}
+
 func resolveAndValidate(absPath, homeDir string) (string, error) {
 	cleaned, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
@@ -73,11 +103,12 @@ func resolveAndValidate(absPath, homeDir string) (string, error) {
 	}
 	cleaned = filepath.Clean(cleaned)
 
-	if !strings.HasPrefix(cleaned, homeDir+string(os.PathSeparator)) {
+	canonical, ok := ContainWithinHome(homeDir, cleaned)
+	if !ok {
 		return "", fmt.Errorf("path %q is outside home directory: %w", cleaned, ErrOutsideHome)
 	}
 
-	return cleaned, nil
+	return canonical, nil
 }
 
 func generateToken() (string, error) {

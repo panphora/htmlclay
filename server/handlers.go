@@ -38,8 +38,9 @@ func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) (*session
 }
 
 func extractFilePath(rawPath string) string {
+	lower := strings.ToLower(rawPath)
 	for _, suffix := range []string{".htmlclay", ".html"} {
-		if idx := strings.Index(rawPath, suffix); idx >= 0 {
+		if idx := strings.Index(lower, suffix); idx >= 0 {
 			end := idx + len(suffix)
 			if end == len(rawPath) || rawPath[end] == '/' {
 				return rawPath[:end]

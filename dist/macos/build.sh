@@ -11,10 +11,12 @@ CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 UNSIGNED=false
+UNIVERSAL=false
 
 for arg in "$@"; do
   case "$arg" in
     --unsigned) UNSIGNED=true ;;
+    --universal) UNIVERSAL=true ;;
   esac
 done
 
@@ -27,8 +29,12 @@ fi
 
 # Determine version and architecture
 VERSION="${VERSION:-$(grep 'var version' main.go | sed 's/.*"\(.*\)"/\1/')}"
-ARCH="$(uname -m)"
-[ "$ARCH" = "x86_64" ] && ARCH="amd64"
+if [ "$UNIVERSAL" = true ]; then
+  ARCH="universal"
+else
+  ARCH="$(uname -m)"
+  [ "$ARCH" = "x86_64" ] && ARCH="amd64"
+fi
 
 echo "Building HTMLClay v${VERSION} (${ARCH})..."
 
@@ -36,7 +42,15 @@ echo "Building HTMLClay v${VERSION} (${ARCH})..."
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES"
 
-CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "$MACOS/htmlclay" .
+LDFLAGS="-s -w -X main.version=${VERSION}"
+if [ "$UNIVERSAL" = true ]; then
+  CGO_ENABLED=1 GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay-arm64" .
+  CGO_ENABLED=1 GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay-amd64" .
+  lipo -create -output "$MACOS/htmlclay" "$MACOS/htmlclay-arm64" "$MACOS/htmlclay-amd64"
+  rm -f "$MACOS/htmlclay-arm64" "$MACOS/htmlclay-amd64"
+else
+  CGO_ENABLED=1 go build -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay" .
+fi
 
 # Copy Info.plist and inject version using plutil
 cp dist/macos/Info.plist "$CONTENTS/"

@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -164,4 +165,39 @@ func TestConcurrentAccess(t *testing.T) {
 		}(name)
 	}
 	wg.Wait()
+}
+
+func TestContainWithinHome(t *testing.T) {
+	sep := string(os.PathSeparator)
+	home := filepath.Join(t.TempDir(), "home")
+
+	// A path strictly inside home is accepted and returned unchanged.
+	child := filepath.Join(home, "Documents", "f.htmlclay")
+	if got, ok := ContainWithinHome(home, child); !ok || got != child {
+		t.Errorf("inside: got (%q,%v), want (%q,true)", got, ok, child)
+	}
+
+	// The home dir itself is not strictly inside home.
+	if _, ok := ContainWithinHome(home, home); ok {
+		t.Error("home dir itself should not be reported as inside home")
+	}
+
+	// A sibling that only shares the name prefix is rejected (the trailing
+	// separator guards against the home+"-evil" class of escape).
+	sibling := home + "-evil" + sep + "secret"
+	if _, ok := ContainWithinHome(home, sibling); ok {
+		t.Errorf("sibling prefix %q should be rejected", sibling)
+	}
+
+	// A differently-cased home prefix names the same dir on case-insensitive
+	// filesystems (Windows/macOS) and a different one on Linux.
+	mixed := filepath.Join(strings.ToUpper(home), "Documents", "f.htmlclay")
+	got, ok := ContainWithinHome(home, mixed)
+	if caseInsensitiveFS() {
+		if !ok || got != child {
+			t.Errorf("case-insensitive: got (%q,%v), want (%q,true) with prefix recased to home", got, ok, child)
+		}
+	} else if ok {
+		t.Errorf("case-sensitive: %q must not be inside %q", mixed, home)
+	}
 }

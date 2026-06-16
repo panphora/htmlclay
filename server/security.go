@@ -3,9 +3,10 @@ package server
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/panphora/htmlclay/session"
 )
 
 func ValidateHost(r *http.Request, port int) bool {
@@ -23,11 +24,12 @@ func ValidatePath(relPath string, homeDir string) (string, error) {
 	joined := filepath.Join(homeDir, relPath)
 	cleaned := filepath.Clean(joined)
 
-	if !strings.HasPrefix(cleaned, homeDir+string(os.PathSeparator)) {
+	canonical, ok := session.ContainWithinHome(homeDir, cleaned)
+	if !ok {
 		return "", fmt.Errorf("path escapes home directory: %q", relPath)
 	}
 
-	return cleaned, nil
+	return canonical, nil
 }
 
 func HostValidationMiddleware(next http.Handler, port int) http.Handler {

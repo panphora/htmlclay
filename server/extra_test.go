@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,8 @@ func TestExtractFilePath(t *testing.T) {
 		{"test.htmlclay/sub/path", "test.htmlclay"},
 		{"test.html", "test.html"},
 		{"test.html/x", "test.html"},
+		{"App.HTMLClay/route", "App.HTMLClay"},
+		{"Page.HTML/x", "Page.HTML"},
 		{"plain", "plain"},
 	}
 	for _, c := range cases {
@@ -43,7 +46,7 @@ func TestAtomicWriteFilePreservesMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0640 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0640 {
 		t.Errorf("mode not preserved: got %v, want 0640", info.Mode().Perm())
 	}
 	data, _ := os.ReadFile(path)
@@ -53,6 +56,9 @@ func TestAtomicWriteFilePreservesMode(t *testing.T) {
 }
 
 func TestAtomicWriteFileConcurrentNoTorn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("atomicWriteFile always runs under the per-file lock in the app; lock-free concurrent rename-over-open is a POSIX-only guarantee")
+	}
 	path := filepath.Join(t.TempDir(), "f.htmlclay")
 	if err := os.WriteFile(path, []byte("init"), 0644); err != nil {
 		t.Fatal(err)
