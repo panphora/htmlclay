@@ -153,11 +153,11 @@ fi
 echo "Rendering tray icons -> tray/icon.png + tray/icon-template.png"
 # Colored grin (Windows/Linux systray + current SetIcon fallback): trim and pad to a square.
 rsvg-convert -w 256 -h 261 "$ICONS_DIR/blob-grin.svg" -o "$BUILD/grin.png"
-"$MAGICK" "$BUILD/grin.png" -trim +repage -background none -gravity center -extent 280x280 \
+"$MAGICK" "$BUILD/grin.png" -trim +repage -background none -gravity center -extent 231x231 \
   -resize 128x128 "$ROOT_DIR/tray/icon.png"
 # Black template (macOS menu bar, auto-inverts via SetTemplateIcon).
 rsvg-convert -w 256 -h 261 "$BUILD/tray-template.svg" -o "$BUILD/tpl.png"
-"$MAGICK" "$BUILD/tpl.png" -trim +repage -background none -gravity center -extent 300x300 \
+"$MAGICK" "$BUILD/tpl.png" -trim +repage -background none -gravity center -extent 235x235 \
   -resize 64x64 "$ROOT_DIR/tray/icon-template.png"
 
 echo
