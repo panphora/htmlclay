@@ -220,7 +220,8 @@ jobs:
             filename=$(basename "$file")
             echo "Uploading $filename..."
             aws s3 cp "$file" "s3://${R2_BUCKET}/$filename" \
-              --endpoint-url "$ENDPOINT"
+              --endpoint-url "$ENDPOINT" \
+              --cache-control "public, max-age=1200"
           done
 
           echo "All artifacts uploaded to R2"
@@ -244,6 +245,7 @@ jobs:
 
           aws s3 cp htmlclay-release-info.json "s3://${R2_BUCKET}/htmlclay-release-info.json" \
             --endpoint-url "$ENDPOINT" \
-            --content-type "application/json"
+            --content-type "application/json" \
+            --cache-control "public, max-age=1200"
 
           echo "Uploaded htmlclay-release-info.json"
