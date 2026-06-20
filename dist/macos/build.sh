@@ -79,14 +79,12 @@ fi
 codesign -v --deep --strict "$APP"
 echo "Signature verified"
 
-# Create DMG
+# Create DMG with drag-to-Applications layout via appdmg
+# (deterministic, no AppleScript/Finder scripting; reads dist/macos/dmg/appdmg.json).
 DMG_NAME="HTMLClay-${VERSION}-${ARCH}.dmg"
 rm -f "$DMG_NAME"
 
-hdiutil create -volname "HTMLClay" \
-  -srcfolder "$APP" \
-  -ov -format UDZO \
-  "$DMG_NAME"
+npx --yes appdmg dist/macos/dmg/appdmg.json "$DMG_NAME"
 
 if [ "$UNSIGNED" = false ]; then
   codesign -f -s "$IDENTITY" "$DMG_NAME"

@@ -1,0 +1,20 @@
+<svg width="660" height="400" viewBox="0 0 660 400" xmlns="http://www.w3.org/2000/svg">
+  <!-- DMG install-window background. The two 128px icon spots are intentionally
+       empty: Finder draws HTMLClay.app (center x=165, y=190) and the Applications
+       link (center x=495, y=190) on top, at the coordinates in appdmg.json.
+       1px here = 1pt in the window, so icon coords are read straight off this grid. -->
+  <rect width="660" height="400" fill="#faf8f3"/>
+
+  <text x="330" y="72" text-anchor="middle"
+        font-family="'SF Pro Rounded','SF Pro Display','Helvetica Neue',Helvetica,Arial,sans-serif"
+        font-size="26" font-weight="700" fill="#2b2622">Install HTML Clay</text>
+  <text x="330" y="102" text-anchor="middle"
+        font-family="'SF Pro Display','Helvetica Neue',Helvetica,Arial,sans-serif"
+        font-size="14" fill="#6f6b62">Drag the app onto the Applications folder</text>
+
+  <!-- Arrow sits in the gap between the icons (left icon right-edge 229, right icon left-edge 431) -->
+  <g stroke="#c2410c" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <line x1="262" y1="190" x2="399" y2="190"/>
+    <polyline points="372,165 401,190 372,215"/>
+  </g>
+</svg>
