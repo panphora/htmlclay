@@ -115,7 +115,7 @@ jobs:
             -Endpoint "https://eus.codesigning.azure.net" `
             -CodeSigningAccountName "Hyperclay" `
             -CertificateProfileName "HyperclayLocalPublicCertProfile" `
-            -Files "htmlclay.exe" `
+            -Files "$PWD\htmlclay.exe" `
             -FileDigest SHA256 `
             -Verbose
         shell: pwsh
