@@ -116,6 +116,185 @@
       .hero { padding-top: 40px; }
       .dl-row { flex-direction: column; align-items: flex-start; gap: 4px; }
     }
+
+    /* ---- App gallery ---- */
+    button.chip { cursor: pointer; font: inherit; line-height: 1.25; color: var(--ink); -webkit-appearance: none; appearance: none; }
+    button.chip:hover { border-color: var(--muted); }
+    .chip[aria-selected="true"] { background: var(--btn); color: var(--btn-ink); border-color: var(--btn); }
+    .chip[aria-selected="true"]:hover { background: #000; }
+
+    .preview { padding-top: 8px; }
+    .app-panel[hidden] { display: none; }
+
+    .window { background: var(--card); border: 1px solid var(--line); border-radius: 13px; overflow: hidden; box-shadow: 0 20px 46px -28px rgba(0,0,0,.4); }
+    .window-bar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: #f1ede2; border-bottom: 1px solid var(--line); }
+    .window-bar .dots { display: flex; gap: 6px; }
+    .window-bar .dots i { width: 11px; height: 11px; border-radius: 50%; background: #d8d2c4; }
+    .window-bar .fname { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; color: var(--muted); }
+    .window-body { padding: 22px; }
+
+    /* shared app controls */
+    .window-body main[sap] { margin: 0; }
+    .window-body .app-h { font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; font-size: 17px; margin: 0 0 14px; letter-spacing: -0.01em; }
+    .window-body input[type=text], .window-body input[type=number], .window-body input[type=date],
+    .window-body input[type=search], .window-body textarea, .window-body select {
+      font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px;
+    }
+    .window-body input:focus, .window-body textarea:focus, .window-body select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(194,65,12,.13); }
+    .window-body textarea { width: 100%; resize: vertical; min-height: 124px; line-height: 1.65; }
+    .app-note { color: var(--muted); font-size: 14px; margin: 14px 0 0; }
+
+    /* to-do */
+    .todo-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+    .todo-list label { display: flex; align-items: center; gap: 11px; padding: 9px 4px; cursor: pointer; font-size: 17px; }
+    .todo-list input { width: 19px; height: 19px; accent-color: var(--accent); flex: none; }
+    .todo-list input:checked + span { color: var(--muted); text-decoration: line-through; }
+
+    /* journal */
+    .journal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
+    .journal-head .app-h { margin: 0; }
+
+    /* budget */
+    .budget-table { width: 100%; border-collapse: collapse; }
+    .budget-table th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 0 0 8px; font-weight: 600; }
+    .budget-table th:last-child, .budget-table td:last-child { text-align: right; }
+    .budget-table td { padding: 7px 0; border-top: 1px solid var(--line); }
+    .budget-table tbody td:first-child { width: 60%; }
+    .budget-table input[type=number] { width: 116px; text-align: right; }
+    .budget-table tfoot td { border-top: 2px solid #534d42; font-weight: 700; font-size: 18px; padding-top: 12px; }
+
+    /* recipe + wiki two-pane */
+    .pane { display: grid; grid-template-columns: 152px 1fr; gap: 18px; align-items: start; }
+    .pane-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; align-content: start; }
+    .pane-list li { padding: 8px 11px; border-radius: 8px; cursor: pointer; font-size: 15px; border: 1px solid transparent; }
+    .pane-list li:hover { background: var(--bg); }
+    .pane-list li.active { background: var(--bg); border-color: var(--line); font-weight: 600; }
+    .pane-detail .app-h { margin-bottom: 10px; }
+    .pane-detail textarea { min-height: 150px; }
+    .wiki-pagetitle {
+      width: 100%; margin: 0 0 12px; padding: 10px 12px;
+      font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+      font-weight: 600; font-size: 18px; letter-spacing: -0.01em; color: var(--ink);
+      background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    }
+    .add-row {
+      margin-top: 6px; display: flex; align-items: center; gap: 8px;
+      padding: 0 11px; border: 1px solid transparent; border-radius: 8px;
+      transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
+    }
+    .add-row:hover { background: var(--bg); }
+    .add-row:focus-within { background: var(--bg); border-color: var(--accent); box-shadow: 0 0 0 3px rgba(194,65,12,.13); }
+    .add-row-plus { flex: none; color: var(--muted); font-size: 17px; line-height: 1; }
+    .add-row:focus-within .add-row-plus { color: var(--accent); }
+    .add-row input { flex: 1; min-width: 0; border: none; background: transparent; padding: 9px 0; font: inherit; color: var(--ink); }
+    .add-row input::placeholder { color: var(--muted); }
+    .add-row input:focus { outline: none; box-shadow: none; border-color: transparent; }
+
+    /* habit */
+    .habit-grid { display: grid; grid-template-columns: 1fr repeat(7, 26px) 40px; gap: 9px 7px; align-items: center; }
+    .habit-grid .col-h { font-size: 11px; color: var(--muted); text-align: center; }
+    .habit-grid .hname { font-size: 15px; }
+    .habit-grid .cnt { font-size: 13px; color: var(--muted); text-align: right; }
+    .habit-grid input { width: 22px; height: 22px; accent-color: var(--accent); margin: 0 auto; display: block; }
+
+    /* reading */
+    .reading-list { list-style: none; margin: 0; padding: 0; }
+    .reading-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); }
+    .reading-list li:first-child { border-top: none; }
+    .reading-list .btitle { font-size: 16px; }
+    .reading-list .status-tag {
+      font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap;
+      padding: 5px 13px; border-radius: 999px;
+      border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+      -webkit-appearance: none; appearance: none;
+      transition: filter .12s ease;
+    }
+    .reading-list .status-tag:hover { filter: brightness(0.97); }
+    .reading-list .status-tag:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
+
+    @media (max-width: 480px) {
+      .pane { grid-template-columns: 1fr; }
+      .habit-grid { grid-template-columns: 1fr repeat(7, 1fr) 32px; }
+      .window-body { padding: 16px; }
+    }
+    /* ---- Breakout game ---- */
+    [data-app="game"] {
+      --bk-bg: #faf8f3;
+      --bk-ink: #1b1a17;
+      --bk-muted: #6f6b62;
+      --bk-line: #e7e3d8;
+      --bk-card: #ffffff;
+      --bk-accent: #c2410c;
+    }
+    [data-app="game"] .bk-wrap {
+      max-width: 480px;
+      margin: 0 auto;
+      font-family: system-ui, sans-serif;
+      color: var(--bk-ink);
+    }
+    [data-app="game"] .bk-hud {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 2px 8px;
+      font-size: 13px;
+      color: var(--bk-muted);
+      font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+    }
+    [data-app="game"] .bk-hud-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      letter-spacing: 0.01em;
+    }
+    [data-app="game"] .bk-hud b {
+      color: var(--bk-ink);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      min-width: 1.6em;
+      text-align: left;
+    }
+    [data-app="game"] .bk-dots {
+      display: inline-flex;
+      gap: 4px;
+    }
+    [data-app="game"] .bk-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--bk-accent);
+      transition: transform 0.18s ease, opacity 0.18s ease;
+    }
+    [data-app="game"] .bk-dot.is-lost {
+      opacity: 0.22;
+      transform: scale(0.7);
+      background: var(--bk-muted);
+    }
+    [data-app="game"] .bk-stage {
+      position: relative;
+      background: var(--bk-card);
+      border: 1px solid var(--bk-line);
+      border-radius: 13px;
+      padding: 10px;
+      box-shadow: 0 1px 2px rgba(27, 26, 23, 0.04), 0 8px 24px rgba(27, 26, 23, 0.05);
+      overflow: hidden;
+    }
+    [data-app="game"] .bk-stage canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+      touch-action: none;
+      cursor: pointer;
+    }
+    [data-app="game"] .bk-hint {
+      margin: 9px 4px 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--bk-muted);
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -184,16 +363,227 @@
 
     <section>
       <h2>What people make</h2>
-      <div class="chips">
-        <span class="chip">To-do list</span>
-        <span class="chip">Journal</span>
-        <span class="chip">Budget tracker</span>
-        <span class="chip">Recipe box</span>
-        <span class="chip">Habit tracker</span>
-        <span class="chip">Reading list</span>
-        <span class="chip">Personal wiki</span>
-        <span class="chip">A little game</span>
+      <div class="chips" id="app-chips" role="tablist" aria-label="Example apps">
+        <button class="chip" data-app="wiki" role="tab">Personal wiki</button>
+        <button class="chip" data-app="todo" role="tab">To-do list</button>
+        <button class="chip" data-app="journal" role="tab">Journal</button>
+        <button class="chip" data-app="budget" role="tab">Budget tracker</button>
+        <button class="chip" data-app="recipe" role="tab">Recipe box</button>
+        <button class="chip" data-app="habit" role="tab">Habit tracker</button>
+        <button class="chip" data-app="reading" role="tab">Reading list</button>
+        <button class="chip" data-app="game" role="tab">A little game</button>
       </div>
+    </section>
+
+    <section class="preview" id="app-preview" aria-live="polite">
+
+      <!-- Personal wiki -->
+      <div class="app-panel" data-app="wiki" data-autoselect hidden>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><i></i><i></i><i></i></span><span class="fname">wiki.htmlclay</span></div>
+          <div class="window-body">
+            <main sap state="selected">
+              <div class="pane">
+                <div>
+                  <ul class="pane-list" items="pages">
+                    <li item template set:selected="item.$key" class:active="state.selected === item.$key"><span bind="title"></span><input type="hidden" bind="content" value=""></li>
+                    <li item class="pick" set:selected="item.$key" class:active="state.selected === item.$key"><span bind="title">Home</span><input type="hidden" bind="content" value="Welcome to my wiki. Everything lives in this one file."></li>
+                    <li item set:selected="item.$key" class:active="state.selected === item.$key"><span bind="title">Ideas</span><input type="hidden" bind="content" value="- a single-file recipe app&#10;- a habit tracker for the fridge"></li>
+                    <li item set:selected="item.$key" class:active="state.selected === item.$key"><span bind="title">Reading</span><input type="hidden" bind="content" value="Dune, The Hobbit, Project Hail Mary"></li>
+                  </ul>
+                  <form trigger-add="pages" class="add-row">
+                    <span class="add-row-plus" aria-hidden="true">+</span>
+                    <input bind="title" placeholder="New page" required aria-label="New page title">
+                  </form>
+                </div>
+                <div class="pane-detail" detail="pages by state.selected">
+                  <input class="wiki-pagetitle" bind="title" aria-label="Page title">
+                  <textarea bind="content" placeholder="Start writing…"></textarea>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- To-do list -->
+      <div class="app-panel" data-app="todo" hidden>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><i></i><i></i><i></i></span><span class="fname">rick-todos.htmlclay</span></div>
+          <div class="window-body">
+            <main sap>
+              <ul class="todo-list" items="todos">
+                <li item template><label><input type="checkbox" bind="done"><span bind="title"></span></label></li>
+                <li item><label><input type="checkbox" bind="done"><span bind="title">Build a portal gun</span></label></li>
+                <li item><label><input type="checkbox" bind="done"><span bind="title">Turn myself into a pickle</span></label></li>
+                <li item><label><input type="checkbox" bind="done"><span bind="title">Get more Szechuan sauce</span></label></li>
+              </ul>
+              <form trigger-add="todos" class="add-row">
+                <span class="add-row-plus" aria-hidden="true">+</span>
+                <input bind="title" placeholder="Add a task" required aria-label="New task">
+              </form>
+              <p class="app-note" text="plural(count(state.todos, t => !t.done), 'thing', 'things') + ' left to do'"></p>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- Journal -->
+      <div class="app-panel" data-app="journal" hidden>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><i></i><i></i><i></i></span><span class="fname">journal.htmlclay</span></div>
+          <div class="window-body">
+            <main sap>
+              <div class="journal-head">
+                <h3 class="app-h">What I did today</h3>
+                <input type="date" data-default-today aria-label="Entry date">
+              </div>
+              <textarea bind="entry" placeholder="Today I…"></textarea>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- Budget tracker -->
+      <div class="app-panel" data-app="budget" hidden>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><i></i><i></i><i></i></span><span class="fname">budget.htmlclay</span></div>
+          <div class="window-body">
+            <main sap>
+              <table class="budget-table">
+                <thead><tr><th>Item</th><th>Cost</th></tr></thead>
+                <tbody items="items">
+                  <tr item template><td bind="name"></td><td><input type="number" min="0" step="1" bind="cost" value="0"></td></tr>
+                  <tr item><td bind="name">Rent</td><td><input type="number" min="0" step="1" bind="cost" value="1200"></td></tr>
+                  <tr item><td bind="name">Groceries</td><td><input type="number" min="0" step="1" bind="cost" value="320"></td></tr>
+                  <tr item><td bind="name">Coffee</td><td><input type="number" min="0" step="1" bind="cost" value="60"></td></tr>
+                  <tr item><td bind="name">Internet</td><td><input type="number" min="0" step="1" bind="cost" value="50"></td></tr>
+                </tbody>
+                <tfoot>
+                  <tr><td>Total</td><td calc:total="sum(state.items, 'cost')" text:usd="state.total"></td></tr>
+                </tfoot>
+              </table>
+              <form trigger-add="items" class="add-row">
+                <span class="add-row-plus" aria-hidden="true">+</span>
+                <input bind="name" placeholder="Add an item" required aria-label="New item">
+              </form>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recipe box -->
+      <div class="app-panel" data-app="recipe" data-autoselect hidden>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><i></i><i></i><i></i></span><span class="fname">recipes.htmlclay</span></div>
+          <div class="window-body">
+            <main sap state="selected">
+              <div class="pane">
+                <div>
+                  <ul class="pane-list" items="recipes">
+                    <li item template set:selected="item.$key" class:active="state.selected === item.$key"><span bind="name"></span><input type="hidden" bind="recipe" value=""></li>
+                    <li item class="pick" set:selected="item.$key" class:active="state.selected === item.$key"><span bind="name">Pancakes</span><input type="hidden" bind="recipe" value="Whisk 1 cup flour, 1 cup milk, 1 egg, and 2 tbsp melted butter until smooth.&#10;Pour rounds onto a hot, greased pan.&#10;Flip when bubbles form; cook till golden.&#10;Top with maple syrup."></li>
+                    <li item set:selected="item.$key" class:active="state.selected === item.$key"><span bind="name">Guacamole</span><input type="hidden" bind="recipe" value="Mash 2 ripe avocados with a fork.&#10;Stir in the juice of 1 lime, 1/4 diced onion, a handful of chopped cilantro, and salt to taste.&#10;Serve right away with chips."></li>
+                    <li item set:selected="item.$key" class:active="state.selected === item.$key"><span bind="name">Spaghetti</span><input type="hidden" bind="recipe" value="Boil spaghetti in salted water till al dente.&#10;Gently cook sliced garlic in olive oil, add crushed tomatoes, and simmer 10 min.&#10;Toss with the pasta and fresh basil."></li>
+                  </ul>
+                  <form trigger-add="recipes" class="add-row">
+                    <span class="add-row-plus" aria-hidden="true">+</span>
+                    <input bind="name" placeholder="Add a recipe" required aria-label="New recipe">
+                  </form>
+                </div>
+                <div class="pane-detail" detail="recipes by state.selected">
+                  <h3 class="app-h" bind="name"></h3>
+                  <textarea bind="recipe" placeholder="Recipe…"></textarea>
+                </div>
+              </div>
+              <p class="app-note" show="!state.selected">Pick a recipe.</p>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- Habit tracker -->
+      <div class="app-panel" data-app="habit" hidden>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><i></i><i></i><i></i></span><span class="fname">habits.htmlclay</span></div>
+          <div class="window-body">
+            <main sap>
+              <div class="habit-grid" items="habits">
+                <span></span>
+                <span class="col-h">M</span><span class="col-h">T</span><span class="col-h">W</span><span class="col-h">T</span><span class="col-h">F</span><span class="col-h">S</span><span class="col-h">S</span>
+                <span></span>
+                <div item template class="habit-row" style="display:contents">
+                  <span class="hname" bind="name"></span>
+                  <input type="checkbox" bind="d0"><input type="checkbox" bind="d1"><input type="checkbox" bind="d2"><input type="checkbox" bind="d3"><input type="checkbox" bind="d4"><input type="checkbox" bind="d5"><input type="checkbox" bind="d6">
+                  <span class="cnt" text="count([item.d0,item.d1,item.d2,item.d3,item.d4,item.d5,item.d6], v => v) + '/7'"></span>
+                </div>
+                <div item class="habit-row" style="display:contents">
+                  <span class="hname" bind="name">Meditate</span>
+                  <input type="checkbox" bind="d0" checked><input type="checkbox" bind="d1" checked><input type="checkbox" bind="d2" checked><input type="checkbox" bind="d3"><input type="checkbox" bind="d4"><input type="checkbox" bind="d5"><input type="checkbox" bind="d6">
+                  <span class="cnt" text="count([item.d0,item.d1,item.d2,item.d3,item.d4,item.d5,item.d6], v => v) + '/7'"></span>
+                </div>
+                <div item class="habit-row" style="display:contents">
+                  <span class="hname" bind="name">Exercise</span>
+                  <input type="checkbox" bind="d0" checked><input type="checkbox" bind="d1"><input type="checkbox" bind="d2" checked><input type="checkbox" bind="d3"><input type="checkbox" bind="d4" checked><input type="checkbox" bind="d5"><input type="checkbox" bind="d6">
+                  <span class="cnt" text="count([item.d0,item.d1,item.d2,item.d3,item.d4,item.d5,item.d6], v => v) + '/7'"></span>
+                </div>
+                <div item class="habit-row" style="display:contents">
+                  <span class="hname" bind="name">Read</span>
+                  <input type="checkbox" bind="d0"><input type="checkbox" bind="d1" checked><input type="checkbox" bind="d2"><input type="checkbox" bind="d3" checked><input type="checkbox" bind="d4"><input type="checkbox" bind="d5" checked><input type="checkbox" bind="d6" checked>
+                  <span class="cnt" text="count([item.d0,item.d1,item.d2,item.d3,item.d4,item.d5,item.d6], v => v) + '/7'"></span>
+                </div>
+              </div>
+              <form trigger-add="habits" class="add-row">
+                <span class="add-row-plus" aria-hidden="true">+</span>
+                <input bind="name" placeholder="Add a habit" required aria-label="New habit">
+              </form>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- Reading list -->
+      <div class="app-panel" data-app="reading" hidden>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><i></i><i></i><i></i></span><span class="fname">reading-list.htmlclay</span></div>
+          <div class="window-body">
+            <main sap>
+              <ul class="reading-list" items="books">
+                <li item template><span class="btitle" bind="title"></span><input type="hidden" bind="status" value="Want to read"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                <li item><span class="btitle" bind="title">Dune</span><input type="hidden" bind="status" value="Read"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                <li item><span class="btitle" bind="title">The Hobbit</span><input type="hidden" bind="status" value="Reading"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                <li item><span class="btitle" bind="title">Project Hail Mary</span><input type="hidden" bind="status" value="Want to read"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+                <li item><span class="btitle" bind="title">Sapiens</span><input type="hidden" bind="status" value="Read"><button type="button" class="status-tag" text="item.status" set:status="item.status === 'Want to read' ? 'Reading' : (item.status === 'Reading' ? 'Read' : 'Want to read')"></button></li>
+              </ul>
+              <form trigger-add="books" class="add-row">
+                <span class="add-row-plus" aria-hidden="true">+</span>
+                <input bind="title" placeholder="Add a book" required aria-label="New book">
+              </form>
+              <p class="app-note" text="count(state.books, b => b.status === 'Read') + ' of ' + count(state.books) + ' read'"></p>
+            </main>
+          </div>
+        </div>
+      </div>
+
+      <!-- A little game (Breakout) -->
+      <div class="app-panel" data-app="game" hidden>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><i></i><i></i><i></i></span><span class="fname">breakout.htmlclay</span></div>
+          <div class="window-body">
+            <div class="bk-wrap">
+              <div class="bk-hud">
+                <span class="bk-hud-item bk-score">Score <b data-bk="score">0</b></span>
+                <span class="bk-hud-item bk-lives">Lives <span data-bk="lives" class="bk-dots"></span></span>
+              </div>
+              <div class="bk-stage">
+                <canvas data-bk="canvas"></canvas>
+              </div>
+              <p class="bk-hint">Move the paddle with your mouse, drag, or arrow keys.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </section>
 
     <section>
@@ -289,6 +679,673 @@
         })
         .catch(function () {});
     })();
+  </script>
+
+  <!-- Live example apps: sap engine + gallery switcher -->
+  <script src="sap.min.js"></script>
+  <script>
+    (function () {
+      var chips = [].slice.call(document.querySelectorAll('#app-chips .chip'));
+      var panels = [].slice.call(document.querySelectorAll('#app-preview .app-panel'));
+
+      function autoSelect(p) {
+        if (!p || p.__did || !p.hasAttribute('data-autoselect')) return;
+        p.__did = true;
+        var first = p.querySelector('.pick');
+        if (first) first.click();
+      }
+
+      function show(app) {
+        chips.forEach(function (c) { c.setAttribute('aria-selected', String(c.dataset.app === app)); });
+        panels.forEach(function (p) {
+          var on = p.dataset.app === app;
+          if (on) {
+            if (p.hidden) { p.hidden = false; p.dispatchEvent(new CustomEvent('app:show')); }
+            autoSelect(p);
+          } else if (!p.hidden) {
+            p.hidden = true;
+            p.dispatchEvent(new CustomEvent('app:hide'));
+          }
+        });
+      }
+
+      chips.forEach(function (c) { c.addEventListener('click', function () { show(c.dataset.app); }); });
+
+      function init() {
+        document.querySelectorAll('input[type=date][data-default-today]').forEach(function (el) {
+          el.value = new Date().toISOString().slice(0, 10);
+        });
+        show('wiki');
+      }
+
+      // sapjs mounts (and attaches its action listeners) on DOMContentLoaded, and
+      // it registers that handler before this script runs. Defer the initial
+      // autoselect to the same event so the wiki's first row click is handled.
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+      } else {
+        init();
+      }
+    })();
+  </script>
+  <!-- Breakout game -->
+  <script>
+(function () {
+  "use strict";
+
+  var el = document.querySelector('.app-panel[data-app="game"]');
+  if (!el || el.dataset.bkInit === "1") return;
+  el.dataset.bkInit = "1";
+
+  var canvas = el.querySelector('[data-bk="canvas"]');
+  var stage = el.querySelector(".bk-stage");
+  var scoreOut = el.querySelector('[data-bk="score"]');
+  var livesOut = el.querySelector('[data-bk="lives"]');
+  if (!canvas || !stage) return;
+  var ctx = canvas.getContext("2d");
+
+  var THEME = {
+    bg: "#faf8f3",
+    ink: "#1b1a17",
+    muted: "#6f6b62",
+    line: "#e7e3d8",
+    card: "#ffffff",
+    accent: "#c2410c"
+  };
+
+  // Warm palette for the brick rows (top = warmest accent, fading down).
+  var ROW_COLORS = ["#c2410c", "#d6691f", "#e0883a", "#caa35a", "#b7b59c"];
+
+  var COLS = 8;
+  var ROWS = 5;
+  var START_LIVES = 3;
+
+  // Logical (CSS-pixel) play area. Updated on resize.
+  var W = 480;
+  var H = 340;
+  var dpr = 1;
+
+  var state = {
+    bricks: [],
+    paddle: { x: 0, y: 0, w: 84, h: 12, targetX: 0, squash: 0 },
+    ball: { x: 0, y: 0, r: 6, vx: 0, vy: 0, stuck: true, launchT: 0 },
+    particles: [],
+    score: 0,
+    lives: START_LIVES,
+    flash: 0
+  };
+
+  var BRICK = { top: 36, gapX: 6, gapY: 7, sideMargin: 14, h: 16 };
+
+  var running = false;
+  var rafId = 0;
+  var lastT = 0;
+  var keyLeft = false;
+  var keyRight = false;
+
+  function rand(a, b) {
+    return a + Math.random() * (b - a);
+  }
+
+  function brickLayout() {
+    var usableW = W - BRICK.sideMargin * 2;
+    var bw = (usableW - BRICK.gapX * (COLS - 1)) / COLS;
+    return { bw: bw, bh: BRICK.h, x0: BRICK.sideMargin, y0: BRICK.top };
+  }
+
+  function buildBricks() {
+    var lay = brickLayout();
+    var list = [];
+    for (var r = 0; r < ROWS; r++) {
+      for (var c = 0; c < COLS; c++) {
+        list.push({
+          x: lay.x0 + c * (lay.bw + BRICK.gapX),
+          y: lay.y0 + r * (lay.bh + BRICK.gapY),
+          w: lay.bw,
+          h: lay.bh,
+          color: ROW_COLORS[r % ROW_COLORS.length],
+          alive: true,
+          // appear: 0..1 grow-in animation; break: 0..1 shatter animation.
+          appear: 0,
+          breakT: 0,
+          row: r
+        });
+      }
+    }
+    return list;
+  }
+
+  function refillBricks() {
+    state.bricks = buildBricks();
+    // Stagger the grow-in so the refill feels alive.
+    for (var i = 0; i < state.bricks.length; i++) {
+      state.bricks[i].appear = -state.bricks[i].row * 0.06;
+    }
+  }
+
+  function resetBall(centerPaddle) {
+    var p = state.paddle;
+    if (centerPaddle) {
+      p.targetX = W / 2;
+      p.x = W / 2;
+    }
+    var b = state.ball;
+    b.r = Math.max(5, Math.round(W * 0.013));
+    b.stuck = true;
+    b.launchT = 0;
+    b.x = p.x;
+    b.y = p.y - p.h / 2 - b.r - 1;
+    b.vx = 0;
+    b.vy = 0;
+  }
+
+  function launchBall() {
+    var b = state.ball;
+    if (!b.stuck) return;
+    b.stuck = false;
+    var speed = ballSpeed();
+    var ang = rand(-0.35, 0.35); // mostly upward, slight random lean
+    b.vx = Math.sin(ang) * speed;
+    b.vy = -Math.cos(ang) * speed;
+  }
+
+  function ballSpeed() {
+    // Scale with play size so it feels the same at any width.
+    return W * 0.62;
+  }
+
+  function setupSizes() {
+    var p = state.paddle;
+    p.w = Math.max(64, Math.round(W * 0.18));
+    p.h = Math.max(10, Math.round(H * 0.035));
+    p.y = H - Math.round(H * 0.07);
+    if (p.x === 0) {
+      p.x = W / 2;
+      p.targetX = W / 2;
+    }
+  }
+
+  function resize() {
+    var rect = stage.getBoundingClientRect();
+    var innerW = rect.width - 20; // stage padding 10px each side
+    if (innerW <= 0) innerW = 460;
+    var aspect = 340 / 480;
+    var cssW = innerW;
+    var cssH = Math.round(cssW * aspect);
+
+    dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+
+    var prevW = W;
+    W = cssW;
+    H = cssH;
+    setupSizes();
+
+    // Keep bricks proportional after a resize.
+    if (!state.bricks.length) {
+      refillBricks();
+    } else {
+      var lay = brickLayout();
+      for (var i = 0; i < state.bricks.length; i++) {
+        var bk = state.bricks[i];
+        var col = i % COLS;
+        var row = Math.floor(i / COLS);
+        bk.x = lay.x0 + col * (lay.bw + BRICK.gapX);
+        bk.y = lay.y0 + row * (lay.bh + BRICK.gapY);
+        bk.w = lay.bw;
+        bk.h = lay.bh;
+      }
+    }
+
+    var ratio = prevW > 0 ? W / prevW : 1;
+    state.paddle.x *= ratio;
+    state.paddle.targetX *= ratio;
+    if (state.ball.stuck) {
+      resetBall(false);
+    } else {
+      state.ball.x *= ratio;
+      state.ball.y *= ratio;
+    }
+    draw(); // repaint immediately even while paused
+  }
+
+  // ---- Input ----
+  function pointerToX(clientX) {
+    var rect = canvas.getBoundingClientRect();
+    var x = (clientX - rect.left) / rect.width * W;
+    return Math.max(state.paddle.w / 2, Math.min(W - state.paddle.w / 2, x));
+  }
+
+  function onMouseMove(e) {
+    state.paddle.targetX = pointerToX(e.clientX);
+  }
+  function onTouchMove(e) {
+    if (e.touches && e.touches.length) {
+      state.paddle.targetX = pointerToX(e.touches[0].clientX);
+      e.preventDefault();
+    }
+  }
+  function onTouchStart(e) {
+    if (e.touches && e.touches.length) {
+      state.paddle.targetX = pointerToX(e.touches[0].clientX);
+    }
+    launchBall();
+  }
+  function onCanvasClick() {
+    launchBall();
+  }
+  function onKeyDown(e) {
+    if (!isVisible()) return;
+    if (e.key === "ArrowLeft") {
+      keyLeft = true;
+      e.preventDefault();
+    } else if (e.key === "ArrowRight") {
+      keyRight = true;
+      e.preventDefault();
+    } else if (e.key === "ArrowUp" || e.key === " " || e.key === "Spacebar") {
+      launchBall();
+      e.preventDefault();
+    }
+  }
+  function onKeyUp(e) {
+    if (e.key === "ArrowLeft") keyLeft = false;
+    else if (e.key === "ArrowRight") keyRight = false;
+  }
+
+  canvas.addEventListener("mousemove", onMouseMove);
+  canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+  canvas.addEventListener("touchstart", onTouchStart, { passive: false });
+  canvas.addEventListener("click", onCanvasClick);
+  document.addEventListener("keydown", onKeyDown);
+  document.addEventListener("keyup", onKeyUp);
+
+  // ---- Particles ----
+  function spawnBurst(x, y, color) {
+    var n = 7;
+    for (var i = 0; i < n; i++) {
+      var a = rand(0, Math.PI * 2);
+      var sp = rand(40, 150);
+      state.particles.push({
+        x: x,
+        y: y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 30,
+        life: 1,
+        decay: rand(1.8, 3.2),
+        r: rand(1.5, 3),
+        color: color
+      });
+    }
+  }
+
+  // ---- HUD ----
+  function renderHud() {
+    if (scoreOut) scoreOut.textContent = String(state.score);
+    if (livesOut) {
+      var want = START_LIVES;
+      var dots = livesOut.querySelectorAll(".bk-dot");
+      if (dots.length !== want) {
+        livesOut.innerHTML = "";
+        for (var i = 0; i < want; i++) {
+          var d = document.createElement("span");
+          d.className = "bk-dot";
+          livesOut.appendChild(d);
+        }
+        dots = livesOut.querySelectorAll(".bk-dot");
+      }
+      for (var j = 0; j < dots.length; j++) {
+        if (j < state.lives) dots[j].classList.remove("is-lost");
+        else dots[j].classList.add("is-lost");
+      }
+    }
+  }
+
+  // ---- Physics ----
+  function aliveCount() {
+    var n = 0;
+    for (var i = 0; i < state.bricks.length; i++) if (state.bricks[i].alive) n++;
+    return n;
+  }
+
+  function loseLife() {
+    state.lives -= 1;
+    state.paddle.squash = 1;
+    if (state.lives <= 0) {
+      // Silent full reset — no dead end.
+      state.lives = START_LIVES;
+      state.score = 0;
+      refillBricks();
+    }
+    renderHud();
+    resetBall(true);
+  }
+
+  function update(dt) {
+    var p = state.paddle;
+    var b = state.ball;
+
+    // Keyboard nudges the target.
+    var kSpeed = W * 1.15 * dt;
+    if (keyLeft) p.targetX -= kSpeed;
+    if (keyRight) p.targetX += kSpeed;
+    p.targetX = Math.max(p.w / 2, Math.min(W - p.w / 2, p.targetX));
+
+    // Smooth easing toward target.
+    p.x += (p.targetX - p.x) * Math.min(1, dt * 18);
+    if (p.squash > 0) p.squash = Math.max(0, p.squash - dt * 4);
+
+    // Stuck ball rides the paddle.
+    if (b.stuck) {
+      b.x = p.x;
+      b.y = p.y - p.h / 2 - b.r - 1;
+    } else {
+      // Substep so a fast ball can't tunnel through bricks/walls.
+      var steps = Math.max(1, Math.ceil((ballSpeed() * dt) / (b.r * 0.9)));
+      var sdt = dt / steps;
+      for (var s = 0; s < steps; s++) {
+        stepBall(sdt);
+        if (b.stuck) break;
+      }
+    }
+
+    // Particles.
+    for (var i = state.particles.length - 1; i >= 0; i--) {
+      var pt = state.particles[i];
+      pt.life -= pt.decay * dt;
+      if (pt.life <= 0) {
+        state.particles.splice(i, 1);
+        continue;
+      }
+      pt.vy += 220 * dt;
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+    }
+
+    // Brick anims.
+    for (var k = 0; k < state.bricks.length; k++) {
+      var bk = state.bricks[k];
+      if (bk.appear < 1) bk.appear = Math.min(1, bk.appear + dt * 4.5);
+      if (bk.breakT > 0) {
+        bk.breakT += dt * 5;
+        if (bk.breakT >= 1) {
+          bk.breakT = 0;
+        }
+      }
+    }
+
+    if (state.flash > 0) state.flash = Math.max(0, state.flash - dt * 3.5);
+
+    if (aliveCount() === 0) {
+      // Endless: refill the same level, keep the ball in play.
+      refillBricks();
+      state.flash = 0.5;
+    }
+  }
+
+  function stepBall(dt) {
+    var b = state.ball;
+    var p = state.paddle;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+
+    // Walls.
+    if (b.x - b.r < 0) {
+      b.x = b.r;
+      b.vx = Math.abs(b.vx);
+    } else if (b.x + b.r > W) {
+      b.x = W - b.r;
+      b.vx = -Math.abs(b.vx);
+    }
+    if (b.y - b.r < 0) {
+      b.y = b.r;
+      b.vy = Math.abs(b.vy);
+    }
+
+    // Paddle.
+    var pl = p.x - p.w / 2;
+    var pr = p.x + p.w / 2;
+    var pt = p.y - p.h / 2;
+    if (
+      b.vy > 0 &&
+      b.y + b.r >= pt &&
+      b.y - b.r <= p.y + p.h / 2 &&
+      b.x >= pl - b.r &&
+      b.x <= pr + b.r
+    ) {
+      b.y = pt - b.r;
+      var hit = (b.x - p.x) / (p.w / 2); // -1..1
+      hit = Math.max(-1, Math.min(1, hit));
+      var maxAng = 1.05; // ~60deg
+      var ang = hit * maxAng;
+      var sp = ballSpeed();
+      b.vx = Math.sin(ang) * sp;
+      b.vy = -Math.abs(Math.cos(ang) * sp);
+      p.squash = 1;
+    }
+
+    // Bricks.
+    for (var i = 0; i < state.bricks.length; i++) {
+      var bk = state.bricks[i];
+      if (!bk.alive) continue;
+      if (
+        b.x + b.r > bk.x &&
+        b.x - b.r < bk.x + bk.w &&
+        b.y + b.r > bk.y &&
+        b.y - b.r < bk.y + bk.h
+      ) {
+        // Resolve on the shallower overlap axis.
+        var overlapL = b.x + b.r - bk.x;
+        var overlapR = bk.x + bk.w - (b.x - b.r);
+        var overlapT = b.y + b.r - bk.y;
+        var overlapB = bk.y + bk.h - (b.y - b.r);
+        var minX = Math.min(overlapL, overlapR);
+        var minY = Math.min(overlapT, overlapB);
+        if (minX < minY) {
+          b.vx = -b.vx;
+          b.x += overlapL < overlapR ? -minX : minX;
+        } else {
+          b.vy = -b.vy;
+          b.y += overlapT < overlapB ? -minY : minY;
+        }
+        bk.alive = false;
+        bk.breakT = 0.001;
+        state.score += 10;
+        spawnBurst(bk.x + bk.w / 2, bk.y + bk.h / 2, bk.color);
+        renderHud();
+        break; // one brick per substep keeps things stable
+      }
+    }
+
+    // Fell below.
+    if (b.y - b.r > H) {
+      loseLife();
+    }
+  }
+
+  // ---- Render ----
+  function roundRect(c, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  function draw() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    // Soft paper backdrop with a faint top vignette.
+    ctx.fillStyle = THEME.card;
+    ctx.fillRect(0, 0, W, H);
+    var grd = ctx.createLinearGradient(0, 0, 0, H);
+    grd.addColorStop(0, "rgba(194,65,12,0.035)");
+    grd.addColorStop(0.4, "rgba(194,65,12,0)");
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, W, H);
+
+    // Level-clear flash.
+    if (state.flash > 0) {
+      ctx.fillStyle = "rgba(194,65,12," + (state.flash * 0.12).toFixed(3) + ")";
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // Bricks.
+    for (var i = 0; i < state.bricks.length; i++) {
+      var bk = state.bricks[i];
+      var ap = Math.max(0, Math.min(1, bk.appear));
+      if (bk.alive) {
+        if (ap <= 0) continue;
+        var ease = 1 - Math.pow(1 - ap, 3);
+        var cx = bk.x + bk.w / 2;
+        var cy = bk.y + bk.h / 2;
+        var sc = 0.7 + 0.3 * ease;
+        var w = bk.w * sc;
+        var h = bk.h * sc;
+        ctx.globalAlpha = ease;
+        ctx.fillStyle = bk.color;
+        roundRect(ctx, cx - w / 2, cy - h / 2, w, h, 5);
+        ctx.fill();
+        // Glossy top highlight.
+        ctx.globalAlpha = ease * 0.22;
+        ctx.fillStyle = "#ffffff";
+        roundRect(ctx, cx - w / 2 + 2, cy - h / 2 + 2, w - 4, h * 0.4, 4);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Particles.
+    for (var p2 = 0; p2 < state.particles.length; p2++) {
+      var pt = state.particles[p2];
+      ctx.globalAlpha = Math.max(0, Math.min(1, pt.life));
+      ctx.fillStyle = pt.color;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, pt.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Paddle (with squash).
+    var p = state.paddle;
+    var sq = p.squash;
+    var pw = p.w * (1 + sq * 0.12);
+    var ph = p.h * (1 - sq * 0.22);
+    ctx.save();
+    ctx.shadowColor = "rgba(194,65,12,0.28)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 2;
+    ctx.fillStyle = THEME.accent;
+    roundRect(ctx, p.x - pw / 2, p.y - ph / 2, pw, ph, ph / 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = "#ffffff";
+    roundRect(ctx, p.x - pw / 2 + 3, p.y - ph / 2 + 2, pw - 6, ph * 0.4, ph * 0.3);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Ball.
+    var b = state.ball;
+    ctx.save();
+    ctx.shadowColor = "rgba(27,26,23,0.25)";
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 2;
+    ctx.fillStyle = THEME.ink;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    // Tiny shine.
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(b.x - b.r * 0.3, b.y - b.r * 0.3, b.r * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Ball parked: a subtle hint for how to launch (the paddle stays fully interactive).
+    if (b.stuck) {
+      ctx.globalAlpha = 0.45 + 0.3 * Math.sin(performance.now() / 320);
+      ctx.fillStyle = THEME.muted;
+      ctx.font = '600 12px ui-rounded, "SF Pro Rounded", system-ui, sans-serif';
+      ctx.textAlign = "center";
+      ctx.fillText("click, space, or ↑ to launch", W / 2, p.y - 26);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---- Loop ----
+  function frame(t) {
+    if (!running) return;
+    if (!lastT) lastT = t;
+    var dt = (t - lastT) / 1000;
+    lastT = t;
+    if (dt > 0.05) dt = 0.05; // clamp after tab stalls
+    update(dt);
+    draw();
+    rafId = window.requestAnimationFrame(frame);
+  }
+
+  function start() {
+    if (running) return;
+    if (document.hidden) return;
+    running = true;
+    lastT = 0;
+    rafId = window.requestAnimationFrame(frame);
+  }
+
+  function stop() {
+    running = false;
+    if (rafId) {
+      window.cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+  }
+
+  // ---- Visibility contract ----
+  el.addEventListener("app:show", function () {
+    resize();
+    for (var i = 0; i < state.bricks.length; i++) state.bricks[i].appear = 1; // full board immediately
+    start(); // loop runs so the paddle is interactive; the ball waits for a launch
+  });
+  el.addEventListener("app:hide", function () {
+    stop();
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      stop();
+    } else if (isVisible()) {
+      lastT = 0;
+      start();
+    }
+  });
+  window.addEventListener("resize", function () {
+    resize();
+  });
+
+  function isVisible() {
+    if (!el.isConnected) return false;
+    var r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    var cs = window.getComputedStyle(el);
+    return cs.display !== "none" && cs.visibility !== "hidden";
+  }
+
+  // ---- Init ----
+  refillBricks();
+  resize();
+  renderHud();
+  draw();
+  // Run the loop whenever the game is visible; the ball waits for the player to launch.
+  if (isVisible() && !document.hidden) start();
+})();
   </script>
 </body>
 </html>

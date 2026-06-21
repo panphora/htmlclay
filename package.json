@@ -7,7 +7,7 @@
     "test": "go test ./...",
     "predeploy": "npm test",
     "deploy": "wrangler deploy",
-    "preview": "wrangler dev"
+    "dev": "wrangler dev"
   },
   "repository": {
     "type": "git",
