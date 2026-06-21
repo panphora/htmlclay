@@ -99,11 +99,21 @@ success "Version: ${CURRENT_VERSION} → ${NEW_VERSION} (${BUMP_TYPE})"
 sed -i '' "s/var version = \"${CURRENT_VERSION}\"/var version = \"${NEW_VERSION}\"/" main.go
 success "Updated main.go"
 
+# Keep the website's static download fallback in sync with the release. The live
+# download link auto-updates from the R2 manifest at runtime; this only keeps the
+# no-manifest fallback baked into index.html from drifting. Matches the current
+# version regardless of prior drift, so it is self-correcting.
+sed -i '' \
+  -e "s/FALLBACK_VERSION = '[0-9][0-9.]*'/FALLBACK_VERSION = '${NEW_VERSION}'/" \
+  -e "s/HTMLClay-[0-9][0-9.]*-universal\.dmg/HTMLClay-${NEW_VERSION}-universal.dmg/g" \
+  website/index.html
+success "Updated website download fallback"
+
 # ══════════════════════════════════════════════════
 section "Step 3: Commit, Tag & Push"
 # ══════════════════════════════════════════════════
 
-git add main.go
+git add main.go website/index.html
 git commit -m "chore: release v${NEW_VERSION}"
 success "Committed version bump"
 
