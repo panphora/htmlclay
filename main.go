@@ -23,7 +23,7 @@ import (
 	"github.com/panphora/htmlclay/update"
 )
 
-var version = "1.0"
+var version = "1.0.1"
 
 func fatal(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "[htmlclay] "+format+"\n", args...)
