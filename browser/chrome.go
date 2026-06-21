@@ -1,7 +1,6 @@
 package browser
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,27 +157,4 @@ func findFromLinuxPaths() string {
 		}
 	}
 	return ""
-}
-
-func LaunchAppMode(browserPath, url, profileDir string) (*exec.Cmd, error) {
-	if err := os.MkdirAll(profileDir, 0755); err != nil {
-		return nil, fmt.Errorf("cannot create profile dir: %w", err)
-	}
-
-	cmd := exec.Command(browserPath,
-		"--app="+url,
-		"--user-data-dir="+profileDir,
-	)
-
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	// Reap the child when its window closes so it does not linger as a zombie.
-	go cmd.Wait()
-
-	return cmd, nil
 }
