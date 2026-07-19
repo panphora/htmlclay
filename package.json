@@ -1,8 +1,8 @@
 {
-  "name": "malleable-html-file",
+  "name": "htmlclay",
   "version": "1.0.0",
-  "description": "",
-  "main": "filter-words.js",
+  "private": true,
+  "description": "Tooling wrapper for the htmlclay Go app: Go tests plus the wrangler deploy for htmlclay.com. Not the app itself.",
   "scripts": {
     "test": "go test ./...",
     "predeploy": "npm test",
@@ -11,16 +11,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/panphora/malleable-html-file.git"
+    "url": "git+https://github.com/panphora/htmlclay.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "bugs": {
-    "url": "https://github.com/panphora/malleable-html-file/issues"
+    "url": "https://github.com/panphora/htmlclay/issues"
   },
-  "homepage": "https://github.com/panphora/malleable-html-file#readme",
+  "homepage": "https://htmlclay.com",
   "dependencies": {
     "dotenv": "^17.3.1",
     "fast-xml-parser": "^5.5.9"
