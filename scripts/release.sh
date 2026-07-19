@@ -99,10 +99,8 @@ success "Version: ${CURRENT_VERSION} → ${NEW_VERSION} (${BUMP_TYPE})"
 sed -i '' "s/var version = \"${CURRENT_VERSION}\"/var version = \"${NEW_VERSION}\"/" main.go
 success "Updated main.go"
 
-# Stamp the version into the download page. Anchored on data attributes and
-# self-correcting, so it fixes prior drift as well.
-node scripts/stamp-website.js "${NEW_VERSION}"
-success "Stamped website with v${NEW_VERSION}"
+# The website is stamped after CI, not here. Pushing to main auto-deploys the
+# site, so stamping now would advertise downloads minutes before they exist.
 
 # ══════════════════════════════════════════════════
 section "Step 3: Commit, Tag & Push"
@@ -149,18 +147,38 @@ else
 fi
 
 # ══════════════════════════════════════════════════
-section "Step 5: Deploy Website"
+section "Step 5: Publish Website"
 # ══════════════════════════════════════════════════
 
-# Runs after CI so the stamped download links never point at artifacts that are
-# not on R2 yet. The page is static now, so it advertises the old version until
-# this succeeds.
-info "Deploying website to Cloudflare..."
-if npx wrangler deploy; then
-  success "Website deployed"
+# Pushing to main auto-deploys the site through the Cloudflare Workers git
+# integration, so publishing the site means pushing the stamped page. This runs
+# after CI so the links never point at artifacts that are not on R2 yet.
+info "Stamping website with v${NEW_VERSION}..."
+node scripts/stamp-website.js "${NEW_VERSION}"
+
+git add website/index.html
+if git diff --cached --quiet; then
+  info "Website already current, nothing to push"
 else
-  warn "WEBSITE DEPLOY FAILED — htmlclay.com still advertises the previous version."
-  warn "Retry with: npx wrangler deploy"
+  git commit -m "chore: point downloads at v${NEW_VERSION}"
+  git push origin HEAD
+  success "Pushed stamped website"
+
+  info "Waiting for the auto-deploy to go live..."
+  LIVE=false
+  for _ in $(seq 1 18); do
+    sleep 5
+    if curl -s https://htmlclay.com/ | grep -q "HTMLClay-${NEW_VERSION}-universal.dmg"; then
+      LIVE=true
+      break
+    fi
+  done
+  if [ "$LIVE" = true ]; then
+    success "htmlclay.com is serving v${NEW_VERSION}"
+  else
+    warn "htmlclay.com has not picked up v${NEW_VERSION} yet. Check the Cloudflare"
+    warn "Workers build for panphora/htmlclay; the page is pushed and will deploy."
+  fi
 fi
 
 # ══════════════════════════════════════════════════
