@@ -221,3 +221,26 @@ make clean
 ### Platform support
 
 Supports macOS, Linux, and Windows. Each platform has build scripts and OS integration assets in `dist/`. The `browser/`, `platform/`, and `tray/` packages use platform-specific build files (`_darwin.go`, `_linux.go`, `_windows.go`).
+
+### Releasing
+
+```bash
+./scripts/release.sh --minor   # or --major, or --patch (the default)
+```
+
+That bumps the version in `main.go`, tags and pushes, triggers the CI release workflow (test on three platforms, sign, notarize, upload to R2), publishes the website, and installs the new build into `/Applications`.
+
+Three things about this repo are easy to trip over.
+
+**The website deploys itself on every push to `main`.** htmlclay.com is a Cloudflare Worker fed by a git integration, not by CI and not by a manual `wrangler deploy`. Any push to `main` redeploys `website/` about 25 seconds later. There is no deploy command to run, and adding one only races the integration.
+
+**Download links are stamped after CI, not during the version bump.** `scripts/stamp-website.js` writes the version into `website/index.html`, anchored on the `data-version` and `data-mac-dmg` attributes, so new spots on the page need no change to the script. Stamping during the bump would auto-deploy links to a dmg that CI has not uploaded yet, leaving them broken for the few minutes a build takes.
+
+**`htmlclay-release-info.json` on R2 is not a website file.** It is the feed the in-app update checker polls, and its URL is compiled into every shipped binary (`update/update.go`). Removing it would silently and permanently break update checks for installs already in the wild.
+
+To reinstall the current release locally without cutting a new one:
+
+```bash
+bash scripts/install-local.sh          # version from main.go
+bash scripts/install-local.sh 1.1.0    # or an explicit version
+```
