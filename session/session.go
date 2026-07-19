@@ -178,17 +178,19 @@ func (m *Manager) LookupByPath(absPath string) (*File, bool) {
 	return m.byToken[token], true
 }
 
-// AllowsAsset reports whether absPath sits under the directory of any opened
-// file. Opening a file grants its page access to that folder tree, nothing more.
-func (m *Manager) AllowsAsset(absPath string) bool {
+// AssetRoot returns the asset root containing absPath (the directory of an
+// opened file whose folder tree absPath sits under) and absPath's path relative
+// to that root, in the root's canonical casing. Opening a file grants its page
+// access to that folder tree, nothing more.
+func (m *Manager) AssetRoot(absPath string) (root, rel string, ok bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for root := range m.roots {
-		if _, ok := ContainWithinHome(root, absPath); ok {
-			return true
+	for r := range m.roots {
+		if canonical, ok := ContainWithinHome(r, absPath); ok {
+			return r, canonical[len(r)+1:], true
 		}
 	}
-	return false
+	return "", "", false
 }
 
 func (m *Manager) RevokeAll() {

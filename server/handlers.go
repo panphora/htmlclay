@@ -124,23 +124,33 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	}
 	absPath = filepath.Clean(resolved)
 
-	if !s.sessions.AllowsAsset(absPath) {
+	root, rel, ok := s.sessions.AssetRoot(absPath)
+	if !ok {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 
-	info, err := os.Stat(absPath)
-	if err != nil || info.IsDir() {
+	// Re-walk the already-resolved path through os.Root so a component swapped
+	// for a symlink between authorization and open cannot escape the root.
+	rt, err := os.OpenRoot(root)
+	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
+	defer rt.Close()
 
-	file, err := os.Open(absPath)
+	file, err := rt.Open(rel)
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
 	http.ServeContent(w, r, filepath.Base(absPath), info.ModTime(), file)
 }
 

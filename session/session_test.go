@@ -202,7 +202,7 @@ func TestContainWithinHome(t *testing.T) {
 	}
 }
 
-func TestAllowsAsset(t *testing.T) {
+func TestAssetRoot(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	os.MkdirAll(filepath.Join(home, "site", "img"), 0755)
 	os.MkdirAll(filepath.Join(home, "other"), 0755)
@@ -214,21 +214,25 @@ func TestAllowsAsset(t *testing.T) {
 	os.WriteFile(outsidePath, []byte("x"), 0644)
 
 	m := NewManagerWithHome(home)
-	if m.AllowsAsset(assetPath) {
+	if _, _, ok := m.AssetRoot(assetPath); ok {
 		t.Fatal("no files opened, nothing should be allowed")
 	}
 	if _, err := m.Register(pagePath); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if !m.AllowsAsset(assetPath) {
+	root, rel, ok := m.AssetRoot(assetPath)
+	if !ok {
 		t.Error("asset under opened file's dir should be allowed")
 	}
-	if m.AllowsAsset(outsidePath) {
+	if root != filepath.Join(home, "site") || rel != filepath.Join("img", "logo.png") {
+		t.Errorf("AssetRoot = %q, %q", root, rel)
+	}
+	if _, _, ok := m.AssetRoot(outsidePath); ok {
 		t.Error("file outside opened dirs should not be allowed")
 	}
 
 	m.RevokeAll()
-	if m.AllowsAsset(assetPath) {
+	if _, _, ok := m.AssetRoot(assetPath); ok {
 		t.Error("RevokeAll should clear asset roots")
 	}
 }
@@ -244,7 +248,7 @@ func TestHomeDirNeverBecomesAssetRoot(t *testing.T) {
 	if _, err := m.Register(pagePath); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if m.AllowsAsset(sibling) {
+	if _, _, ok := m.AssetRoot(sibling); ok {
 		t.Error("file opened in home root must not expose home as an asset root")
 	}
 }
