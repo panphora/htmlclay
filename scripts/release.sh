@@ -99,15 +99,10 @@ success "Version: ${CURRENT_VERSION} → ${NEW_VERSION} (${BUMP_TYPE})"
 sed -i '' "s/var version = \"${CURRENT_VERSION}\"/var version = \"${NEW_VERSION}\"/" main.go
 success "Updated main.go"
 
-# Keep the website's static download fallback in sync with the release. The live
-# download link auto-updates from the R2 manifest at runtime; this only keeps the
-# no-manifest fallback baked into index.html from drifting. Matches the current
-# version regardless of prior drift, so it is self-correcting.
-sed -i '' \
-  -e "s/FALLBACK_VERSION = '[0-9][0-9.]*'/FALLBACK_VERSION = '${NEW_VERSION}'/" \
-  -e "s/HTMLClay-[0-9][0-9.]*-universal\.dmg/HTMLClay-${NEW_VERSION}-universal.dmg/g" \
-  website/index.html
-success "Updated website download fallback"
+# Stamp the version into the download page. Anchored on data attributes and
+# self-correcting, so it fixes prior drift as well.
+node scripts/stamp-website.js "${NEW_VERSION}"
+success "Stamped website with v${NEW_VERSION}"
 
 # ══════════════════════════════════════════════════
 section "Step 3: Commit, Tag & Push"
@@ -154,14 +149,29 @@ else
 fi
 
 # ══════════════════════════════════════════════════
-section "Step 5: Install Locally"
+section "Step 5: Deploy Website"
+# ══════════════════════════════════════════════════
+
+# Runs after CI so the stamped download links never point at artifacts that are
+# not on R2 yet. The page is static now, so it advertises the old version until
+# this succeeds.
+info "Deploying website to Cloudflare..."
+if npx wrangler deploy; then
+  success "Website deployed"
+else
+  warn "WEBSITE DEPLOY FAILED — htmlclay.com still advertises the previous version."
+  warn "Retry with: npx wrangler deploy"
+fi
+
+# ══════════════════════════════════════════════════
+section "Step 6: Install Locally"
 # ══════════════════════════════════════════════════
 
 bash scripts/install-local.sh "${NEW_VERSION}" \
   || warn "Could not install locally — download it from https://htmlclay.com/#downloads"
 
 # ══════════════════════════════════════════════════
-section "Step 6: Done"
+section "Step 7: Done"
 # ══════════════════════════════════════════════════
 
 END_TIME=$(date +%s)
