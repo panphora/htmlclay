@@ -24,7 +24,7 @@ import (
 	"github.com/panphora/htmlclay/update"
 )
 
-var version = "1.0.1"
+var version = "1.1.0"
 
 //go:embed example.htmlclay
 var exampleHTML []byte
