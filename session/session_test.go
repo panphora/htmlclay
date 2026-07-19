@@ -201,3 +201,50 @@ func TestContainWithinHome(t *testing.T) {
 		t.Errorf("case-sensitive: %q must not be inside %q", mixed, home)
 	}
 }
+
+func TestAllowsAsset(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, "site", "img"), 0755)
+	os.MkdirAll(filepath.Join(home, "other"), 0755)
+	pagePath := filepath.Join(home, "site", "page.html")
+	os.WriteFile(pagePath, []byte("<html></html>"), 0644)
+	assetPath := filepath.Join(home, "site", "img", "logo.png")
+	os.WriteFile(assetPath, []byte("png"), 0644)
+	outsidePath := filepath.Join(home, "other", "secret.txt")
+	os.WriteFile(outsidePath, []byte("x"), 0644)
+
+	m := NewManagerWithHome(home)
+	if m.AllowsAsset(assetPath) {
+		t.Fatal("no files opened, nothing should be allowed")
+	}
+	if _, err := m.Register(pagePath); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !m.AllowsAsset(assetPath) {
+		t.Error("asset under opened file's dir should be allowed")
+	}
+	if m.AllowsAsset(outsidePath) {
+		t.Error("file outside opened dirs should not be allowed")
+	}
+
+	m.RevokeAll()
+	if m.AllowsAsset(assetPath) {
+		t.Error("RevokeAll should clear asset roots")
+	}
+}
+
+func TestHomeDirNeverBecomesAssetRoot(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	pagePath := filepath.Join(home, "loose.html")
+	os.WriteFile(pagePath, []byte("<html></html>"), 0644)
+	sibling := filepath.Join(home, "secret.txt")
+	os.WriteFile(sibling, []byte("secret"), 0644)
+
+	m := NewManagerWithHome(home)
+	if _, err := m.Register(pagePath); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if m.AllowsAsset(sibling) {
+		t.Error("file opened in home root must not expose home as an asset root")
+	}
+}

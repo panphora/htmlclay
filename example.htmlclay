@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Welcome to HTML Clay</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #0f1115;
+      color: #e6e8ec;
+      display: flex;
+      justify-content: center;
+    }
+    main {
+      width: min(720px, 100%);
+      padding: 48px 24px 96px;
+    }
+    h1 {
+      font-size: 1.6rem;
+      margin: 0 0 4px;
+    }
+    .sub {
+      color: #8a93a6;
+      font-size: 0.9rem;
+      margin: 0 0 28px;
+    }
+    .card {
+      background: #171a21;
+      border: 1px solid #262b36;
+      border-radius: 12px;
+      padding: 20px 22px;
+      margin: 0 0 20px;
+    }
+    .card h2 {
+      font-size: 1.05rem;
+      margin: 0 0 10px;
+    }
+    .card p { margin: 0; }
+    [contenteditable] {
+      outline: none;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin: -8px -10px;
+      transition: background 0.15s;
+    }
+    [contenteditable]:focus { background: #1f2530; }
+    ul { padding-left: 22px; margin: 0; }
+    ul[contenteditable] { padding: 8px 10px 8px 34px; margin: -8px -10px; }
+    li { margin: 4px 0; }
+    .meta {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.75rem;
+      color: #6b7488;
+      line-height: 1.8;
+    }
+    .meta b { color: #9aa4ba; font-weight: 600; }
+    .bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 24px;
+      background: rgba(15,17,21,0.9);
+      backdrop-filter: blur(8px);
+      border-top: 1px solid #262b36;
+    }
+    button {
+      font: inherit;
+      font-weight: 600;
+      color: #0f1115;
+      background: #6ea8fe;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 20px;
+      cursor: pointer;
+    }
+    button:hover { background: #87b8ff; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #status { color: #8a93a6; font-size: 0.85rem; }
+    #status.ok { color: #6ee7a8; }
+    #status.err { color: #ff8a8a; }
+    .hint { margin-left: auto; color: #5a6273; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Welcome to HTML Clay</h1>
+    <p class="sub">This page is a regular HTML file saved at ~/htmlclay/examples/welcome.htmlclay. It can edit itself and save itself.</p>
+
+    <div class="card">
+      <p contenteditable="">Click anywhere on this text and start typing. When you hit Save, the page writes its own HTML straight back into the file on disk. No backend, no database, no app in between: the file is the document.</p>
+    </div>
+
+    <div class="card">
+      <h2>Things to try</h2>
+      <ul contenteditable="">
+        <li>Change this list, then hit Save (or ⌘/Ctrl+S)</li>
+        <li>Close the tab, reopen the file: your edits are still there</li>
+        <li>View source: everything you typed is just HTML</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>Your own files work too</h2>
+      <p>Right-click any HTML file, choose Open With, then HTML Clay. The page gets a Save endpoint, and images, styles, and scripts next to the file are served automatically.</p>
+    </div>
+
+    <div class="card meta">
+      <div><b>Save count:</b> <span id="count">0</span></div>
+      <div><b>Last saved:</b> <span id="saved">never</span></div>
+    </div>
+  </main>
+
+  <div class="bar">
+    <button id="save">Save</button>
+    <span id="status">Ready.</span>
+    <span class="hint">⌘/Ctrl + S to save</span>
+  </div>
+
+  <script>
+    (function () {
+      const html = document.documentElement;
+      const statusEl = document.getElementById('status');
+      const btn = document.getElementById('save');
+
+      function setStatus(msg, kind) {
+        statusEl.textContent = msg;
+        statusEl.className = kind || '';
+      }
+
+      async function save() {
+        const token = html.getAttribute('htmlclaytoken');
+        if (!token) {
+          setStatus('No token: open this file through the HTML Clay app, not directly in a browser.', 'err');
+          return;
+        }
+
+        // Bump the visible save counter before serializing so it persists in the file.
+        const countEl = document.getElementById('count');
+        countEl.textContent = String((parseInt(countEl.textContent, 10) || 0) + 1);
+        document.getElementById('saved').textContent = new Date().toLocaleString();
+
+        const body = '<!DOCTYPE html>\n' + html.outerHTML;
+
+        btn.disabled = true;
+        setStatus('Saving…');
+        try {
+          const res = await fetch('/_/save/' + token, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/html' },
+            body: body
+          });
+          if (res.ok) {
+            setStatus('Saved to disk.', 'ok');
+          } else {
+            setStatus('Save failed: ' + res.status + ' ' + (await res.text()), 'err');
+          }
+        } catch (err) {
+          setStatus('Save error: ' + err.message, 'err');
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      btn.addEventListener('click', save);
+      document.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+          e.preventDefault();
+          save();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

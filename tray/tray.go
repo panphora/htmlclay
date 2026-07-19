@@ -25,15 +25,16 @@ type UpdateInfo struct {
 }
 
 type Tray struct {
-	cfg        *config.Config
-	onQuit     func()
-	updateCh   <-chan UpdateInfo
-	updateItem *systray.MenuItem
-	updateURL  string
+	cfg           *config.Config
+	onOpenExample func()
+	onQuit        func()
+	updateCh      <-chan UpdateInfo
+	updateItem    *systray.MenuItem
+	updateURL     string
 }
 
-func Run(cfg *config.Config, onQuit func(), updateCh <-chan UpdateInfo) {
-	t := &Tray{cfg: cfg, onQuit: onQuit, updateCh: updateCh}
+func Run(cfg *config.Config, onOpenExample func(), onQuit func(), updateCh <-chan UpdateInfo) {
+	t := &Tray{cfg: cfg, onOpenExample: onOpenExample, onQuit: onQuit, updateCh: updateCh}
 	systray.Run(t.onReady, t.onExit)
 }
 
@@ -54,6 +55,9 @@ func (t *Tray) onReady() {
 	t.updateItem.Hide()
 	systray.AddSeparator()
 
+	exampleItem := systray.AddMenuItem("Open Example File", "Create and open a sample self-saving HTML file")
+	systray.AddSeparator()
+
 	appItem := systray.AddMenuItemCheckbox("App Mode", "", t.cfg.Mode == "app")
 	browserItem := systray.AddMenuItemCheckbox("Browser Mode", "", t.cfg.Mode == "browser")
 	systray.AddSeparator()
@@ -66,6 +70,8 @@ func (t *Tray) onReady() {
 	go func() {
 		for {
 			select {
+			case <-exampleItem.ClickedCh:
+				go t.onOpenExample()
 			case <-appItem.ClickedCh:
 				t.setMode("app", appItem, browserItem)
 			case <-browserItem.ClickedCh:

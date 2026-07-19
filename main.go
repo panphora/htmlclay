@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,6 +25,9 @@ import (
 )
 
 var version = "1.0.1"
+
+//go:embed example.htmlclay
+var exampleHTML []byte
 
 func fatal(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "[htmlclay] "+format+"\n", args...)
@@ -266,6 +270,31 @@ func (a *app) openFile(filePath string) {
 	a.launchBrowser(fileURL)
 }
 
+func ensureExampleFile(path string) error {
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if mkErr := os.MkdirAll(filepath.Dir(path), 0755); mkErr != nil {
+			return mkErr
+		}
+		return os.WriteFile(path, exampleHTML, 0644)
+	}
+	return err
+}
+
+func (a *app) openExample() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		a.logger.Printf("Error resolving home dir: %v", err)
+		return
+	}
+	path := filepath.Join(home, "htmlclay", "examples", "welcome.htmlclay")
+	if err := ensureExampleFile(path); err != nil {
+		a.logger.Printf("Error creating example file: %v", err)
+		return
+	}
+	a.openFile(path)
+}
+
 func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 	if a.noTray {
 		a.logger.Printf("Running without tray, waiting for signal...")
@@ -275,7 +304,7 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 		a.shutdown()
 	} else {
 		a.logger.Printf("Starting system tray...")
-		tray.Run(a.cfg, func() {
+		tray.Run(a.cfg, a.openExample, func() {
 			a.shutdown()
 		}, updateCh)
 		a.logger.Printf("Tray exited")

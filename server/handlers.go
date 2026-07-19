@@ -69,7 +69,7 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 
 	f, ok := s.sessions.LookupByPath(absPath)
 	if !ok {
-		http.Error(w, "Not Found", http.StatusNotFound)
+		s.serveAsset(w, r, r.PathValue("path"))
 		return
 	}
 
@@ -82,7 +82,9 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if htmlutil.ReadHTMLClayID(data) == "" {
+	// Only .htmlclay files carry a persistent identity; a plain .html file
+	// opened for viewing is never modified on disk.
+	if strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") && htmlutil.ReadHTMLClayID(data) == "" {
 		id, err := htmlutil.GenerateHTMLClayID()
 		if err != nil {
 			s.logger.Printf("Error generating htmlclayid: %v", err)
@@ -101,6 +103,45 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(data)
+}
+
+// serveAsset serves a file that was never opened directly: an asset (css, js,
+// image) or a linked page referenced by an opened file. Allowed only under the
+// folder tree of an opened file, and served without token injection, so linked
+// pages cannot save. rawPath is the request path before extractFilePath
+// truncation, so asset paths containing ".html" in a directory name stay intact.
+func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath string) {
+	absPath, err := ValidatePath(rawPath, s.sessions.HomeDir())
+	if err != nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	absPath = filepath.Clean(resolved)
+
+	if !s.sessions.AllowsAsset(absPath) {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil || info.IsDir() {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	file, err := os.Open(absPath)
+	if err != nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+	http.ServeContent(w, r, filepath.Base(absPath), info.ModTime(), file)
 }
 
 func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {

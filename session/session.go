@@ -34,6 +34,7 @@ type Manager struct {
 	mu      sync.RWMutex
 	byToken map[string]*File
 	byPath  map[string]string
+	roots   map[string]struct{}
 	homeDir string
 }
 
@@ -59,6 +60,7 @@ func NewManagerWithHome(homeDir string) *Manager {
 	return &Manager{
 		byToken: make(map[string]*File),
 		byPath:  make(map[string]string),
+		roots:   make(map[string]struct{}),
 		homeDir: normalizeHome(homeDir),
 	}
 }
@@ -151,6 +153,11 @@ func (m *Manager) Register(absPath string) (*File, error) {
 
 	m.byToken[token] = f
 	m.byPath[cleaned] = token
+	// The home directory itself never becomes an asset root: a file opened loose
+	// in ~ must not expose the whole home tree to every page.
+	if dir := filepath.Dir(cleaned); dir != m.homeDir {
+		m.roots[dir] = struct{}{}
+	}
 	return f, nil
 }
 
@@ -171,9 +178,23 @@ func (m *Manager) LookupByPath(absPath string) (*File, bool) {
 	return m.byToken[token], true
 }
 
+// AllowsAsset reports whether absPath sits under the directory of any opened
+// file. Opening a file grants its page access to that folder tree, nothing more.
+func (m *Manager) AllowsAsset(absPath string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for root := range m.roots {
+		if _, ok := ContainWithinHome(root, absPath); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) RevokeAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.byToken = make(map[string]*File)
 	m.byPath = make(map[string]string)
+	m.roots = make(map[string]struct{})
 }

@@ -6,4 +6,4 @@ Exec=htmlclay %f
 Icon=htmlclay
 Terminal=false
 Categories=Development;WebDevelopment;
-MimeType=application/x-htmlclay;
+MimeType=application/x-htmlclay;text/html;
