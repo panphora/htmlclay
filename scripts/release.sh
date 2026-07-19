@@ -154,7 +154,14 @@ else
 fi
 
 # ══════════════════════════════════════════════════
-section "Step 5: Done"
+section "Step 5: Install Locally"
+# ══════════════════════════════════════════════════
+
+bash scripts/install-local.sh "${NEW_VERSION}" \
+  || warn "Could not install locally — download it from https://htmlclay.com/#downloads"
+
+# ══════════════════════════════════════════════════
+section "Step 6: Done"
 # ══════════════════════════════════════════════════
 
 END_TIME=$(date +%s)
