@@ -165,10 +165,13 @@ else
   success "Pushed stamped website"
 
   info "Waiting for the auto-deploy to go live..."
+  # Cache-busted: the edge serves a cached root document for minutes after a
+  # deploy, which otherwise reads as a failed deploy here.
   LIVE=false
-  for _ in $(seq 1 18); do
+  for i in $(seq 1 24); do
     sleep 5
-    if curl -s https://htmlclay.com/ | grep -q "HTMLClay-${NEW_VERSION}-universal.dmg"; then
+    if curl -s -H 'Cache-Control: no-cache' "https://htmlclay.com/?rc=${NEW_VERSION}-${i}" \
+      | grep -q "HTMLClay-${NEW_VERSION}-universal.dmg"; then
       LIVE=true
       break
     fi
