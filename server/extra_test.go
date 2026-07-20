@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -284,4 +285,259 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return data
+}
+
+// B0: edit mode via cookie, matching hyperclay-local. Both clients fall back to
+// exactly this cookie, read synchronously from document.cookie, and the response
+// cookie arrives before scripts execute.
+func TestServeFileSetsEditModeCookie(t *testing.T) {
+	fx := setupFileTest(t, "notes.htmlclay", page("hi"))
+	w := fx.serve(t, "notes.htmlclay")
+
+	if w.Code != 200 {
+		t.Fatalf("serve: %d", w.Code)
+	}
+
+	var cookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "isAdminOfCurrentResource" {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("the edit-mode cookie was not set, so savePageCore bails with Not in edit mode")
+	}
+	if cookie.Value != "true" {
+		t.Fatalf("cookie value = %q", cookie.Value)
+	}
+	if cookie.Path != "/" {
+		t.Fatalf("cookie path = %q, want /", cookie.Path)
+	}
+	if cookie.Domain != "" {
+		t.Fatalf("cookie is not host-only, Domain = %q", cookie.Domain)
+	}
+	if cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie SameSite = %v, want Lax", cookie.SameSite)
+	}
+	if cookie.HttpOnly {
+		t.Fatal("cookie is HttpOnly, so document.cookie cannot read it")
+	}
+	if cookie.Secure {
+		t.Fatal("cookie is Secure, which a plain-http localhost origin cannot satisfy")
+	}
+}
+
+// B6: tokens are per-process, so any cache validator on the document means a 304
+// after a restart hands back a dead token and every save 401s silently.
+func TestTokenBearingDocumentIsNoStore(t *testing.T) {
+	fx := setupFileTest(t, "notes.htmlclay", page("hi"))
+	w := fx.serve(t, "notes.htmlclay")
+
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("document Cache-Control = %q, want no-store", got)
+	}
+	if w.Header().Get("ETag") != "" {
+		t.Fatal("the token-bearing document carries an ETag")
+	}
+	if w.Header().Get("Last-Modified") != "" {
+		t.Fatal("the token-bearing document carries a Last-Modified validator")
+	}
+}
+
+func serveAssetRequest(t *testing.T, fx *fileFixture, rel string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/"+rel, nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", fx.srv.port)
+	req.SetPathValue("path", rel)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	fx.srv.handleServeFile(w, req)
+	return w
+}
+
+func setupAssetTest(t *testing.T, name string, body []byte) *fileFixture {
+	t.Helper()
+	fx := setupFileTest(t, "index.htmlclay", page("app"))
+	assetDir := filepath.Join(fx.home, "assets")
+	if err := os.MkdirAll(assetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pagePath := filepath.Join(assetDir, "page.htmlclay")
+	if err := os.WriteFile(pagePath, []byte(page("sub")), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.srv.sessions.Register(pagePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assetDir, name), body, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return fx
+}
+
+// B7: the bug that started the thread. htmlclay served a .br sidecar without
+// Content-Encoding, and the client read compressed bytes as a mesh header.
+func TestBrotliSidecarCarriesContentEncoding(t *testing.T) {
+	compressed := []byte{0x1b, 0x2e, 0x00, 0xf8, 0x25, 0x14}
+	fx := setupAssetTest(t, "mesh.glb.br", compressed)
+
+	w := serveAssetRequest(t, fx, "assets/mesh.glb.br", nil)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "br" {
+		t.Fatalf("Content-Encoding = %q, want br", got)
+	}
+	if got := w.Body.Bytes(); string(got) != string(compressed) {
+		t.Fatalf("body was altered: %v", got)
+	}
+	// Content-Type comes from the inner extension, not from sniffing the
+	// compressed bytes.
+	if ct := w.Header().Get("Content-Type"); strings.Contains(ct, "text/plain") {
+		t.Fatalf("Content-Type %q was sniffed from the compressed bytes", ct)
+	}
+}
+
+func TestGzipSidecarCarriesContentEncoding(t *testing.T) {
+	compressed := []byte{0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00}
+	fx := setupAssetTest(t, "bundle.js.gz", compressed)
+
+	w := serveAssetRequest(t, fx, "assets/bundle.js.gz", nil)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("Content-Type = %q, want it derived from the inner .js", ct)
+	}
+}
+
+// A Range header on an encoded sidecar is declined rather than honored. Accept-
+// Ranges is never advertised for these, so the request is unsolicited, and the
+// full representation is returned with its encoding intact. Dropping
+// Content-Encoding to satisfy a Range would reintroduce the original bug.
+func TestEncodedSidecarDeclinesRange(t *testing.T) {
+	compressed := []byte{0x1b, 0x2e, 0x00, 0xf8, 0x25, 0x14}
+	fx := setupAssetTest(t, "mesh.glb.br", compressed)
+
+	w := serveAssetRequest(t, fx, "assets/mesh.glb.br", map[string]string{"Range": "bytes=0-2"})
+
+	if w.Code == http.StatusPartialContent {
+		t.Fatal("a byte range was served for an encoded representation")
+	}
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Accept-Ranges"); got != "none" {
+		t.Fatalf("Accept-Ranges = %q, want none", got)
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "br" {
+		t.Fatalf("Content-Encoding was dropped to satisfy a Range: %q", got)
+	}
+	if w.Body.Len() != len(compressed) {
+		t.Fatalf("body length %d, want the full %d", w.Body.Len(), len(compressed))
+	}
+}
+
+// A plain asset gets no sidecar treatment: no generic negotiation.
+func TestPlainAssetHasNoContentEncoding(t *testing.T) {
+	fx := setupAssetTest(t, "style.css", []byte("body{color:red}"))
+
+	w := serveAssetRequest(t, fx, "assets/style.css", nil)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("a plain asset was labelled %q", got)
+	}
+}
+
+// B8: assets revalidate rather than being served from cache blindly.
+func TestAssetsCarryNoCacheAndETag(t *testing.T) {
+	fx := setupAssetTest(t, "style.css", []byte("body{color:red}"))
+
+	w := serveAssetRequest(t, fx, "assets/style.css", nil)
+	if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("asset Cache-Control = %q, want no-cache", got)
+	}
+	etag := w.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("asset has no ETag to revalidate against")
+	}
+
+	again := serveAssetRequest(t, fx, "assets/style.css", map[string]string{"If-None-Match": etag})
+	if again.Code != http.StatusNotModified {
+		t.Fatalf("revalidation returned %d, want 304", again.Code)
+	}
+}
+
+func TestEncodedSidecarRevalidatesWithETag(t *testing.T) {
+	fx := setupAssetTest(t, "bundle.js.gz", []byte{0x1f, 0x8b, 0x08})
+
+	w := serveAssetRequest(t, fx, "assets/bundle.js.gz", nil)
+	etag := w.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("encoded sidecar has no ETag")
+	}
+
+	again := serveAssetRequest(t, fx, "assets/bundle.js.gz", map[string]string{"If-None-Match": etag})
+	if again.Code != http.StatusNotModified {
+		t.Fatalf("revalidation returned %d, want 304", again.Code)
+	}
+}
+
+func TestEtagMatches(t *testing.T) {
+	cases := []struct {
+		header, etag string
+		want         bool
+	}{
+		{`"abc-1"`, `"abc-1"`, true},
+		{`W/"abc-1"`, `"abc-1"`, true},
+		{`"x", "abc-1"`, `"abc-1"`, true},
+		{`*`, `"abc-1"`, true},
+		{`"other"`, `"abc-1"`, false},
+		{``, `"abc-1"`, false},
+	}
+	for _, c := range cases {
+		if got := etagMatches(c.header, c.etag); got != c.want {
+			t.Errorf("etagMatches(%q, %q) = %v, want %v", c.header, c.etag, got, c.want)
+		}
+	}
+}
+
+func TestSidecarEncoding(t *testing.T) {
+	cases := []struct {
+		name, encoding, inner string
+		ok                    bool
+	}{
+		{"mesh.glb.br", "br", "mesh.glb", true},
+		{"bundle.js.gz", "gzip", "bundle.js", true},
+		{"style.css", "", "", false},
+		{"archive.tar", "", "", false},
+		{"notes.brotli", "", "", false},
+	}
+	for _, c := range cases {
+		enc, inner, ok := sidecarEncoding(c.name)
+		if ok != c.ok || enc != c.encoding || inner != c.inner {
+			t.Errorf("sidecarEncoding(%q) = (%q,%q,%v), want (%q,%q,%v)",
+				c.name, enc, inner, ok, c.encoding, c.inner, c.ok)
+		}
+	}
+}
+
+// The six-connection HTTP/1.1 cap is a real, documented constraint of the
+// transport: an SSE stream holds one connection for the life of the page, so a
+// seventh request queues behind six open tabs.
+//
+// Deliberately NOT exercised with Go's http.Client, which has no per-host
+// connection cap and therefore cannot reproduce the limit at all. Driving real
+// tabs with a browser is the only honest way to observe it.
+func TestTabLimitIsDocumented(t *testing.T) {
+	if maxUsefulTabs != 6 {
+		t.Fatalf("documented tab limit = %d, want the browser's 6", maxUsefulTabs)
+	}
 }

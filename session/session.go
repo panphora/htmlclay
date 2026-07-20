@@ -23,12 +23,73 @@ type File struct {
 	Name    string
 
 	writeMu sync.Mutex
+
+	// There are exactly two per-file records, and nothing may introduce a third.
+	// Both are hex sha256 of on-disk bytes, and both are read and written only
+	// under Lock().
+	//
+	//   lastServerWrite        set by save, restore, htmlclayid injection, and the
+	//                          first observation of a file. Never set by serving a
+	//                          page or by the watcher. Used for stale-write
+	//                          detection.
+	//   lastStableObservation  set by the watcher confirming a stable read, and by
+	//                          every server write. Never set by serving a page.
+	//                          Used for change broadcast and for suppressing our
+	//                          own writes.
+	//
+	// lastServerWrite ignores serves on purpose: if serving advanced it, tab A
+	// could load H0, an editor write H1, tab B load H1 and advance the record, and
+	// tab A's later save would compare H1 against H1, find no mismatch, and
+	// silently destroy H1.
+	lastServerWrite       string
+	lastStableObservation string
+	observed              bool
 }
 
-// Lock and Unlock serialize read-modify-write operations on this file (saves and
-// on-serve htmlclayid injection) so concurrent handlers cannot clobber each other.
+// Lock and Unlock serialize read-modify-write operations on this file (saves,
+// restores, and on-serve htmlclayid injection) so concurrent handlers cannot
+// clobber each other. They also guard the two per-file records.
 func (f *File) Lock()   { f.writeMu.Lock() }
 func (f *File) Unlock() { f.writeMu.Unlock() }
+
+// LastServerWrite returns the hash of the bytes this server last wrote.
+// Caller must hold Lock().
+func (f *File) LastServerWrite() string { return f.lastServerWrite }
+
+// LastStableObservation returns the hash of the content last confirmed stable on
+// disk. Caller must hold Lock().
+func (f *File) LastStableObservation() string { return f.lastStableObservation }
+
+// Observed reports whether this file has been read at least once, which is what
+// makes the very first save comparable. Caller must hold Lock().
+func (f *File) Observed() bool { return f.observed }
+
+// RecordServerWrite advances both records. Caller must hold Lock().
+func (f *File) RecordServerWrite(hash string) {
+	f.lastServerWrite = hash
+	f.lastStableObservation = hash
+	f.observed = true
+}
+
+// RecordStableObservation advances only the stable-observation record, which is
+// what the watcher does after confirming a stable external read. Caller must hold
+// Lock().
+func (f *File) RecordStableObservation(hash string) {
+	f.lastStableObservation = hash
+	f.observed = true
+}
+
+// NoteFirstObservation seeds both records the first time a file is read, so the
+// first save of a file the server has never written does not false-positive as a
+// stale write. It reports whether this was the first observation. Caller must
+// hold Lock().
+func (f *File) NoteFirstObservation(hash string) bool {
+	if f.observed {
+		return false
+	}
+	f.RecordServerWrite(hash)
+	return true
+}
 
 type Manager struct {
 	mu      sync.RWMutex

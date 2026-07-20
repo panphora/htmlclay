@@ -252,3 +252,99 @@ func TestHomeDirNeverBecomesAssetRoot(t *testing.T) {
 		t.Error("file opened in home root must not expose home as an asset root")
 	}
 }
+
+// There are exactly two per-file records. lastServerWrite is set by save,
+// restore, htmlclayid injection, and the first observation of a file, and never
+// by serving a page or by the watcher.
+func TestRecordServerWriteAdvancesBoth(t *testing.T) {
+	f := &File{}
+
+	f.Lock()
+	defer f.Unlock()
+
+	if f.Observed() {
+		t.Fatal("a fresh file reports itself observed")
+	}
+	if f.LastServerWrite() != "" || f.LastStableObservation() != "" {
+		t.Fatal("a fresh file has non-empty records")
+	}
+
+	f.RecordServerWrite("aaa")
+	if f.LastServerWrite() != "aaa" || f.LastStableObservation() != "aaa" {
+		t.Fatal("RecordServerWrite did not advance both records")
+	}
+	if !f.Observed() {
+		t.Fatal("RecordServerWrite did not mark the file observed")
+	}
+}
+
+// The watcher advances only lastStableObservation, so an external change never
+// masquerades as a write this server performed.
+func TestRecordStableObservationLeavesServerWriteAlone(t *testing.T) {
+	f := &File{}
+
+	f.Lock()
+	defer f.Unlock()
+
+	f.RecordServerWrite("aaa")
+	f.RecordStableObservation("bbb")
+
+	if f.LastServerWrite() != "aaa" {
+		t.Fatalf("lastServerWrite = %q, want it untouched", f.LastServerWrite())
+	}
+	if f.LastStableObservation() != "bbb" {
+		t.Fatalf("lastStableObservation = %q", f.LastStableObservation())
+	}
+}
+
+// The first observation seeds both records, so the first save of a file this
+// server has never written is not a false-positive stale write. It happens once.
+func TestNoteFirstObservationHappensOnce(t *testing.T) {
+	f := &File{}
+
+	f.Lock()
+	defer f.Unlock()
+
+	if !f.NoteFirstObservation("aaa") {
+		t.Fatal("the first observation was not reported as first")
+	}
+	if f.LastServerWrite() != "aaa" || f.LastStableObservation() != "aaa" {
+		t.Fatal("the first observation did not seed both records")
+	}
+
+	if f.NoteFirstObservation("bbb") {
+		t.Fatal("a later observation was reported as first")
+	}
+	if f.LastServerWrite() != "aaa" || f.LastStableObservation() != "aaa" {
+		t.Fatal("a later observation overwrote the seeded records")
+	}
+}
+
+func TestRecordsAreGuardedByTheFileLock(t *testing.T) {
+	f := &File{}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			f.Lock()
+			defer f.Unlock()
+			if i%2 == 0 {
+				f.RecordServerWrite("write")
+			} else {
+				f.RecordStableObservation("observe")
+			}
+			_ = f.LastServerWrite()
+			_ = f.LastStableObservation()
+			_ = f.Observed()
+		}(i)
+	}
+	wg.Wait()
+
+	f.Lock()
+	defer f.Unlock()
+	if f.LastServerWrite() != "write" {
+		t.Fatalf("lastServerWrite = %q", f.LastServerWrite())
+	}
+}

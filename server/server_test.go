@@ -9,6 +9,7 @@ import (
 
 	"github.com/panphora/htmlclay/logging"
 	"github.com/panphora/htmlclay/session"
+	"github.com/panphora/htmlclay/versions"
 )
 
 func TestHostValidationMiddleware(t *testing.T) {
@@ -19,7 +20,7 @@ func TestHostValidationMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	srv := New(ln, mgr, logger)
+	srv := New(ln, mgr, logger, versions.New(t.TempDir()))
 
 	req := httptest.NewRequest("GET", "/test.htmlclay", nil)
 	req.Host = "evil.com:12345"
@@ -39,7 +40,7 @@ func TestHostValidationAccepts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	srv := New(ln, mgr, logger)
+	srv := New(ln, mgr, logger, versions.New(t.TempDir()))
 
 	req := httptest.NewRequest("GET", "/nonexistent", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)

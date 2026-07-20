@@ -10,6 +10,7 @@ import (
 
 	"github.com/panphora/htmlclay/logging"
 	"github.com/panphora/htmlclay/session"
+	"github.com/panphora/htmlclay/versions"
 )
 
 type Server struct {
@@ -18,15 +19,22 @@ type Server struct {
 	sessions   *session.Manager
 	port       int
 	logger     *logging.Logger
+	versions   *versions.Store
+	hub        *hub
+	watcher    *watcher
 }
 
-func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger) *Server {
+func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store) *Server {
 	port := ln.Addr().(*net.TCPAddr).Port
+	h := newHub()
 	s := &Server{
 		listener: ln,
 		sessions: sessions,
 		port:     port,
 		logger:   logger,
+		versions: store,
+		hub:      h,
+		watcher:  newWatcher(h, logger),
 	}
 
 	mux := http.NewServeMux()
@@ -34,6 +42,12 @@ func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger) *Se
 	mux.HandleFunc("GET /_/read/{token}", s.handleRead)
 	mux.HandleFunc("POST /_/save/{token}", s.handleSave)
 	mux.HandleFunc("GET /_/meta/{token}", s.handleMeta)
+	mux.HandleFunc("GET /_/versions/{token}", s.handleListVersions)
+	mux.HandleFunc("GET /_/version/{token}/{name}", s.handleReadVersion)
+	mux.HandleFunc("POST /_/restore/{token}/{name}", s.handleRestoreVersion)
+	// Registered ahead of the catch-all.
+	mux.HandleFunc("GET /_/live-sync/stream", s.handleLiveSyncStream)
+	mux.HandleFunc("POST /_/live-sync/save", s.handleLiveSyncSave)
 	mux.HandleFunc("GET /{path...}", s.handleServeFile)
 
 	handler := s.loggingMiddleware(mux)
@@ -59,11 +73,18 @@ func (s *Server) Start() error {
 	return err
 }
 
+// Shutdown closes every SSE stream before handing off to http.Server.Shutdown.
+// Without that, active streams hold graceful shutdown open until its timeout and
+// are then force-closed.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.hub.shutdown()
+	s.watcher.shutdown()
 	return s.httpServer.Shutdown(ctx)
 }
 
 func (s *Server) Close() error {
+	s.hub.shutdown()
+	s.watcher.shutdown()
 	return s.httpServer.Close()
 }
 
@@ -79,7 +100,10 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 // redactPath hides the session token in token-bearing routes so the secret is
 // never written to the log file or stderr.
 func redactPath(p string) string {
-	for _, prefix := range []string{"/_/save/", "/_/read/", "/_/meta/"} {
+	for _, prefix := range []string{
+		"/_/save/", "/_/read/", "/_/meta/",
+		"/_/versions/", "/_/version/", "/_/restore/",
+	} {
 		if strings.HasPrefix(p, prefix) {
 			return prefix + "<redacted>"
 		}
@@ -95,4 +119,16 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer for Flush and
+// SetWriteDeadline. Without it SSE cannot flush at all.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

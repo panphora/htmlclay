@@ -12,6 +12,7 @@ import (
 
 	"github.com/panphora/htmlclay/logging"
 	"github.com/panphora/htmlclay/session"
+	"github.com/panphora/htmlclay/versions"
 )
 
 func setupHandlerTest(t *testing.T) (*Server, *session.File, string) {
@@ -35,7 +36,7 @@ func setupHandlerTest(t *testing.T) (*Server, *session.File, string) {
 	t.Cleanup(func() { ln.Close() })
 
 	logger := logging.NewStdout()
-	srv := New(ln, mgr, logger)
+	srv := New(ln, mgr, logger, versions.New(t.TempDir()))
 
 	return srv, f, content
 }
@@ -282,7 +283,7 @@ func TestServeAssetOutsideOpenedDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	srv := New(ln, mgr, logging.NewStdout())
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
 
 	req := httptest.NewRequest("GET", "/other/secret.txt", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
@@ -358,7 +359,7 @@ func TestServeAssetSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	srv := New(ln, mgr, logging.NewStdout())
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
 
 	req := httptest.NewRequest("GET", "/site/link.txt", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
@@ -387,7 +388,7 @@ func TestServeOpenedHTMLFileNotMutated(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	srv := New(ln, mgr, logging.NewStdout())
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
 
 	req := httptest.NewRequest("GET", "/page.html", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
