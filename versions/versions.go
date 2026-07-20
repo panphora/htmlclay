@@ -2,10 +2,16 @@
 //
 // Layout:
 //
-//	<UserConfigDir>/htmlclay/versions/          0700
-//	    notes-a3f19c2b/                         <basename>-<8 hex display suffix>
-//	        2026-07-19-14-22-08-431Z.html       0600, uncompressed, UTC
-//	        meta.json                           {name, absPath, key, updatedAt}
+//	<UserConfigDir>/htmlclay/versions/            0700
+//	    notes-a3f19c2b/                           <basename>-<8 hex display suffix>
+//	        2026-07-19-14-22-08-431-0400.html     0600, uncompressed, local + offset
+//	        meta.json                             {name, absPath, key, updatedAt}
+//
+// A version filename carries LOCAL wall time so it reads correctly in a file
+// browser, followed by the signed UTC offset that was in force at that moment.
+// The offset is what makes the name a single instant: local wall time repeats
+// for one hour on every DST fall-back, and this is a delete path, so a name that
+// cannot be ordered is a name that can cost the user the version they wanted.
 //
 // The 8 hex characters in the folder name are a display affordance only. The
 // logical key is the full UUID or the full path hash, recorded in meta.json, and
@@ -58,9 +64,13 @@ var (
 
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// entryRe matches exactly one generated version filename: a UTC timestamp with
-// millisecond precision and an optional zero-padded numeric collision suffix.
-var entryRe = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})Z(?:-(\d{2,}))?\.html$`)
+// entryRe matches exactly one generated version filename: a timestamp with
+// millisecond precision, its zone, and an optional zero-padded numeric collision
+// suffix. The zone is either a signed four-digit UTC offset (current form) or a
+// bare `Z` (the earlier all-UTC form, still on disk and still readable). Both are
+// exact instants. The offset group is fixed width and positional, so `431-0400`
+// splits into millis `431` and offset `-0400` with nothing left to guess at.
+var entryRe = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})(Z|[+-]\d{4})(?:-(\d{2,}))?\.html$`)
 
 var unsafeDisplayRe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
@@ -437,10 +447,19 @@ func atomicPublishBytes(dir, name string, data []byte) error {
 	return SyncDir(dir)
 }
 
+// formatStamp renders local wall time followed by the signed UTC offset in force
+// at that instant. The offset is always present and always signed, so UTC itself
+// is written as +0000 rather than omitted.
 func formatStamp(t time.Time) string {
-	t = t.UTC()
-	return fmt.Sprintf("%04d-%02d-%02d-%02d-%02d-%02d-%03dZ",
-		t.Year(), int(t.Month()), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond()/int(time.Millisecond))
+	_, offset := t.Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	return fmt.Sprintf("%04d-%02d-%02d-%02d-%02d-%02d-%03d%s%02d%02d",
+		t.Year(), int(t.Month()), t.Day(), t.Hour(), t.Minute(), t.Second(),
+		t.Nanosecond()/int(time.Millisecond), sign, offset/3600, (offset%3600)/60)
 }
 
 // entryName renders a version filename. The collision suffix is zero-padded so
@@ -460,17 +479,28 @@ func ParseEntryName(name string) (time.Time, int, error) {
 		return time.Time{}, 0, ErrBadName
 	}
 	n := func(s string) int { v, _ := strconv.Atoi(s); return v }
+	loc := time.UTC
+	if zone := m[8]; zone != "Z" {
+		offset := n(zone[1:3])*3600 + n(zone[3:5])*60
+		if zone[0] == '-' {
+			offset = -offset
+		}
+		if offset != 0 {
+			loc = time.FixedZone(zone, offset)
+		}
+	}
 	t := time.Date(n(m[1]), time.Month(n(m[2])), n(m[3]), n(m[4]), n(m[5]), n(m[6]),
-		n(m[7])*int(time.Millisecond), time.UTC)
+		n(m[7])*int(time.Millisecond), loc)
 	seq := 0
-	if m[8] != "" {
-		seq = n(m[8])
+	if m[9] != "" {
+		seq = n(m[9])
 	}
 	return t, seq, nil
 }
 
-// listEntries returns the versions in dir sorted oldest first, by parsed UTC
-// timestamp rather than by filename.
+// listEntries returns the versions in dir sorted oldest first, by parsed instant
+// rather than by filename. Names carry a zone, so two versions written either
+// side of a DST fall-back order correctly even though their wall times repeat.
 func listEntries(dir string) ([]Entry, error) {
 	dirents, err := os.ReadDir(dir)
 	if err != nil {
@@ -636,14 +666,14 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 		}
 	}
 
-	t := time.Now().UTC()
+	t := time.Now()
 	seq := 0
 	if len(entries) > 0 {
 		newest := entries[len(entries)-1]
 		candidate := Entry{Time: t, Seq: 0}
-		// UTC removes DST repetition but not a system clock rollback. When the
-		// clock would produce a name sorting at or before the newest entry,
-		// append after that entry instead of trusting the clock.
+		// The recorded offset removes DST repetition but not a system clock
+		// rollback. When the clock would produce a name sorting at or before the
+		// newest entry, append after that entry instead of trusting the clock.
 		if !newest.before(candidate) {
 			t = newest.Time
 			seq = newest.Seq + 1

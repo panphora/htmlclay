@@ -143,13 +143,15 @@ func TestBackupDedupesIdenticalContent(t *testing.T) {
 func TestEntryNameRoundTripAndZeroPadding(t *testing.T) {
 	when := time.Date(2026, 7, 19, 14, 22, 8, 431*int(time.Millisecond), time.UTC)
 
-	if got := entryName(when, 0); got != "2026-07-19-14-22-08-431Z.html" {
+	// UTC is written as +0000, not omitted and not `Z`: the offset is always
+	// present and always signed.
+	if got := entryName(when, 0); got != "2026-07-19-14-22-08-431+0000.html" {
 		t.Fatalf("got %q", got)
 	}
-	if got := entryName(when, 2); got != "2026-07-19-14-22-08-431Z-02.html" {
+	if got := entryName(when, 2); got != "2026-07-19-14-22-08-431+0000-02.html" {
 		t.Fatalf("got %q", got)
 	}
-	if got := entryName(when, 10); got != "2026-07-19-14-22-08-431Z-10.html" {
+	if got := entryName(when, 10); got != "2026-07-19-14-22-08-431+0000-10.html" {
 		t.Fatalf("got %q", got)
 	}
 
@@ -184,11 +186,148 @@ func TestParseEntryNameRejectsAnythingElse(t *testing.T) {
 		"",
 		".",
 		"2026-07-19-14-22-08-431Z/../x.html",
+		// A zone is mandatory. A bare local wall time is genuinely ambiguous,
+		// and this store does not invent an instant for it.
+		"2026-07-19-14-22-08-431-0400.html.bak",
+		"2026-07-19-14-22-08-431-040.html",
+		"2026-07-19-14-22-08-431-04000.html",
+		"2026-07-19-14-22-08-4310400.html",
 	}
 	for _, name := range bad {
 		if _, _, err := ParseEntryName(name); err == nil {
 			t.Errorf("ParseEntryName(%q) accepted an invalid name", name)
 		}
+	}
+}
+
+// A name carries LOCAL wall time plus the offset in force at that moment, so
+// format-then-parse must land back on the same instant on both sides of UTC.
+func TestEntryNameRoundTripsSignedOffsets(t *testing.T) {
+	cases := []struct {
+		zone   *time.Location
+		want   string
+		utcHHM string
+	}{
+		{time.FixedZone("EDT", -4*3600), "2026-11-01-01-30-00-431-0400.html", "05:30"},
+		{time.FixedZone("IST", 5*3600+30*60), "2026-11-01-01-30-00-431+0530.html", "20:00"},
+	}
+	for _, tc := range cases {
+		when := time.Date(2026, 11, 1, 1, 30, 0, 431*int(time.Millisecond), tc.zone)
+
+		got := entryName(when, 0)
+		if got != tc.want {
+			t.Fatalf("entryName = %q, want %q", got, tc.want)
+		}
+
+		parsed, seq, err := ParseEntryName(got)
+		if err != nil {
+			t.Fatalf("ParseEntryName(%q): %v", got, err)
+		}
+		if seq != 0 {
+			t.Fatalf("seq = %d, want 0", seq)
+		}
+		if !parsed.Equal(when) {
+			t.Fatalf("round trip lost the instant: %v vs %v", parsed, when)
+		}
+		if got := parsed.UTC().Format("15:04"); got != tc.utcHHM {
+			t.Fatalf("parsed to UTC %s, want %s", got, tc.utcHHM)
+		}
+	}
+}
+
+// The earlier all-UTC form is still on disk and must keep parsing to the exact
+// instant it always did.
+func TestParseEntryNameAcceptsLegacyZulu(t *testing.T) {
+	parsed, seq, err := ParseEntryName("2026-07-19-14-22-08-431Z-02.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 7, 19, 14, 22, 8, 431*int(time.Millisecond), time.UTC)
+	if !parsed.Equal(want) {
+		t.Fatalf("legacy Z parsed to %v, want %v", parsed, want)
+	}
+	if seq != 2 {
+		t.Fatalf("seq = %d, want 2", seq)
+	}
+}
+
+// THE REASON THE OFFSET IS NOT OPTIONAL.
+//
+// During an autumn fall-back local wall time repeats for an hour, so a collision
+// suffix cannot save us: it only fires when two names are byte-identical, and
+// these are not. With bare local time the sequence below ranks B as newest when
+// C actually is, and this is a delete path. The recorded offset resolves each
+// name to one instant and the order comes out right.
+func TestFallBackDSTOrdersByInstantNotWallClock(t *testing.T) {
+	s := newStore(t)
+	path := "/home/u/dst.html"
+	key := Key(path, nil)
+
+	dir, err := s.historyDir(key, path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Written in real-time order A, B, C. C is the newest despite wearing the
+	// same wall clock as A.
+	a := "2026-11-01-01-30-00-431-0400.html" // 05:30:00.431Z
+	b := "2026-11-01-01-45-00-123-0400.html" // 05:45:00.123Z
+	c := "2026-11-01-01-30-00-431-0500.html" // 06:30:00.431Z, after the fall-back
+	for _, name := range []string{a, b, c} {
+		if err := os.WriteFile(filepath.Join(dir, name), doc(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := s.List(key, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{entries[0].Name, entries[1].Name, entries[2].Name}
+	want := []string{c, b, a}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("newest-first order = %v, want %v", got, want)
+		}
+	}
+
+	// And the wall-clock-only reading is genuinely the wrong one, which is what
+	// makes the offset load-bearing rather than decorative.
+	if strings.Compare(b, c) <= 0 {
+		t.Fatal("test no longer exercises the trap: b must sort after c lexically")
+	}
+}
+
+// Two versions inside one millisecond share an instant, so the collision suffix
+// is the only thing ordering them — and -02 must still come before -10.
+func TestCollisionSuffixBreaksTiesWithinOneMillisecond(t *testing.T) {
+	when := time.Date(2026, 11, 1, 1, 30, 0, 431*int(time.Millisecond), time.FixedZone("EDT", -4*3600))
+
+	bare, seqBare, err := ParseEntryName(entryName(when, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, seqTwo, err := ParseEntryName(entryName(when, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ten, seqTen, err := ParseEntryName(entryName(when, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bare.Equal(two) || !two.Equal(ten) {
+		t.Fatal("collision names must share one instant")
+	}
+	if seqBare != 0 || seqTwo != 2 || seqTen != 10 {
+		t.Fatalf("seqs = %d, %d, %d", seqBare, seqTwo, seqTen)
+	}
+
+	e := func(seq int) Entry { return Entry{Time: when, Seq: seq} }
+	if !e(0).before(e(2)) || !e(2).before(e(10)) {
+		t.Fatal("collision suffix does not order within one millisecond")
+	}
+	if e(10).before(e(2)) {
+		t.Fatal("-10 sorted before -02")
 	}
 }
 
