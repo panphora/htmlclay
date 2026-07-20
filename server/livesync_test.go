@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,18 +30,38 @@ func newSubscriber(key, lane string) *subscriber {
 	}
 }
 
+// splitFrame pulls the SSE id and the JSON payload out of one frame. Every frame
+// carries an id so a reconnecting EventSource can resume with Last-Event-ID.
+func splitFrame(t *testing.T, raw []byte) (int64, map[string]interface{}) {
+	t.Helper()
+	rest, ok := strings.CutPrefix(string(raw), "id: ")
+	if !ok {
+		t.Fatalf("frame carries no SSE id: %q", raw)
+	}
+	idLine, body, ok := strings.Cut(rest, "\n")
+	if !ok {
+		t.Fatalf("frame has no line after its id: %q", raw)
+	}
+	id, err := strconv.ParseInt(idLine, 10, 64)
+	if err != nil {
+		t.Fatalf("frame id is not a number: %q", idLine)
+	}
+	payload, ok := strings.CutPrefix(body, "data: ")
+	if !ok {
+		t.Fatalf("frame is not an SSE data line: %q", raw)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(payload)), &out); err != nil {
+		t.Fatalf("frame is not valid JSON: %v (%q)", err, payload)
+	}
+	return id, out
+}
+
 func waitFrame(t *testing.T, sub *subscriber, within time.Duration) map[string]interface{} {
 	t.Helper()
 	select {
 	case raw := <-sub.ch:
-		payload, ok := strings.CutPrefix(string(raw), "data: ")
-		if !ok {
-			t.Fatalf("frame is not an SSE data line: %q", raw)
-		}
-		var out map[string]interface{}
-		if err := json.Unmarshal([]byte(strings.TrimSpace(payload)), &out); err != nil {
-			t.Fatalf("frame is not valid JSON: %v (%q)", err, payload)
-		}
+		_, out := splitFrame(t, raw)
 		return out
 	case <-time.After(within):
 		t.Fatal("timed out waiting for a frame")
@@ -62,7 +83,7 @@ func expectNoFrame(t *testing.T, sub *subscriber, within time.Duration) {
 // and the stream silently stops updating.
 func TestSequenceSeededFromWallClock(t *testing.T) {
 	before := time.Now().UnixMilli()
-	h := newHub()
+	h := newHub("")
 	after := time.Now().UnixMilli()
 
 	if h.seq < before || h.seq > after {
@@ -81,7 +102,7 @@ func TestSequenceSeededFromWallClock(t *testing.T) {
 // B3 and B4 share one counter. Every allocation, from either leg, is strictly
 // increasing.
 func TestSequenceIsSharedAndMonotonic(t *testing.T) {
-	h := newHub()
+	h := newHub("")
 	sub := newSubscriber("/tmp/a.html", laneSaved)
 	h.add(sub)
 
@@ -102,7 +123,7 @@ func TestSequenceIsSharedAndMonotonic(t *testing.T) {
 }
 
 func TestRelayGoesToLiveLaneOnly(t *testing.T) {
-	h := newHub()
+	h := newHub("")
 	live := newSubscriber("/tmp/a.html", laneLive)
 	saved := newSubscriber("/tmp/a.html", laneSaved)
 	h.add(live)
@@ -124,7 +145,7 @@ func TestRelayGoesToLiveLaneOnly(t *testing.T) {
 // because after B0 every tab holds unsaved DOM state. The stable disk HTML goes
 // to the saved lane.
 func TestExternalChangeNotifiesLiveAndBroadcastsSaved(t *testing.T) {
-	h := newHub()
+	h := newHub("")
 	live := newSubscriber("/tmp/a.html", laneLive)
 	saved := newSubscriber("/tmp/a.html", laneSaved)
 	h.add(live)
@@ -148,7 +169,7 @@ func TestExternalChangeNotifiesLiveAndBroadcastsSaved(t *testing.T) {
 }
 
 func TestSlowSubscriberIsEvictedAndUnblocked(t *testing.T) {
-	h := newHub()
+	h := newHub("")
 	sub := newSubscriber("/tmp/a.html", laneLive)
 	h.add(sub)
 
@@ -167,7 +188,7 @@ func TestSlowSubscriberIsEvictedAndUnblocked(t *testing.T) {
 }
 
 func TestHubShutdownClosesEveryStream(t *testing.T) {
-	h := newHub()
+	h := newHub("")
 	a := newSubscriber("/tmp/a.html", laneLive)
 	b := newSubscriber("/tmp/b.html", laneSaved)
 	h.add(a)

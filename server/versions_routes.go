@@ -2,10 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 	"os"
 
 	"github.com/panphora/htmlclay/htmlutil"
+	"github.com/panphora/htmlclay/session"
 	"github.com/panphora/htmlclay/versions"
 )
 
@@ -13,14 +16,27 @@ import (
 // file. HasHTMLTag is not sufficient on its own: it accepts `<html><body>partial`.
 const maxRestoreSize = 50 * 1024 * 1024
 
-// keyFor derives the history key for a file from its current on-disk bytes.
+// historyKey returns the file's resolved backup identity, resolving it once from
+// current disk bytes if nothing has resolved it yet (a token used before the file
+// was ever served). It is never re-derived once set: deriving the key per request
+// meant an external delete or a stripped htmlclayid moved it to a path hash, so
+// GET /_/versions returned empty and POST /_/restore 404'd while the id-keyed
+// backups sat on disk.
+//
 // Caller must hold f.Lock().
-func keyFor(absPath string) (string, []byte, error) {
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return versions.Key(absPath, nil), nil, err
+func historyKey(f *session.File) string {
+	if key := f.HistoryKey(); key != "" {
+		return key
 	}
-	return versions.Key(absPath, data), data, nil
+	data, err := os.ReadFile(f.AbsPath)
+	if err != nil {
+		// An unreadable file cannot resolve an identity. Leave the key unset so a
+		// later readable request can resolve it properly, and answer this one from
+		// a key derived on the spot.
+		return versions.Key(f.AbsPath, nil)
+	}
+	f.SetHistoryKey(versions.Key(f.AbsPath, data))
+	return f.HistoryKey()
 }
 
 // noStoreJSON marks every token-bearing response uncacheable.
@@ -36,8 +52,7 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.Lock()
-	key, _, _ := keyFor(f.AbsPath)
-	entries, err := s.versions.List(key, f.AbsPath)
+	entries, err := s.versions.List(historyKey(f), f.AbsPath)
 	f.Unlock()
 
 	if err != nil {
@@ -73,8 +88,7 @@ func (s *Server) handleReadVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.Lock()
-	key, _, _ := keyFor(f.AbsPath)
-	data, err := s.versions.Read(key, f.AbsPath, name)
+	data, err := s.versions.Read(historyKey(f), f.AbsPath, name)
 	f.Unlock()
 
 	if err != nil {
@@ -102,7 +116,21 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 
 	f.Lock()
 
-	key, current, readErr := keyFor(f.AbsPath)
+	key := historyKey(f)
+	current, readErr := os.ReadFile(f.AbsPath)
+
+	// The safety backup is mandatory, so a live file that exists but cannot be
+	// read is a hard refusal rather than a skipped backup. Attempting the backup
+	// only when the read succeeded, while letting the restore proceed whenever the
+	// selected version read, destroyed an unreadable-but-present file with no
+	// recovery copy: exactly what B2 says must never happen. A file that is simply
+	// absent has nothing to lose and needs no safety copy.
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		f.Unlock()
+		s.logger.Printf("Refusing to restore %s: current file cannot be read: %v", f.RelPath, readErr)
+		s.writeError(w, http.StatusInternalServerError, "current file cannot be read, so no safety backup is possible")
+		return
+	}
 
 	data, err := s.versions.Read(key, f.AbsPath, name)
 	if err != nil {

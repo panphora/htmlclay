@@ -15,8 +15,7 @@ func isHTMLSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
 }
 
-func equalFoldHTML(b []byte) bool {
-	const name = "html"
+func equalFoldASCII(b []byte, name string) bool {
 	if len(b) != len(name) {
 		return false
 	}
@@ -30,6 +29,24 @@ func equalFoldHTML(b []byte) bool {
 		}
 	}
 	return true
+}
+
+func equalFoldHTML(b []byte) bool {
+	return equalFoldASCII(b, "html")
+}
+
+// indexFoldASCII returns the offset of the first case-insensitive occurrence of
+// needle in data, or -1.
+func indexFoldASCII(data []byte, needle string) int {
+	if len(needle) == 0 || len(data) < len(needle) {
+		return -1
+	}
+	for i := 0; i+len(needle) <= len(data); i++ {
+		if equalFoldASCII(data[i:i+len(needle)], needle) {
+			return i
+		}
+	}
+	return -1
 }
 
 // findHTMLTagStart returns the byte offset of the real top-level <html> start
@@ -89,8 +106,68 @@ func HasHTMLTag(data []byte) bool {
 	return ok
 }
 
-// closeHTMLRe matches a top-level </html> end tag.
-var closeHTMLRe = regexp.MustCompile(`(?i)</html\s*>`)
+// rawTextNames are the elements whose content is not parsed as markup, so a
+// </html> sequence inside one is text and not an end tag.
+var rawTextNames = []string{"script", "style", "textarea", "title"}
+
+// rawTextNameAt reports the raw-text element whose start tag begins at i.
+func rawTextNameAt(data []byte, i int) (string, bool) {
+	for _, name := range rawTextNames {
+		end := i + 1 + len(name)
+		if end < len(data) && equalFoldASCII(data[i+1:end], name) &&
+			(isHTMLSpace(data[end]) || data[end] == '>' || data[end] == '/') {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// findHTMLCloseTag returns the offset of a real top-level </html> end tag at or
+// after from, or -1.
+//
+// It skips comments and raw-text elements the same way findHTMLTagStart skips
+// comments. A raw regex over the trailing bytes accepted a fake closing tag, so
+// `<html><body><!-- </html> -->` passed the restore completeness check and a
+// truncated version replaced a good file.
+func findHTMLCloseTag(data []byte, from int) int {
+	n := len(data)
+	for i := from; i < n; i++ {
+		if data[i] != '<' {
+			continue
+		}
+		if i+3 < n && data[i+1] == '!' && data[i+2] == '-' && data[i+3] == '-' {
+			end := bytes.Index(data[i+4:], []byte("-->"))
+			if end < 0 {
+				return -1
+			}
+			i += 4 + end + 2
+			continue
+		}
+		if name, ok := rawTextNameAt(data, i); ok {
+			gt := bytes.IndexByte(data[i:], '>')
+			if gt < 0 {
+				return -1
+			}
+			body := i + gt + 1
+			end := indexFoldASCII(data[body:], "</"+name)
+			if end < 0 {
+				return -1
+			}
+			i = body + end
+			continue
+		}
+		if i+6 <= n && data[i+1] == '/' && equalFoldHTML(data[i+2:i+6]) {
+			j := i + 6
+			for j < n && isHTMLSpace(data[j]) {
+				j++
+			}
+			if j < n && data[j] == '>' {
+				return i
+			}
+		}
+	}
+	return -1
+}
 
 // IsCompleteHTMLDocument reports whether data is a whole document: a real
 // top-level <html> start tag followed by a matching </html> end tag. HasHTMLTag
@@ -101,7 +178,7 @@ func IsCompleteHTMLDocument(data []byte) bool {
 	if !ok {
 		return false
 	}
-	return closeHTMLRe.Find(data[closeAngle+1:]) != nil
+	return findHTMLCloseTag(data, closeAngle+1) >= 0
 }
 
 func injectAttr(data []byte, attrRegex *regexp.Regexp, attrName, value string) []byte {

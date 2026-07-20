@@ -43,7 +43,14 @@ type File struct {
 	// silently destroy H1.
 	lastServerWrite       string
 	lastStableObservation string
-	observed              bool
+
+	// historyKey is not a third record. It is this file's immutable backup
+	// identity, resolved exactly once and never re-derived from mutable disk
+	// bytes. Deriving it per request meant that an external process deleting the
+	// file or stripping its htmlclayid silently moved the key to a path hash, so
+	// the versions API listed and restored nothing while the id-keyed backups sat
+	// on disk.
+	historyKey string
 }
 
 // Lock and Unlock serialize read-modify-write operations on this file (saves,
@@ -60,15 +67,37 @@ func (f *File) LastServerWrite() string { return f.lastServerWrite }
 // disk. Caller must hold Lock().
 func (f *File) LastStableObservation() string { return f.lastStableObservation }
 
-// Observed reports whether this file has been read at least once, which is what
-// makes the very first save comparable. Caller must hold Lock().
-func (f *File) Observed() bool { return f.observed }
+// HistoryKey returns this file's resolved backup identity, or "" if it has not
+// been resolved yet. Caller must hold Lock().
+func (f *File) HistoryKey() string { return f.historyKey }
+
+// SetHistoryKey records the backup identity the first time it is resolved and
+// then refuses to move it. Every list, read, restore and save path reads the
+// stored key rather than recomputing one from whatever is on disk right now.
+// Caller must hold Lock().
+func (f *File) SetHistoryKey(key string) {
+	if f.historyKey == "" {
+		f.historyKey = key
+	}
+}
+
+// Observed reports whether this server has ever written or first-observed this
+// file, which is what makes the very first save comparable.
+//
+// It is derived from lastServerWrite rather than stored, deliberately. As a
+// stored flag it was a third per-file record, and a load-bearing one: it gates
+// clone resolution and the first-open snapshot. The watcher could set it for a
+// file that had never been served (an origin-trusted SSE subscription may name
+// any registered path), and that file's first real GET then skipped both. Since
+// the normative table says lastServerWrite is never set by the watcher and never
+// set by serving a page, deriving from it makes the watcher structurally unable
+// to mark a file observed. Caller must hold Lock().
+func (f *File) Observed() bool { return f.lastServerWrite != "" }
 
 // RecordServerWrite advances both records. Caller must hold Lock().
 func (f *File) RecordServerWrite(hash string) {
 	f.lastServerWrite = hash
 	f.lastStableObservation = hash
-	f.observed = true
 }
 
 // RecordStableObservation advances only the stable-observation record, which is
@@ -76,7 +105,6 @@ func (f *File) RecordServerWrite(hash string) {
 // Lock().
 func (f *File) RecordStableObservation(hash string) {
 	f.lastStableObservation = hash
-	f.observed = true
 }
 
 // NoteFirstObservation seeds both records the first time a file is read, so the
@@ -84,7 +112,7 @@ func (f *File) RecordStableObservation(hash string) {
 // stale write. It reports whether this was the first observation. Caller must
 // hold Lock().
 func (f *File) NoteFirstObservation(hash string) bool {
-	if f.observed {
+	if f.Observed() {
 		return false
 	}
 	f.RecordServerWrite(hash)

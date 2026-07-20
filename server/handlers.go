@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,6 +98,7 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	// and the first-open snapshot still see a genuinely fresh file even after the
 	// htmlclayid injection below advances the records.
 	firstServe := !f.Observed()
+	serverWrote := false
 
 	// Only .htmlclay files carry a persistent identity; a plain .html file
 	// opened for viewing is never modified on disk.
@@ -109,37 +111,57 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 			if wErr := atomicWriteFile(f.AbsPath, data); wErr != nil {
 				s.logger.Printf("Error persisting htmlclayid for %s: %v", f.AbsPath, wErr)
 			} else {
+				serverWrote = true
 				s.logger.Printf("Assigned htmlclayid %s to %s", id, f.RelPath)
 			}
 		}
 	}
 
 	if firstServe {
-		data = s.resolveIdentityOnFirstOpen(f, data)
+		var forked bool
+		data, forked = s.resolveIdentityOnFirstOpen(f, data)
+		serverWrote = serverWrote || forked
 	}
 
-	// The injection is a server write, so it advances lastServerWrite and the
-	// first save of a new .htmlclay no longer false-positives against the
-	// server's own edit. Serving on its own never advances it.
-	if firstServe {
-		f.NoteFirstObservation(versions.Hash(data))
-	}
+	// The file's backup identity is resolved exactly once, here, after injection
+	// and clone resolution have settled what identity the file actually carries.
+	// Every later list, read, restore and save reads this stored key instead of
+	// re-deriving one from bytes an external process may have changed.
+	f.SetHistoryKey(versions.Key(f.AbsPath, data))
+	key := f.HistoryKey()
 
-	var snapshot []byte
-	if firstServe {
-		snapshot = data
+	// The injection is a server write, so it advances both records on every
+	// injection and not only the first. Guarding the update by firstServe meant
+	// that an external editor stripping the id, followed by a reload, had the
+	// server inject a fresh id, write disk, leave the records untouched, and then
+	// broadcast its own write as a foreign edit and warn stale against itself.
+	// Serving on its own still never advances anything.
+	if firstServe || serverWrote {
+		f.RecordServerWrite(versions.Hash(data))
 	}
-	f.Unlock()
 
 	// B1a: capture a version when a file is first served, only if it differs from
 	// the newest existing backup. Without this, a freshly opened file that has
 	// never been saved has nothing to restore.
-	if snapshot != nil {
-		key := versions.Key(f.AbsPath, snapshot)
-		if _, bErr := s.versions.Backup(key, f.AbsPath, snapshot); bErr != nil {
+	//
+	// Published inside f.Lock(), per B1. Publishing after the unlock let two
+	// concurrent GETs interleave: GET1 captured H0 and was descheduled, GET2 saw
+	// the file as observed and returned a token with no snapshot work, a save
+	// published H0 then H1, and GET1 then published its stale H0, leaving history
+	// ending at H0 after a successful H1 save. Two tabs opening one file at once
+	// is ordinary.
+	pruneKey := ""
+	if firstServe {
+		if _, bErr := s.versions.Backup(key, f.AbsPath, data); bErr != nil {
 			s.logger.Printf("First-open snapshot failed for %s: %v", f.RelPath, bErr)
 		}
-		s.versions.MaybePrune(key, f.AbsPath)
+		pruneKey = key
+	}
+	f.Unlock()
+
+	// Bulk pruning runs on the store lock only, never inside f.Lock().
+	if pruneKey != "" {
+		s.versions.MaybePrune(pruneKey, f.AbsPath)
 	}
 
 	data = htmlutil.InjectToken(data, f.Token)
@@ -163,49 +185,53 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// resolveIdentityOnFirstOpen makes clone identity self-healing.
+// resolveIdentityOnFirstOpen makes clone identity self-healing, and reports
+// whether it wrote to disk.
 //
-// If the id already belongs to a history bound to a different absolute path that
-// still exists, this file is a clone and gets a fresh htmlclayid. If the old path
-// is gone, this is a rename: keep the id and update the stored path.
+// Ownership is checked and claimed in one store transaction. Doing it in two let
+// two copies of one file, first-opened concurrently, both see no owner, so
+// neither got a fresh id and both landed in a single history.
 //
 // Caller must hold f.Lock().
-func (s *Server) resolveIdentityOnFirstOpen(f *session.File, data []byte) []byte {
+func (s *Server) resolveIdentityOnFirstOpen(f *session.File, data []byte) ([]byte, bool) {
 	if !strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
-		return data
+		return data, false
 	}
 	id := htmlutil.ReadHTMLClayID(data)
 	if !versions.IsCanonicalUUID(id) {
-		return data
+		return data, false
 	}
 
-	key := versions.Key(f.AbsPath, data)
-	bound, ok := s.versions.BoundPath(key)
-	if !ok || samePath(bound, f.AbsPath) {
-		return data
+	status, bound, err := s.versions.Claim(versions.Key(f.AbsPath, data), f.AbsPath)
+	if err != nil {
+		s.logger.Printf("Could not claim history for %s: %v", f.RelPath, err)
+		return data, false
 	}
-
-	if _, err := os.Lstat(bound); err != nil {
-		if rErr := s.versions.Rebind(key, f.AbsPath); rErr != nil {
-			s.logger.Printf("Could not rebind history for %s: %v", f.RelPath, rErr)
-		} else {
-			s.logger.Printf("Rebound history %s from %s to %s", id, bound, f.AbsPath)
-		}
-		return data
+	switch status {
+	case versions.ClaimOwned:
+		return data, false
+	case versions.ClaimRenamed:
+		s.logger.Printf("Rebound history %s from %s to %s", id, bound, f.AbsPath)
+		return data, false
 	}
 
 	newID, err := htmlutil.GenerateHTMLClayID()
 	if err != nil {
 		s.logger.Printf("Error generating htmlclayid for clone %s: %v", f.RelPath, err)
-		return data
+		return data, false
 	}
 	forked := htmlutil.SetHTMLClayID(data, newID)
 	if wErr := atomicWriteFile(f.AbsPath, forked); wErr != nil {
 		s.logger.Printf("Error forking htmlclayid for %s: %v", f.AbsPath, wErr)
-		return data
+		return data, false
+	}
+	// Claim the fresh identity in the same breath, so a second clone opened
+	// concurrently sees this one as the owner rather than racing for the same id.
+	if _, _, cErr := s.versions.Claim(versions.Key(f.AbsPath, forked), f.AbsPath); cErr != nil {
+		s.logger.Printf("Could not claim forked history for %s: %v", f.RelPath, cErr)
 	}
 	s.logger.Printf("Detected clone of %s: assigned fresh htmlclayid %s to %s", bound, newID, f.RelPath)
-	return forked
+	return forked, true
 }
 
 // serveAsset serves a file that was never opened directly: an asset (css, js,
@@ -267,7 +293,12 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 
 	// B8: assets always revalidate. Detailed failure causes go in the log; the
 	// response bodies above stay coarse.
-	etag := assetETag(info)
+	etag, err := assetETag(file, info)
+	if err != nil {
+		s.logger.Printf("Error computing ETag for %s: %v", absPath, err)
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("ETag", etag)
 
@@ -280,8 +311,32 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	http.ServeContent(w, r, name, info.ModTime(), file)
 }
 
-func assetETag(info os.FileInfo) string {
-	return fmt.Sprintf(`"%x-%x"`, info.ModTime().UnixNano(), info.Size())
+// maxETagHashSize bounds the bytes hashed to build a content ETag. Above it the
+// validator falls back to metadata, which is documented below.
+const maxETagHashSize = 32 * 1024 * 1024
+
+// assetETag derives the validator from the asset's content rather than from its
+// mtime and size. A metadata-only ETag returned 304 for a same-size replacement
+// with a preserved timestamp, so the browser kept stale bytes, while the watcher
+// path explicitly accounts for exactly that replacement pattern: the two
+// disagreed about whether the file had changed.
+//
+// Above maxETagHashSize the metadata form is kept deliberately. Hashing an
+// arbitrarily large asset on every conditional request costs more than the stale
+// window is worth, and assets that big are media, not the hand-edited HTML and
+// CSS the replacement pattern applies to.
+func assetETag(file *os.File, info os.FileInfo) (string, error) {
+	if info.Size() > maxETagHashSize {
+		return fmt.Sprintf(`"m%x-%x"`, info.ModTime().UnixNano(), info.Size()), nil
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`"c%x-%x"`, info.Size(), h.Sum(nil)[:16]), nil
 }
 
 // sidecarEncoding recognizes an explicitly requested pre-compressed sidecar. Only
@@ -420,7 +475,15 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 
 	f.Lock()
 	current, readErr := os.ReadFile(f.AbsPath)
-	key := versions.Key(f.AbsPath, current)
+
+	// The backup identity comes from the stored key, never from the bytes that
+	// happen to be on disk right now. Re-deriving it here meant that an external
+	// process deleting the file or stripping its htmlclayid silently moved the key
+	// to a path hash, so this save's backups went somewhere the versions API would
+	// never list, while the warning told the user their previous version was in
+	// Backups. A file saved before it was ever served resolves its key here.
+	f.SetHistoryKey(versions.Key(f.AbsPath, current))
+	key := f.HistoryKey()
 
 	// B5: compare the on-disk hash against lastServerWrite. Hashing the on-disk
 	// bytes on both sides sidesteps the token inject/strip round-trip entirely.
@@ -533,10 +596,11 @@ func atomicWriteFile(targetPath string, data []byte) error {
 	tmpPath = ""
 
 	// Fsync the directory so the rename is durable: without this, a crash right
-	// after a successful save can revert the file to its previous contents.
-	if dirFile, err := os.Open(dir); err == nil {
-		dirFile.Sync()
-		dirFile.Close()
+	// after a successful save can revert the file to its previous contents. The
+	// error is returned rather than discarded, because a save that cannot be made
+	// durable must not be acknowledged as one.
+	if err := versions.SyncDir(dir); err != nil {
+		return fmt.Errorf("sync directory: %w", err)
 	}
 
 	return nil

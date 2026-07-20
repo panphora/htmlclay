@@ -348,3 +348,45 @@ func TestRecordsAreGuardedByTheFileLock(t *testing.T) {
 		t.Fatalf("lastServerWrite = %q", f.LastServerWrite())
 	}
 }
+
+// Blocker 4a. observed is derived from lastServerWrite rather than stored, so the
+// watcher is structurally unable to mark a file observed. As a stored flag it was
+// a third per-file record, and an origin-trusted SSE subscription naming a
+// never-served file let the watcher set it: that file's first real GET then
+// skipped both clone resolution and its opening snapshot.
+func TestWatcherObservationDoesNotMarkAFileObserved(t *testing.T) {
+	f := &File{}
+
+	f.Lock()
+	defer f.Unlock()
+
+	f.RecordStableObservation("watcher-saw-this")
+
+	if f.Observed() {
+		t.Fatal("a watcher observation marked the file observed, which suppresses " +
+			"clone resolution and the first-open snapshot on the first real GET")
+	}
+	if !f.NoteFirstObservation("first-real-read") {
+		t.Fatal("the first real read was not reported as the first observation")
+	}
+	if f.LastServerWrite() != "first-real-read" {
+		t.Fatalf("lastServerWrite = %q", f.LastServerWrite())
+	}
+}
+
+// The history key is resolved once and then immovable.
+func TestHistoryKeyIsResolvedOnce(t *testing.T) {
+	f := &File{}
+
+	f.Lock()
+	defer f.Unlock()
+
+	if f.HistoryKey() != "" {
+		t.Fatal("a fresh file already has a history key")
+	}
+	f.SetHistoryKey("id:first")
+	f.SetHistoryKey("path:second")
+	if f.HistoryKey() != "id:first" {
+		t.Fatalf("history key moved to %q; it must never be re-derived", f.HistoryKey())
+	}
+}

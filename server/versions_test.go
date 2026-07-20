@@ -93,11 +93,23 @@ func (fx *fileFixture) withCurrentID(body string) string {
 	return string(htmlutil.SetHTMLClayID([]byte(body), id))
 }
 
+// key reads the file's resolved backup identity, the same one every handler uses.
+// Re-deriving it from current disk bytes is exactly the bug the stored key fixes,
+// so the helper must not do it either.
+func (fx *fileFixture) key(t *testing.T) string {
+	t.Helper()
+	fx.file.Lock()
+	defer fx.file.Unlock()
+	if k := fx.file.HistoryKey(); k != "" {
+		return k
+	}
+	data, _ := os.ReadFile(fx.file.AbsPath)
+	return versions.Key(fx.file.AbsPath, data)
+}
+
 func (fx *fileFixture) history(t *testing.T) []versions.Entry {
 	t.Helper()
-	data, _ := os.ReadFile(fx.file.AbsPath)
-	key := versions.Key(fx.file.AbsPath, data)
-	entries, err := fx.srv.versions.List(key, fx.file.AbsPath)
+	entries, err := fx.srv.versions.List(fx.key(t), fx.file.AbsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,9 +118,7 @@ func (fx *fileFixture) history(t *testing.T) []versions.Entry {
 
 func (fx *fileFixture) versionBody(t *testing.T, name string) string {
 	t.Helper()
-	data, _ := os.ReadFile(fx.file.AbsPath)
-	key := versions.Key(fx.file.AbsPath, data)
-	body, err := fx.srv.versions.Read(key, fx.file.AbsPath, name)
+	body, err := fx.srv.versions.Read(fx.key(t), fx.file.AbsPath, name)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/panphora/htmlclay/browser"
 	"github.com/panphora/htmlclay/config"
@@ -352,7 +351,7 @@ func (a *app) refreshLoginItem() {
 func (a *app) shutdown() {
 	a.logger.Printf("Shutting down...")
 	a.sessions.RevokeAll()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), server.ShutdownBudget)
 	defer cancel()
 	if err := a.srv.Shutdown(ctx); err != nil {
 		a.logger.Printf("Graceful shutdown timed out (%v), forcing close", err)

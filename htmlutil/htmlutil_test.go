@@ -441,3 +441,30 @@ func TestStripHTMLClayID(t *testing.T) {
 		t.Fatalf("stripping a plain document produced an id %q", got)
 	}
 }
+
+// Finding 8. The completeness check must be as context-aware about the closing
+// tag as it is about the opening one. A raw regex over the trailing bytes accepted
+// a fake closing tag, so a truncated version passed and replaced a good file.
+func TestIsCompleteHTMLDocumentRejectsAFakeClosingTag(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{"closing tag only inside a comment", `<html><body><!-- </html> -->`, false},
+		{"closing tag only inside a script", `<html><body><script>var s = "</html>";</script>`, false},
+		{"closing tag only inside a style", `<html><body><style>/* </html> */</style>`, false},
+		{"closing tag only inside a textarea", `<html><body><textarea></html></textarea>`, false},
+		{"truncated with no closing tag at all", `<html><body>partial`, false},
+		{"real closing tag", `<html><body>ok</body></html>`, true},
+		{"real closing tag after a decoy comment", `<html><body><!-- </html> --></body></html>`, true},
+		{"real closing tag after a decoy script", `<html><script>"</html>"</script></html>`, true},
+		{"real closing tag with whitespace", "<html><body>ok</body></html\n>", true},
+		{"uppercase closing tag", `<html><body>ok</BODY></HTML>`, true},
+	}
+	for _, c := range cases {
+		if got := IsCompleteHTMLDocument([]byte(c.data)); got != c.want {
+			t.Errorf("%s: IsCompleteHTMLDocument(%q) = %v, want %v", c.name, c.data, got, c.want)
+		}
+	}
+}

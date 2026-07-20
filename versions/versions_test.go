@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -554,5 +555,146 @@ func TestStoreSurvivesReload(t *testing.T) {
 	entries, _ := second.List(key, path)
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 versions in one history, got %d", len(entries))
+	}
+}
+
+// Blocker 3. Ownership is checked and claimed in one transaction. Two separate
+// transactions let two copies of one file, first-opened concurrently, both see no
+// owner, so neither got a fresh id and both landed in a single logical history.
+func TestClaimIsOneCheckAndClaimTransaction(t *testing.T) {
+	home := t.TempDir()
+	one := filepath.Join(home, "one.htmlclay")
+	two := filepath.Join(home, "two.htmlclay")
+	for _, p := range []string{one, two} {
+		if err := os.WriteFile(p, doc("shared"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := New(t.TempDir())
+	key := "id:" + strings.ToLower(validUUID)
+
+	status, _, err := s.Claim(key, one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ClaimOwned {
+		t.Fatalf("first claim = %v, want ClaimOwned", status)
+	}
+
+	// No backup has been written yet, so no history folder exists to consult. The
+	// reservation alone must already make the second caller a clone.
+	status, bound, err := s.Claim(key, two)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ClaimClone {
+		t.Fatalf("second claim = %v, want ClaimClone", status)
+	}
+	if bound != one {
+		t.Fatalf("second claim reported owner %q, want %q", bound, one)
+	}
+
+	// Reclaiming from the same path is idempotent.
+	if status, _, _ := s.Claim(key, one); status != ClaimOwned {
+		t.Fatalf("reclaim by the owner = %v, want ClaimOwned", status)
+	}
+}
+
+// A key bound to a path that is definitively gone is a rename, not a clone.
+func TestClaimTreatsAMissingBoundPathAsARename(t *testing.T) {
+	dir := t.TempDir()
+	s := New(t.TempDir())
+	key := "id:" + strings.ToLower(validUUID)
+	gone := filepath.Join(dir, "before.htmlclay")
+
+	if _, _, err := s.Claim(key, gone); err != nil {
+		t.Fatal(err)
+	}
+	status, bound, err := s.Claim(key, filepath.Join(dir, "after.htmlclay"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ClaimRenamed {
+		t.Fatalf("claim over a vanished path = %v, want ClaimRenamed", status)
+	}
+	if bound != gone {
+		t.Fatalf("rename reported previous path %q, want %q", bound, gone)
+	}
+}
+
+// Only a definitive not-exists means the old path is gone. A transient permission
+// failure read as "gone" rebound a history onto a clone.
+func TestClaimTreatsAPermissionErrorAsStillPresent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can stat through a mode-000 directory")
+	}
+	home := t.TempDir()
+	locked := filepath.Join(home, "locked")
+	if err := os.MkdirAll(locked, 0755); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(locked, "original.htmlclay")
+	if err := os.WriteFile(original, []byte("<html></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(t.TempDir())
+	key := "id:" + strings.ToLower(validUUID)
+	if _, _, err := s.Claim(key, original); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(locked, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(locked, 0755)
+
+	if _, err := os.Lstat(original); err == nil {
+		t.Skip("the platform still stats through a mode-000 directory")
+	}
+
+	status, _, err := s.Claim(key, filepath.Join(home, "copy.htmlclay"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != ClaimClone {
+		t.Fatalf("a permission failure on the bound path was read as %v; only a "+
+			"definitive not-exists may mean the old path is gone", status)
+	}
+}
+
+// The internal-directory denial compares canonical request paths, which are
+// symlink-resolved, so the store base must be resolved too. A merely cleaned base
+// let a symlinked config path serve internal history as an ordinary asset.
+func TestContainsResolvesASymlinkedBase(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+
+	s := New(filepath.Join(link, "versions"))
+	resolvedReal, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inside := filepath.Join(resolvedReal, "versions", "notes-abcd1234", "x.html")
+	if !s.Contains(inside) {
+		t.Fatalf("a resolved request path inside the versions directory was not "+
+			"recognized as internal: %q against base %q", inside, s.BaseDir())
+	}
+}
+
+func TestSyncDirReportsAMissingDirectory(t *testing.T) {
+	if err := SyncDir(t.TempDir()); err != nil {
+		t.Fatalf("SyncDir on a real directory: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if err := SyncDir(filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Fatal("SyncDir silently accepted a directory that does not exist")
 	}
 }

@@ -51,6 +51,13 @@ type watchEntry struct {
 	pendingData []byte
 	pendingAt   time.Time
 	absent      bool
+
+	// removed is set under the watcher lock when the last subscriber leaves. tick
+	// copies entry pointers outside that lock, so without this an unwatch could
+	// land mid-check and the orphaned check would still record its hash into
+	// lastStableObservation and publish into an empty hub. That change was then
+	// suppressed forever, and the user never saw it.
+	removed bool
 }
 
 // watcher polls currently-subscribed files only. It starts on the first
@@ -111,6 +118,7 @@ func (wt *watcher) unwatch(f *session.File) {
 		wt.mu.Unlock()
 		return
 	}
+	e.removed = true
 	delete(wt.entries, f.AbsPath)
 
 	var stop chan struct{}
@@ -133,6 +141,9 @@ func (wt *watcher) shutdown() {
 		wt.running = false
 		stop = wt.stopCh
 		wt.stopCh = nil
+	}
+	for _, e := range wt.entries {
+		e.removed = true
 	}
 	wt.entries = make(map[string]*watchEntry)
 	wt.mu.Unlock()
@@ -174,6 +185,9 @@ func (wt *watcher) tick() {
 // watcher; the two per-file records are read and written only under the file
 // lock, at the very end.
 func (wt *watcher) check(e *watchEntry) {
+	if wt.isRemoved(e) {
+		return
+	}
 	path := e.file.AbsPath
 
 	before, err := os.Lstat(path)
@@ -219,17 +233,38 @@ func (wt *watcher) check(e *watchEntry) {
 	wt.publish(e, hash, data)
 }
 
+func (wt *watcher) isRemoved(e *watchEntry) bool {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+	return e.removed
+}
+
 // publish reacquires the file lock, revalidates that the candidate is still the
 // current disk content, compares against lastStableObservation, allocates the
 // sequence from the shared counter and enqueues, all inside one critical section.
+//
+// The watcher lock is held across the removal check, the record and the enqueue,
+// so unwatch cannot slip in between them. Lock order is file lock, then watcher
+// lock, then hub lock; watch and unwatch take only the watcher lock, so there is
+// no cycle.
 func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
 	f := e.file
 
 	f.Lock()
 	defer f.Unlock()
 
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+
 	e.pendingHash = ""
 	e.pendingData = nil
+
+	// An entry whose last subscriber left must not record or publish: it would
+	// advance lastStableObservation for a change nobody received, and that change
+	// would then be suppressed forever on reconnect.
+	if e.removed {
+		return
+	}
 
 	// Suppression is by hash and stays valid until disk content diverges, rather
 	// than expiring on a timer. Identical bytes are not a meaningful external

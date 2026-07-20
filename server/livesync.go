@@ -7,8 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
-	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,12 +34,30 @@ const (
 	// up is evicted rather than allowed to grow memory without limit.
 	subQueueSize = 32
 	// sseWriteDeadline is applied fresh before every frame, so a subscriber stuck
-	// inside Write fails on its own instead of pinning a goroutine forever.
-	sseWriteDeadline = 10 * time.Second
+	// inside Write fails on its own instead of pinning a goroutine forever. It
+	// stays strictly under ShutdownBudget: at 10s against a 3s graceful shutdown a
+	// blocked write necessarily outlived the budget, so shutdown always timed out
+	// into a forced close.
+	sseWriteDeadline = 2 * time.Second
 	// keepaliveInterval keeps intermediaries and idle-timeout logic from closing
 	// an otherwise silent stream.
 	keepaliveInterval = 25 * time.Second
+
+	// replayDepth and replayMaxBytes bound the per-key, per-lane replay buffer that
+	// backs Last-Event-ID recovery. Frames are whole HTML documents, so the byte
+	// cap rather than the count is what actually holds memory down.
+	replayDepth    = 16
+	replayMaxBytes = 4 * 1024 * 1024
+
+	// seqPersistWindow is how far ahead of the live sequence the high-water mark is
+	// persisted, so the counter survives a restart without an fsync per event.
+	seqPersistWindow = 10000
 )
+
+// ShutdownBudget is how long graceful shutdown may take. main.go uses it for its
+// shutdown context, and sseWriteDeadline is defined strictly under it, so the two
+// cannot drift apart into a shutdown that always force-closes.
+const ShutdownBudget = 3 * time.Second
 
 // Documented limit: browsers cap HTTP/1.1 connections at six per origin, and an
 // SSE stream holds one for the life of the page. Once six htmlclay tabs are open
@@ -52,10 +71,20 @@ type subscriber struct {
 	ch   chan []byte
 	done chan struct{}
 	once sync.Once
+
+	// lastEventID is the client's Last-Event-ID, zero when it is a fresh
+	// connection with nothing to catch up on.
+	lastEventID int64
 }
 
 func (sub *subscriber) stop() {
 	sub.once.Do(func() { close(sub.done) })
+}
+
+// retainedFrame is one frame held for Last-Event-ID replay.
+type retainedFrame struct {
+	seq   int64
+	frame []byte
 }
 
 // hub owns every SSE subscriber and the single broadcast sequence counter shared
@@ -66,16 +95,43 @@ type hub struct {
 	seq     int64
 	closing chan struct{}
 	closed  bool
+
+	// replay holds the most recent frames per key and lane so a subscriber that
+	// reconnects with Last-Event-ID gets what it missed. Delivery was previously
+	// lossy in two places with no way to notice: a relay landing between the header
+	// flush and hub.add had no recipient, and a subscriber whose bounded queue
+	// filled was evicted along with the event that filled it.
+	replay      map[string][]retainedFrame
+	replayBytes map[string]int
+
+	// seqPath persists the sequence high-water mark. Seeding from the wall clock
+	// alone meant a backward clock change plus a restart put every new sequence
+	// below what an open client had retained, and both clients then discarded every
+	// update until real time caught up. Empty disables persistence.
+	seqPath   string
+	persisted int64
 }
 
-func newHub() *hub {
+func newHub(seqPath string) *hub {
+	seq := time.Now().UnixMilli()
+	persisted := int64(0)
+	if hw, ok := readSeqHighWater(seqPath); ok {
+		persisted = hw
+		if hw >= seq {
+			seq = hw + 1
+		}
+	}
 	return &hub{
-		subs: make(map[string]map[*subscriber]struct{}),
-		// Seed from wall-clock milliseconds, as the parity implementation does. A
-		// counter restarting at 1 after a server restart is rejected by the
-		// client's retained high-water mark and the stream silently stops updating.
-		seq:     time.Now().UnixMilli(),
-		closing: make(chan struct{}),
+		subs:        make(map[string]map[*subscriber]struct{}),
+		replay:      make(map[string][]retainedFrame),
+		replayBytes: make(map[string]int),
+		// Seed from wall-clock milliseconds, as the parity implementation does, but
+		// never below the persisted high-water mark. A counter restarting below what
+		// the client retained is rejected and the stream silently stops updating.
+		seq:       seq,
+		persisted: persisted,
+		closing:   make(chan struct{}),
+		seqPath:   seqPath,
 	}
 }
 
@@ -88,7 +144,61 @@ func (h *hub) nextSeq() int64 {
 	} else {
 		h.seq++
 	}
+	// Persist a window ahead rather than every allocation, so the cost is one small
+	// write per seqPersistWindow events while a restart still resumes above
+	// anything already handed out.
+	if h.seq >= h.persisted {
+		h.persisted = h.seq + seqPersistWindow
+		writeSeqHighWater(h.seqPath, h.persisted)
+	}
 	return h.seq
+}
+
+func readSeqHighWater(path string) (int64, bool) {
+	if path == "" {
+		return 0, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+func writeSeqHighWater(path string, v int64) {
+	if path == "" {
+		return
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(dir, ".htmlclay-seq-*")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.WriteString(strconv.FormatInt(v, 10)); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+	}
 }
 
 // add registers a subscriber.
@@ -110,6 +220,46 @@ func (h *hub) add(sub *subscriber) {
 		h.subs[sub.key] = set
 	}
 	set[sub] = struct{}{}
+
+	// Replay whatever this client missed while it was disconnected. A fresh client
+	// sends no Last-Event-ID and gets nothing: it just loaded the page and holds
+	// current content already.
+	if sub.lastEventID <= 0 {
+		return
+	}
+	var missed [][]byte
+	for _, rf := range h.replay[replayKey(sub.key, sub.lane)] {
+		if rf.seq > sub.lastEventID {
+			missed = append(missed, rf.frame)
+		}
+	}
+	if len(missed) > 0 && !offer(sub, missed) {
+		delete(set, sub)
+		if len(set) == 0 {
+			delete(h.subs, sub.key)
+		}
+		sub.stop()
+	}
+}
+
+func replayKey(key, lane string) string { return key + "\x00" + lane }
+
+// retain records a frame for Last-Event-ID replay, bounded by both count and
+// total bytes so whole-document frames cannot grow memory without limit. A client
+// disconnected for longer than the buffer holds still loses events; that residual
+// is bounded and visible here rather than silent.
+//
+// Caller must hold h.mu.
+func (h *hub) retain(key, lane string, seq int64, f []byte) {
+	rk := replayKey(key, lane)
+	buf := append(h.replay[rk], retainedFrame{seq: seq, frame: f})
+	total := h.replayBytes[rk] + len(f)
+	for len(buf) > replayDepth || (total > replayMaxBytes && len(buf) > 1) {
+		total -= len(buf[0].frame)
+		buf = buf[1:]
+	}
+	h.replay[rk] = buf
+	h.replayBytes[rk] = total
 }
 
 // remove drops a subscriber.
@@ -132,21 +282,25 @@ func (h *hub) subscriberCount(key string) int {
 	return len(h.subs[key])
 }
 
-// enqueue posts pre-serialized frames to every subscriber on lane. Frames for one
-// subscriber keep their insertion order. A subscriber whose queue is full is
-// evicted and unblocked: dropping it from the map alone would not free a
-// goroutine already stuck inside Write, which is what the rolling write deadline
-// on the connection handles.
+// enqueue posts one pre-serialized frame to every subscriber on lane, and retains
+// it for replay. Frames for one subscriber keep their insertion order. A
+// subscriber whose queue is full is evicted and unblocked: dropping it from the
+// map alone would not free a goroutine already stuck inside Write, which is what
+// the rolling write deadline on the connection handles. The evicted client
+// reconnects with Last-Event-ID and is replayed from the buffer, so eviction
+// costs it a reconnect rather than the events themselves.
 //
 // Caller must hold h.mu.
-func (h *hub) enqueue(key, lane string, frames ...[]byte) {
+func (h *hub) enqueue(key, lane string, seq int64, f []byte) {
+	h.retain(key, lane, seq, f)
+
 	set := h.subs[key]
 	var evicted []*subscriber
 	for sub := range set {
 		if sub.lane != lane {
 			continue
 		}
-		if !offer(sub, frames) {
+		if !offer(sub, [][]byte{f}) {
 			evicted = append(evicted, sub)
 		}
 	}
@@ -186,13 +340,19 @@ type notifyPayload struct {
 	Msg     string `json:"msg"`
 }
 
-// frame serializes one SSE data frame. HTML escaping is off, matching the parity
-// implementations' JSON.stringify: these payloads are whole HTML documents, and
-// escaping every angle bracket would inflate them for no benefit. An SSE frame is
-// never embedded in an HTML context.
-func frame(v interface{}) []byte {
+// frame serializes one SSE frame, carrying the shared sequence as the SSE id so a
+// reconnecting EventSource resumes exactly where it stopped. Both clients already
+// discard any payload whose seq is at or below their retained high-water mark, so
+// a replayed frame they have seen is harmless.
+//
+// HTML escaping is off, matching the parity implementations' JSON.stringify:
+// these payloads are whole HTML documents, and escaping every angle bracket would
+// inflate them for no benefit. An SSE frame is never embedded in an HTML context.
+func frame(seq int64, v interface{}) []byte {
 	var buf bytes.Buffer
-	buf.WriteString("data: ")
+	buf.WriteString("id: ")
+	buf.WriteString(strconv.FormatInt(seq, 10))
+	buf.WriteString("\ndata: ")
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
@@ -208,11 +368,12 @@ func frame(v interface{}) []byte {
 func (h *hub) relay(key, html, sender string, identityMap json.RawMessage) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	f := frame(livePayload{HTML: html, Sender: sender, Seq: h.nextSeq(), IdentityMap: identityMap})
+	seq := h.nextSeq()
+	f := frame(seq, livePayload{HTML: html, Sender: sender, Seq: seq, IdentityMap: identityMap})
 	if f == nil {
 		return
 	}
-	h.enqueue(key, laneLive, f)
+	h.enqueue(key, laneLive, seq, f)
 }
 
 // broadcastSaved sends post-strip on-disk HTML to the saved lane. Used by disk
@@ -220,11 +381,12 @@ func (h *hub) relay(key, html, sender string, identityMap json.RawMessage) {
 func (h *hub) broadcastSaved(key, html, sender string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	f := frame(livePayload{HTML: html, Sender: sender, Seq: h.nextSeq()})
+	seq := h.nextSeq()
+	f := frame(seq, livePayload{HTML: html, Sender: sender, Seq: seq})
 	if f == nil {
 		return
 	}
-	h.enqueue(key, laneSaved, f)
+	h.enqueue(key, laneSaved, seq, f)
 }
 
 // publishExternalChange is what an external edit produces: a notification on the
@@ -240,11 +402,13 @@ func (h *hub) publishExternalChange(key, msg, html string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if n := frame(notifyPayload{Type: "notification", MsgType: "warning", Msg: msg}); n != nil {
-		h.enqueue(key, laneLive, n)
+	nSeq := h.nextSeq()
+	if n := frame(nSeq, notifyPayload{Type: "notification", MsgType: "warning", Msg: msg}); n != nil {
+		h.enqueue(key, laneLive, nSeq, n)
 	}
-	if b := frame(livePayload{HTML: html, Sender: "file-system", Seq: h.nextSeq()}); b != nil {
-		h.enqueue(key, laneSaved, b)
+	bSeq := h.nextSeq()
+	if b := frame(bSeq, livePayload{HTML: html, Sender: "file-system", Seq: bSeq}); b != nil {
+		h.enqueue(key, laneSaved, bSeq, b)
 	}
 }
 
@@ -252,8 +416,9 @@ func (h *hub) publishExternalChange(key, msg, html string) {
 func (h *hub) notifyWarning(key, msg string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if n := frame(notifyPayload{Type: "notification", MsgType: "warning", Msg: msg}); n != nil {
-		h.enqueue(key, laneLive, n)
+	seq := h.nextSeq()
+	if n := frame(seq, notifyPayload{Type: "notification", MsgType: "warning", Msg: msg}); n != nil {
+		h.enqueue(key, laneLive, seq, n)
 	}
 }
 
@@ -274,16 +439,6 @@ func (h *hub) shutdown() {
 		}
 		delete(h.subs, key)
 	}
-}
-
-// samePath compares two absolute paths, folding case on the platforms whose
-// default filesystem ignores it.
-func samePath(a, b string) bool {
-	a, b = filepath.Clean(a), filepath.Clean(b)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
 }
 
 // resolvePageURL turns a client-supplied page URL into the registered file it
@@ -344,6 +499,31 @@ func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sub := &subscriber{
+		key:         f.AbsPath,
+		lane:        lane,
+		ch:          make(chan []byte, subQueueSize),
+		done:        make(chan struct{}),
+		lastEventID: parseLastEventID(r),
+	}
+
+	// The subscriber is registered BEFORE the headers are flushed, so nothing that
+	// happens during setup has no recipient. Flushing first left a window in which
+	// a relay found an empty subscriber set and the event was simply gone. Frames
+	// arriving before the flush sit in the bounded queue and go out right after it.
+	//
+	// One watch and one unwatch per connection. The watcher refcounts, so it polls
+	// only currently-subscribed files and stops when the last stream goes away.
+	s.hub.add(sub)
+	s.watcher.watch(f)
+	defer func() {
+		// unwatch runs before hub.remove so a poll that is mid-flight cannot publish
+		// into a set this connection has already left: unwatch is what tells the
+		// watcher to stop, and it only returns once no orphaned check can record.
+		s.watcher.unwatch(f)
+		s.hub.remove(sub)
+	}()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "keep-alive")
@@ -353,22 +533,6 @@ func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("live-sync: cannot flush stream: %v", err)
 		return
 	}
-
-	sub := &subscriber{
-		key:  f.AbsPath,
-		lane: lane,
-		ch:   make(chan []byte, subQueueSize),
-		done: make(chan struct{}),
-	}
-
-	// One watch and one unwatch per connection. The watcher refcounts, so it polls
-	// only currently-subscribed files and stops when the last stream goes away.
-	s.hub.add(sub)
-	s.watcher.watch(f)
-	defer func() {
-		s.hub.remove(sub)
-		s.watcher.unwatch(f)
-	}()
 
 	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
@@ -394,6 +558,20 @@ func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// parseLastEventID reads the client's resume point. EventSource sends the header
+// automatically on reconnect, and both clients also accept the query form.
+func parseLastEventID(r *http.Request) int64 {
+	raw := r.Header.Get("Last-Event-ID")
+	if raw == "" {
+		raw = r.URL.Query().Get("lastEventId")
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
 }
 
 func writeSSE(rc *http.ResponseController, w http.ResponseWriter, msg []byte) bool {

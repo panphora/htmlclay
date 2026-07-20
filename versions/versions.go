@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,10 +135,33 @@ type Store struct {
 // New returns a store rooted at baseDir, which is created lazily on first write.
 func New(baseDir string) *Store {
 	return &Store{
-		baseDir:   filepath.Clean(baseDir),
+		baseDir:   resolveBase(baseDir),
 		index:     make(map[string]history),
 		lastPrune: make(map[string]time.Time),
 	}
+}
+
+// resolveBase resolves symlinks in the versions directory so containment checks
+// compare like with like. session.Manager and asset serving both put request
+// paths through EvalSymlinks; a merely cleaned base would then fail to match a
+// resolved request path, and a symlinked config directory would let internal
+// history be served as an ordinary asset. The directory is created lazily, so
+// when it does not exist yet the nearest existing ancestor is resolved instead.
+func resolveBase(baseDir string) string {
+	cleaned := filepath.Clean(baseDir)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return filepath.Clean(resolved)
+	}
+	parent, leaf := filepath.Dir(cleaned), filepath.Base(cleaned)
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		return filepath.Join(filepath.Clean(resolved), leaf)
+	}
+	return cleaned
+}
+
+// BaseDir returns the resolved versions directory without creating it.
+func (s *Store) BaseDir() string {
+	return s.baseDir
 }
 
 // Dir returns the versions directory, creating it if needed. Used by the tray
@@ -161,13 +185,43 @@ func (s *Store) Contains(absPath string) bool {
 
 // contain rechecks that child sits strictly inside the versions directory. Run on
 // every create, list, restore and prune.
+//
+// The prefix test folds case on the platforms whose default filesystem ignores
+// it, so a request differing only in the casing of an interior segment cannot
+// slip past the internal-directory denial.
 func (s *Store) contain(child string) error {
 	cleaned := filepath.Clean(child)
 	prefix := s.baseDir + string(os.PathSeparator)
-	if !strings.HasPrefix(cleaned, prefix) {
+	if len(cleaned) <= len(prefix) {
+		return fmt.Errorf("path %q escapes versions directory", cleaned)
+	}
+	head := cleaned[:len(prefix)]
+	if caseInsensitiveFS() {
+		if !strings.EqualFold(head, prefix) {
+			return fmt.Errorf("path %q escapes versions directory", cleaned)
+		}
+		return nil
+	}
+	if head != prefix {
 		return fmt.Errorf("path %q escapes versions directory", cleaned)
 	}
 	return nil
+}
+
+// caseInsensitiveFS reports whether the host platform's default filesystem
+// ignores case (Windows and macOS).
+func caseInsensitiveFS() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+}
+
+// samePath compares two absolute paths, folding case on the platforms whose
+// default filesystem ignores it.
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if caseInsensitiveFS() {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func (s *Store) load() error {
@@ -282,7 +336,7 @@ func (s *Store) historyDir(key, absPath string, create bool) (string, error) {
 
 	base := displayBase(absPath, key)
 
-	if h, ok := s.index[key]; ok {
+	if h, ok := s.index[key]; ok && h.folder != "" {
 		dir := filepath.Join(s.baseDir, h.folder)
 		if err := s.contain(dir); err != nil {
 			return "", err
@@ -312,6 +366,8 @@ func (s *Store) historyDir(key, absPath string, create bool) (string, error) {
 		return dir, nil
 	}
 
+	// Either the key is unknown, or Claim reserved it without materializing a
+	// folder. Both become a real history only when something is written.
 	if !create {
 		return "", ErrNoHistory
 	}
@@ -373,7 +429,12 @@ func atomicPublishBytes(dir, name string, data []byte) error {
 	if err := os.Chmod(tmpPath, 0600); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, filepath.Join(dir, name))
+	if err := os.Rename(tmpPath, filepath.Join(dir, name)); err != nil {
+		return err
+	}
+	// The bytes are already fsynced; the directory entry that names them is not
+	// until the containing directory is synced too.
+	return SyncDir(dir)
 }
 
 func formatStamp(t time.Time) string {
@@ -435,6 +496,66 @@ func listEntries(dir string) ([]Entry, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].before(entries[j]) })
 	return entries, nil
+}
+
+// ClaimStatus is the outcome of Claim.
+type ClaimStatus int
+
+const (
+	// ClaimOwned means absPath now owns key: it was unowned, or already bound
+	// here. Nothing further is required of the caller.
+	ClaimOwned ClaimStatus = iota
+	// ClaimRenamed means key was bound to a different path that is definitively
+	// gone, so this is a rename. The history has been rebound to absPath.
+	ClaimRenamed
+	// ClaimClone means key is still owned by a different path, so absPath is a
+	// copy and the caller must fork it a fresh identity.
+	ClaimClone
+)
+
+// Claim checks and claims ownership of key for absPath in one store transaction.
+//
+// Checking ownership and claiming it in two transactions let two copies of one
+// file, first-opened concurrently, both see no owner: neither got a fresh id and
+// both landed in a single logical history, whose folder then rebound to whichever
+// ran last. Reserving the key here, before any folder exists, makes the second
+// caller see an owner.
+//
+// Only a definitive not-exists means the old path is gone. Any other Lstat error,
+// EACCES above all, means "still there", so a transient permission failure cannot
+// rebind a history onto a clone.
+func (s *Store) Claim(key, absPath string) (ClaimStatus, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.load(); err != nil {
+		return ClaimOwned, "", err
+	}
+
+	h, ok := s.index[key]
+	if !ok {
+		s.index[key] = history{absPath: absPath}
+		return ClaimOwned, "", nil
+	}
+	if h.absPath == "" || samePath(h.absPath, absPath) {
+		h.absPath = absPath
+		s.index[key] = h
+		return ClaimOwned, "", nil
+	}
+
+	bound := h.absPath
+	if _, err := os.Lstat(bound); err != nil && errors.Is(err, fs.ErrNotExist) {
+		h.absPath = absPath
+		s.index[key] = h
+		if h.folder == "" {
+			return ClaimRenamed, bound, nil
+		}
+		dir := filepath.Join(s.baseDir, h.folder)
+		if cErr := s.contain(dir); cErr != nil {
+			return ClaimRenamed, bound, cErr
+		}
+		return ClaimRenamed, bound, s.writeMeta(dir, key, absPath)
+	}
+	return ClaimClone, bound, nil
 }
 
 // BoundPath returns the absolute path a key's history is currently bound to.
@@ -544,6 +665,9 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 		// never leaves a half-written version under a real name.
 		err = os.Link(tmpPath, final)
 		if err == nil {
+			if sErr := SyncDir(dir); sErr != nil {
+				return true, sErr
+			}
 			if err := s.writeMeta(dir, key, absPath); err != nil {
 				return true, err
 			}
@@ -568,6 +692,9 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 		}
 		if rErr := os.Rename(tmpPath, final); rErr != nil {
 			return false, rErr
+		}
+		if sErr := SyncDir(dir); sErr != nil {
+			return true, sErr
 		}
 		if err := s.writeMeta(dir, key, absPath); err != nil {
 			return true, err
