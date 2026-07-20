@@ -22,6 +22,7 @@ import (
 	"github.com/panphora/htmlclay/session"
 	"github.com/panphora/htmlclay/tray"
 	"github.com/panphora/htmlclay/update"
+	"github.com/panphora/htmlclay/versions"
 )
 
 var version = "1.1.1"
@@ -46,6 +47,7 @@ type app struct {
 	cfg      *config.Config
 	logger   *logging.Logger
 	sessions *session.Manager
+	versions *versions.Store
 	srv      *server.Server
 	si       platform.SingleInstance
 	port     int
@@ -214,7 +216,15 @@ func (a *app) startServer() {
 	}
 	a.sessions = sessions
 
-	a.srv = server.New(ln, sessions, a.logger)
+	configDir, err := config.Dir()
+	if err != nil {
+		fatal("Error resolving config dir: %v", err)
+	}
+	a.versions = versions.New(filepath.Join(configDir, "versions"))
+	// Prune once at startup; every later pass is opportunistic after a backup.
+	go a.versions.PruneAll()
+
+	a.srv = server.New(ln, sessions, a.logger, a.versions)
 	go func() {
 		if err := a.srv.Start(); err != nil {
 			fatal("Server error: %v", err)
@@ -295,6 +305,20 @@ func (a *app) openExample() {
 	a.openFile(path)
 }
 
+// openBackups opens the versions folder in the platform file manager. This is the
+// discovery mechanism that makes the plain-folder backup design usable: a version
+// can be double-clicked straight from Finder.
+func (a *app) openBackups() {
+	dir, err := a.versions.Dir()
+	if err != nil {
+		a.logger.Printf("Error resolving backups dir: %v", err)
+		return
+	}
+	if err := browser.OpenURL(dir); err != nil {
+		a.logger.Printf("Error opening backups folder: %v", err)
+	}
+}
+
 func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 	if a.noTray {
 		a.logger.Printf("Running without tray, waiting for signal...")
@@ -304,7 +328,7 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 		a.shutdown()
 	} else {
 		a.logger.Printf("Starting system tray...")
-		tray.Run(a.cfg, a.openExample, func() {
+		tray.Run(a.cfg, a.openExample, a.openBackups, func() {
 			a.shutdown()
 		}, updateCh)
 		a.logger.Printf("Tray exited")

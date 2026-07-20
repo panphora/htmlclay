@@ -371,3 +371,73 @@ func TestInjectTokenCommentRoundTrip(t *testing.T) {
 		t.Errorf("round-trip failed: got %q, want %q", stripped, original)
 	}
 }
+
+// HasHTMLTag is not sufficient for a restore: it accepts `<html><body>partial`,
+// which would let a truncated version overwrite a good file.
+func TestIsCompleteHTMLDocument(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"complete", "<!DOCTYPE html>\n<html><body>hi</body></html>", true},
+		{"complete uppercase", "<HTML><BODY>hi</BODY></HTML>", true},
+		{"complete with spacing", "<html><body>hi</body></html   >", true},
+		{"complete with attributes", `<html lang="en" htmlclayid="x"><body></body></html>`, true},
+		{"truncated mid body", "<html><body>partial", false},
+		{"open tag only", "<html>", false},
+		{"no html tag", "<div>hi</div>", false},
+		{"close before open", "</html><html><body>", false},
+		{"empty", "", false},
+		{"commented open tag", "<!-- <html> --><body>hi</body></html>", false},
+	}
+	for _, c := range cases {
+		if got := IsCompleteHTMLDocument([]byte(c.in)); got != c.want {
+			t.Errorf("%s: IsCompleteHTMLDocument(%q) = %v, want %v", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// SetHTMLClayID always wins, unlike InjectHTMLClayID which is a no-op when an id
+// is already present. Restore uses it to keep the target file's identity.
+func TestSetHTMLClayIDReplacesExisting(t *testing.T) {
+	in := []byte(`<html htmlclayid="old-one"><body>hi</body></html>`)
+
+	out := SetHTMLClayID(in, "new-one")
+	if got := ReadHTMLClayID(out); got != "new-one" {
+		t.Fatalf("ReadHTMLClayID = %q, want new-one", got)
+	}
+	if bytes.Contains(out, []byte("old-one")) {
+		t.Fatalf("the old id survived: %q", out)
+	}
+	if !bytes.Contains(out, []byte("<body>hi</body>")) {
+		t.Fatalf("document body was altered: %q", out)
+	}
+
+	// InjectHTMLClayID keeps its existing no-op behavior.
+	kept := InjectHTMLClayID(in, "new-one")
+	if got := ReadHTMLClayID(kept); got != "old-one" {
+		t.Fatalf("InjectHTMLClayID overwrote an existing id: %q", got)
+	}
+}
+
+func TestStripHTMLClayID(t *testing.T) {
+	in := []byte(`<html htmlclayid="abc" lang="en"><body>hi</body></html>`)
+
+	out := StripHTMLClayID(in)
+	if got := ReadHTMLClayID(out); got != "" {
+		t.Fatalf("id survived the strip: %q", got)
+	}
+	if !bytes.Contains(out, []byte(`lang="en"`)) {
+		t.Fatalf("stripping removed an unrelated attribute: %q", out)
+	}
+	if !bytes.Contains(out, []byte("<body>hi</body>")) {
+		t.Fatalf("document body was altered: %q", out)
+	}
+
+	// Stripping a document that has no id is a no-op on content.
+	plain := []byte(`<html lang="en"><body>hi</body></html>`)
+	if got := ReadHTMLClayID(StripHTMLClayID(plain)); got != "" {
+		t.Fatalf("stripping a plain document produced an id %q", got)
+	}
+}

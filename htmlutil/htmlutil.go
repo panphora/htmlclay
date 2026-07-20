@@ -89,6 +89,21 @@ func HasHTMLTag(data []byte) bool {
 	return ok
 }
 
+// closeHTMLRe matches a top-level </html> end tag.
+var closeHTMLRe = regexp.MustCompile(`(?i)</html\s*>`)
+
+// IsCompleteHTMLDocument reports whether data is a whole document: a real
+// top-level <html> start tag followed by a matching </html> end tag. HasHTMLTag
+// alone is not sufficient for a restore, because it accepts `<html><body>partial`
+// and would let a truncated version overwrite a good file.
+func IsCompleteHTMLDocument(data []byte) bool {
+	_, closeAngle, ok := findHTMLTagRange(data)
+	if !ok {
+		return false
+	}
+	return closeHTMLRe.Find(data[closeAngle+1:]) != nil
+}
+
 func injectAttr(data []byte, attrRegex *regexp.Regexp, attrName, value string) []byte {
 	tagStart, closeAngle, ok := findHTMLTagRange(data)
 	if !ok {
@@ -170,6 +185,20 @@ func InjectHTMLClayID(data []byte, id string) []byte {
 		return data
 	}
 	return injectAttr(data, htmlclayidAttr, "htmlclayid", id)
+}
+
+// SetHTMLClayID forces htmlclayid on <html>, replacing any existing value.
+// Restore uses it to keep the target file's canonical identity rather than
+// adopting the id stored inside the restored version.
+func SetHTMLClayID(data []byte, id string) []byte {
+	return injectAttr(data, htmlclayidAttr, "htmlclayid", id)
+}
+
+// StripHTMLClayID removes the htmlclayid attribute from <html>. Used when
+// restoring into a file that carries no identity of its own, so a version taken
+// from a different file cannot donate its id.
+func StripHTMLClayID(data []byte) []byte {
+	return stripAttr(data, htmlclayidAttr)
 }
 
 // GenerateHTMLClayID generates a UUID v4 using crypto/rand.
