@@ -31,3 +31,22 @@ func SyncDir(dir string) error {
 	}
 	return closeErr
 }
+
+// syncDirRoot is the rooted analogue of SyncDir: it fsyncs the directory a root
+// refers to, so a link or rename into a history is durable without joining an
+// absolute path back into a mutation.
+func syncDirRoot(root *os.Root) error {
+	d, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	closeErr := d.Close()
+	if err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return err
+	}
+	return closeErr
+}

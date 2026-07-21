@@ -468,3 +468,40 @@ func TestIsCompleteHTMLDocumentRejectsAFakeClosingTag(t *testing.T) {
 		}
 	}
 }
+
+// H6. A fake script end tag must not exit raw-text mode. The scan for </name
+// requires the HTML tag-name delimiter after the name, so </scripture is a longer
+// name and keeps the raw text open. Without the delimiter check the trailing
+// textual </html> passed the completeness check and a truncated version replaced a
+// good file.
+func TestIsCompleteHTMLDocumentRequiresTagNameDelimiter(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want bool
+	}{
+		// The reproduced bypass, made permanent.
+		{"scripture is not a script end tag", `<html><script>x</scripture></html>`, false},
+		{"scripture then a real script close", `<html><script>x</scripture></script></html>`, true},
+		{"scriptx is not a script end tag", `<html><script>x</scriptx></html>`, false},
+		// The stricter delimiters that must still be accepted as real closes.
+		{"space before the close angle", `<html><script>x</script ></html>`, true},
+		{"self-closing style close angle", `<html><script>x</script/></html>`, true},
+		{"tab and uppercase close", "<html><script>x</SCRIPT\t></html>", true},
+		// A raw-text element that never closes: genuinely incomplete.
+		{"eof mid close tag", `<html><script>x</script`, false},
+		{"eof inside a longer name", `<html><script>x</scripture`, false},
+		// The other raw-text elements share the same delimiter rule.
+		{"styleX is not a style end tag", `<html><body><style>a{}</styleX></html>`, false},
+		{"style then a real close", `<html><body><style>a{}</styleX></style></html>`, true},
+		{"textareaX is not a textarea end tag", `<html><body><textarea>x</textareaX></html>`, false},
+		{"textarea then a real close", `<html><body><textarea>x</textareaX></textarea></html>`, true},
+		{"titleX is not a title end tag", `<html><head><title>x</titleX></html>`, false},
+		{"title then a real close", `<html><head><title>x</titleX></title></html>`, true},
+	}
+	for _, c := range cases {
+		if got := IsCompleteHTMLDocument([]byte(c.data)); got != c.want {
+			t.Errorf("%s: IsCompleteHTMLDocument(%q) = %v, want %v", c.name, c.data, got, c.want)
+		}
+	}
+}

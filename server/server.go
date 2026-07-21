@@ -23,6 +23,7 @@ type Server struct {
 	versions   *versions.Store
 	hub        *hub
 	watcher    *watcher
+	coord      *streamCoordinator
 }
 
 func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store) *Server {
@@ -30,6 +31,10 @@ func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, sto
 	// The sequence high-water mark lives beside the backups, which is already a
 	// private 0700 directory the server refuses to serve.
 	h := newHub(filepath.Join(store.BaseDir(), ".livesync-seq"))
+	wt := newWatcher(logger)
+	co := newStreamCoordinator(h, wt)
+	wt.coord = co
+	h.startJanitor()
 	s := &Server{
 		listener: ln,
 		sessions: sessions,
@@ -37,7 +42,8 @@ func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, sto
 		logger:   logger,
 		versions: store,
 		hub:      h,
-		watcher:  newWatcher(h, logger),
+		watcher:  wt,
+		coord:    co,
 	}
 
 	mux := http.NewServeMux()

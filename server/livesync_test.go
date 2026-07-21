@@ -423,13 +423,24 @@ func TestSSEStreamFlushesOverARealConnection(t *testing.T) {
 	got := make(chan result, 1)
 	go func() {
 		reader := bufio.NewReader(resp.Body)
+		event := ""
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				got <- result{err: err}
 				return
 			}
-			if strings.HasPrefix(line, "data: ") {
+			switch {
+			case strings.TrimRight(line, "\n") == "":
+				event = ""
+			case strings.HasPrefix(line, "event: "):
+				event = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+			case strings.HasPrefix(line, "data: "):
+				// The cursor frame is sent first so a native EventSource records an
+				// id on connect; it carries no html, so skip it.
+				if event == "cursor" {
+					continue
+				}
 				got <- result{line: line}
 				return
 			}

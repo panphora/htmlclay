@@ -149,11 +149,34 @@ func findHTMLCloseTag(data []byte, from int) int {
 				return -1
 			}
 			body := i + gt + 1
-			end := indexFoldASCII(data[body:], "</"+name)
-			if end < 0 {
-				return -1
+			closeTag := "</" + name
+			// The scan for </name must require the HTML tag-name delimiter after
+			// the name, matching what rawTextNameAt does on the start-tag side.
+			// A bare </script prefix inside </scripture is a longer name, not a
+			// close, and treating it as one exited raw-text mode too early and
+			// exposed a later textual </html>.
+			pos := body
+			for {
+				rel := indexFoldASCII(data[pos:], closeTag)
+				if rel < 0 {
+					// The raw-text element never closes.
+					return -1
+				}
+				hit := pos + rel
+				after := hit + len(closeTag)
+				if after >= len(data) {
+					// </name with nothing after it: the element never closes.
+					return -1
+				}
+				if isHTMLSpace(data[after]) || data[after] == '/' || data[after] == '>' {
+					// A real end tag for this raw-text element. Resume the outer
+					// scan from here.
+					i = hit
+					break
+				}
+				// A longer name such as </scripture: keep searching the raw text.
+				pos = hit + 2
 			}
-			i = body + end
 			continue
 		}
 		if i+6 <= n && data[i+1] == '/' && equalFoldHTML(data[i+2:i+6]) {

@@ -16,9 +16,18 @@
 // The 8 hex characters in the folder name are a display affordance only. The
 // logical key is the full UUID or the full path hash, recorded in meta.json, and
 // two distinct keys sharing a display prefix never share a history.
+//
+// Containment is structural, not lexical. Every mutation runs through an *os.Root
+// opened for the duration of one locked operation: the versions directory is
+// acquired without trusting its final component, each history is reopened with an
+// Lstat + OpenRoot + os.SameFile check, and deletes, links, renames and reads all
+// go through the opened root. A history directory swapped for a symlink between a
+// path check and a syscall can therefore no longer redirect a delete outside the
+// store.
 package versions
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -98,6 +107,17 @@ func Key(absPath string, data []byte) string {
 	return "path:" + hex.EncodeToString(sum[:])
 }
 
+// IDFromKey returns the canonical UUID an id: history key carries, or false for a
+// path: key. It is the inverse of the id: half of Key, so restore can honor the
+// stored identity without re-parsing the key grammar inline.
+func IDFromKey(key string) (string, bool) {
+	id, ok := strings.CutPrefix(key, "id:")
+	if !ok || !IsCanonicalUUID(id) {
+		return "", false
+	}
+	return strings.ToLower(id), true
+}
+
 // Hash returns the hex sha256 of data, the form used for both per-file records.
 func Hash(data []byte) string {
 	sum := sha256.Sum256(data)
@@ -135,7 +155,15 @@ type history struct {
 // The lock hierarchy is one rule: callers acquire session.File's lock BEFORE the
 // store lock, never the reverse.
 type Store struct {
-	mu        sync.Mutex
+	mu sync.Mutex
+	// parentDir is the canonical (symlink-resolved) parent of the versions
+	// directory; leaf is its literal final component. They are kept separate so
+	// the final component is never trusted as already-resolved: a planted
+	// `versions` symlink must be rejected, not adopted as the root.
+	parentDir string
+	leaf      string
+	// baseDir is parentDir joined with leaf, used only for the HTTP asset-denial
+	// classification in Contains. It is not store containment.
 	baseDir   string
 	index     map[string]history
 	loaded    bool
@@ -144,29 +172,29 @@ type Store struct {
 
 // New returns a store rooted at baseDir, which is created lazily on first write.
 func New(baseDir string) *Store {
+	parent, leaf := resolveBase(baseDir)
 	return &Store{
-		baseDir:   resolveBase(baseDir),
+		parentDir: parent,
+		leaf:      leaf,
+		baseDir:   filepath.Join(parent, leaf),
 		index:     make(map[string]history),
 		lastPrune: make(map[string]time.Time),
 	}
 }
 
-// resolveBase resolves symlinks in the versions directory so containment checks
-// compare like with like. session.Manager and asset serving both put request
-// paths through EvalSymlinks; a merely cleaned base would then fail to match a
-// resolved request path, and a symlinked config directory would let internal
-// history be served as an ordinary asset. The directory is created lazily, so
-// when it does not exist yet the nearest existing ancestor is resolved instead.
-func resolveBase(baseDir string) string {
+// resolveBase canonicalizes the versions directory's existing parent while
+// retaining the lexical final component. The internal-directory denial compares
+// symlink-resolved request paths, so the parent is resolved for that match; the
+// leaf is deliberately NOT resolved, because EvalSymlinks over the full base
+// would turn a planted `versions` symlink into the trusted root and erase the
+// evidence this store is meant to reject.
+func resolveBase(baseDir string) (parent, leaf string) {
 	cleaned := filepath.Clean(baseDir)
-	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
-		return filepath.Clean(resolved)
-	}
-	parent, leaf := filepath.Dir(cleaned), filepath.Base(cleaned)
+	parent, leaf = filepath.Dir(cleaned), filepath.Base(cleaned)
 	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
-		return filepath.Join(filepath.Clean(resolved), leaf)
+		parent = filepath.Clean(resolved)
 	}
-	return cleaned
+	return parent, leaf
 }
 
 // BaseDir returns the resolved versions directory without creating it.
@@ -179,9 +207,11 @@ func (s *Store) BaseDir() string {
 func (s *Store) Dir() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(s.baseDir, 0700); err != nil {
+	root, err := s.openVersionsRoot(true)
+	if err != nil {
 		return "", err
 	}
+	root.Close()
 	return s.baseDir, nil
 }
 
@@ -193,8 +223,10 @@ func (s *Store) Contains(absPath string) bool {
 	return s.contain(absPath) == nil
 }
 
-// contain rechecks that child sits strictly inside the versions directory. Run on
-// every create, list, restore and prune.
+// contain rechecks that child sits strictly inside the versions directory. It
+// answers the HTTP asset-denial question only, where an absolute request path
+// must be classified. It is NOT store containment; that is now structural, via
+// os.Root.
 //
 // The prefix test folds case on the platforms whose default filesystem ignores
 // it, so a request differing only in the casing of an interior segment cannot
@@ -234,14 +266,106 @@ func samePath(a, b string) bool {
 	return a == b
 }
 
-func (s *Store) load() error {
+// randSuffix returns a random hex string for a hidden same-directory temp name.
+func randSuffix() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// readDirNames lists name's entries beneath root without following symlinks.
+func readDirNames(root *os.Root, name string) ([]os.DirEntry, error) {
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.ReadDir(-1)
+}
+
+// openVerifiedChild opens name beneath root as a new *os.Root, rejecting a
+// symlink, a non-directory, or an ABA swap between the pre-open Lstat and the
+// post-open fstat. This Lstat/open/fstat sequence is what makes containment
+// structural: os.Root refuses to traverse the symlink, and os.SameFile catches a
+// directory swapped after the check. The caller closes the returned root.
+func openVerifiedChild(root *os.Root, name string, create bool) (*os.Root, error) {
+	info, err := root.Lstat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		if !create {
+			return nil, err
+		}
+		if mErr := root.Mkdir(name, 0700); mErr != nil && !errors.Is(mErr, fs.ErrExist) {
+			return nil, mErr
+		}
+		info, err = root.Lstat(name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%q is a symlink, not a directory", name)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%q is not a directory", name)
+	}
+	child, err := root.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	after, err := child.Stat(".")
+	if err != nil {
+		child.Close()
+		return nil, err
+	}
+	if !os.SameFile(info, after) {
+		child.Close()
+		return nil, fmt.Errorf("%q changed identity during open", name)
+	}
+	return child, nil
+}
+
+// openVersionsRoot opens the versions directory as an *os.Root for one locked
+// operation. The parent is already canonical; only the final component is checked
+// at use time, so a symlink planted at `versions` cannot redirect a destructive
+// syscall. The caller closes the returned root.
+func (s *Store) openVersionsRoot(create bool) (*os.Root, error) {
+	parentRoot, err := os.OpenRoot(s.parentDir)
+	if err != nil {
+		if create && errors.Is(err, fs.ErrNotExist) {
+			if mErr := os.MkdirAll(s.parentDir, 0700); mErr != nil {
+				return nil, mErr
+			}
+			parentRoot, err = os.OpenRoot(s.parentDir)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer parentRoot.Close()
+	return openVerifiedChild(parentRoot, s.leaf, create)
+}
+
+// historyRef is an opened history directory. The root is the only mutation
+// authority; folder is the relative name, kept for meta writes and rename logic.
+type historyRef struct {
+	folder string
+	root   *os.Root
+}
+
+// Close releases the opened history root.
+func (h *historyRef) Close() {
+	if h != nil && h.root != nil {
+		h.root.Close()
+	}
+}
+
+func (s *Store) load(vroot *os.Root) error {
 	if s.loaded {
 		return nil
 	}
-	if err := os.MkdirAll(s.baseDir, 0700); err != nil {
-		return err
-	}
-	dirents, err := os.ReadDir(s.baseDir)
+	dirents, err := readDirNames(vroot, ".")
 	if err != nil {
 		return err
 	}
@@ -249,8 +373,12 @@ func (s *Store) load() error {
 		if !d.IsDir() {
 			continue
 		}
-		m, err := readMeta(filepath.Join(s.baseDir, d.Name()))
-		if err != nil || m.Key == "" {
+		data, err := vroot.ReadFile(filepath.Join(d.Name(), "meta.json"))
+		if err != nil {
+			continue
+		}
+		var m meta
+		if json.Unmarshal(data, &m) != nil || m.Key == "" {
 			continue
 		}
 		s.index[m.Key] = history{folder: d.Name(), absPath: m.AbsPath}
@@ -259,9 +387,9 @@ func (s *Store) load() error {
 	return nil
 }
 
-func readMeta(dir string) (meta, error) {
+func readMeta(root *os.Root) (meta, error) {
 	var m meta
-	data, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+	data, err := root.ReadFile("meta.json")
 	if err != nil {
 		return m, err
 	}
@@ -311,8 +439,8 @@ func folderMatchesBase(folder, base string) bool {
 }
 
 // freeFolder picks a folder name based on base that no other key already owns and
-// that does not exist on disk.
-func (s *Store) freeFolder(base string) (string, error) {
+// that does not exist within the versions root.
+func (s *Store) freeFolder(vroot *os.Root, base string) (string, error) {
 	taken := make(map[string]struct{}, len(s.index))
 	for _, h := range s.index {
 		taken[h.folder] = struct{}{}
@@ -325,82 +453,76 @@ func (s *Store) freeFolder(base string) (string, error) {
 		if _, ok := taken[candidate]; ok {
 			continue
 		}
-		full := filepath.Join(s.baseDir, candidate)
-		if err := s.contain(full); err != nil {
-			return "", err
-		}
-		if _, err := os.Lstat(full); errors.Is(err, fs.ErrNotExist) {
+		if _, err := vroot.Lstat(candidate); errors.Is(err, fs.ErrNotExist) {
 			return candidate, nil
 		}
 	}
 	return "", errors.New("cannot find a free history folder name")
 }
 
-// historyDir locates the history for key, creating it or renaming it after a file
-// rename. Lookup is by key first, so a renamed file keeps its single history
-// instead of growing a second folder.
-func (s *Store) historyDir(key, absPath string, create bool) (string, error) {
-	if err := s.load(); err != nil {
-		return "", err
+// openHistory locates the history for key within vroot, creating it or renaming
+// it after a file rename, and returns an opened, verified history root. Lookup is
+// by key first, so a renamed file keeps its single history instead of growing a
+// second folder. It never returns an absolute path as mutation authority.
+func (s *Store) openHistory(vroot *os.Root, key, absPath string, create bool) (*historyRef, error) {
+	if err := s.load(vroot); err != nil {
+		return nil, err
 	}
 
 	base := displayBase(absPath, key)
 
 	if h, ok := s.index[key]; ok && h.folder != "" {
-		dir := filepath.Join(s.baseDir, h.folder)
-		if err := s.contain(dir); err != nil {
-			return "", err
-		}
-		if !folderMatchesBase(h.folder, base) {
-			renamed, err := s.freeFolder(base)
-			if err == nil {
-				newDir := filepath.Join(s.baseDir, renamed)
-				if cErr := s.contain(newDir); cErr == nil {
-					if rErr := os.Rename(dir, newDir); rErr == nil {
-						h.folder = renamed
-						dir = newDir
-					}
+		folder := h.folder
+		if !folderMatchesBase(folder, base) {
+			if renamed, err := s.freeFolder(vroot, base); err == nil {
+				if rErr := vroot.Rename(folder, renamed); rErr == nil {
+					folder = renamed
 				}
 			}
 		}
+		h.folder = folder
 		h.absPath = absPath
 		s.index[key] = h
-		if create {
-			if err := os.MkdirAll(dir, 0700); err != nil {
-				return "", err
+
+		root, err := openVerifiedChild(vroot, folder, create)
+		if err != nil {
+			if !create && errors.Is(err, fs.ErrNotExist) {
+				return nil, ErrNoHistory
 			}
-			if err := s.writeMeta(dir, key, absPath); err != nil {
-				return "", err
+			return nil, err
+		}
+		if create {
+			if err := writeMeta(root, key, absPath); err != nil {
+				root.Close()
+				return nil, err
 			}
 		}
-		return dir, nil
+		return &historyRef{folder: folder, root: root}, nil
 	}
 
 	// Either the key is unknown, or Claim reserved it without materializing a
 	// folder. Both become a real history only when something is written.
 	if !create {
-		return "", ErrNoHistory
+		return nil, ErrNoHistory
 	}
 
-	folder, err := s.freeFolder(base)
+	folder, err := s.freeFolder(vroot, base)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	dir := filepath.Join(s.baseDir, folder)
-	if err := s.contain(dir); err != nil {
-		return "", err
+	root, err := openVerifiedChild(vroot, folder, true)
+	if err != nil {
+		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	if err := s.writeMeta(dir, key, absPath); err != nil {
-		return "", err
+	if err := writeMeta(root, key, absPath); err != nil {
+		root.Close()
+		return nil, err
 	}
 	s.index[key] = history{folder: folder, absPath: absPath}
-	return dir, nil
+	return &historyRef{folder: folder, root: root}, nil
 }
 
-func (s *Store) writeMeta(dir, key, absPath string) error {
+func writeMeta(root *os.Root, key, absPath string) error {
 	m := meta{
 		Name:      filepath.Base(absPath),
 		AbsPath:   absPath,
@@ -411,19 +533,24 @@ func (s *Store) writeMeta(dir, key, absPath string) error {
 	if err != nil {
 		return err
 	}
-	return atomicPublishBytes(dir, "meta.json", data)
+	return atomicPublishBytes(root, "meta.json", data)
 }
 
-// atomicPublishBytes writes data to a temp file in dir and renames it over name.
-// Opening the final name directly would leave a truncated but visible file after
-// a crash.
-func atomicPublishBytes(dir, name string, data []byte) error {
-	tmp, err := os.CreateTemp(dir, ".htmlclay-ver-*")
+// atomicPublishBytes writes data to a hidden same-directory temp beneath root and
+// renames it over name. Opening the final name directly would leave a truncated
+// but visible file after a crash.
+func atomicPublishBytes(root *os.Root, name string, data []byte) error {
+	tmpName := ".htmlclay-ver-" + randSuffix()
+	tmp, err := root.OpenFile(tmpName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	committed := false
+	defer func() {
+		if !committed {
+			root.Remove(tmpName)
+		}
+	}()
 
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
@@ -436,15 +563,13 @@ func atomicPublishBytes(dir, name string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpPath, 0600); err != nil {
+	if err := root.Rename(tmpName, name); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, filepath.Join(dir, name)); err != nil {
-		return err
-	}
+	committed = true
 	// The bytes are already fsynced; the directory entry that names them is not
 	// until the containing directory is synced too.
-	return SyncDir(dir)
+	return syncDirRoot(root)
 }
 
 // formatStamp renders local wall time followed by the signed UTC offset in force
@@ -498,11 +623,12 @@ func ParseEntryName(name string) (time.Time, int, error) {
 	return t, seq, nil
 }
 
-// listEntries returns the versions in dir sorted oldest first, by parsed instant
-// rather than by filename. Names carry a zone, so two versions written either
-// side of a DST fall-back order correctly even though their wall times repeat.
-func listEntries(dir string) ([]Entry, error) {
-	dirents, err := os.ReadDir(dir)
+// listEntries returns the versions in the opened history root sorted oldest
+// first, by parsed instant rather than by filename. Names carry a zone, so two
+// versions written either side of a DST fall-back order correctly even though
+// their wall times repeat.
+func listEntries(root *os.Root) ([]Entry, error) {
+	dirents, err := readDirNames(root, ".")
 	if err != nil {
 		return nil, err
 	}
@@ -557,7 +683,13 @@ const (
 func (s *Store) Claim(key, absPath string) (ClaimStatus, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.load(); err != nil {
+
+	vroot, err := s.openVersionsRoot(true)
+	if err != nil {
+		return ClaimOwned, "", err
+	}
+	defer vroot.Close()
+	if err := s.load(vroot); err != nil {
 		return ClaimOwned, "", err
 	}
 
@@ -579,11 +711,12 @@ func (s *Store) Claim(key, absPath string) (ClaimStatus, string, error) {
 		if h.folder == "" {
 			return ClaimRenamed, bound, nil
 		}
-		dir := filepath.Join(s.baseDir, h.folder)
-		if cErr := s.contain(dir); cErr != nil {
-			return ClaimRenamed, bound, cErr
+		hroot, err := openVerifiedChild(vroot, h.folder, false)
+		if err != nil {
+			return ClaimRenamed, bound, err
 		}
-		return ClaimRenamed, bound, s.writeMeta(dir, key, absPath)
+		defer hroot.Close()
+		return ClaimRenamed, bound, writeMeta(hroot, key, absPath)
 	}
 	return ClaimClone, bound, nil
 }
@@ -592,7 +725,12 @@ func (s *Store) Claim(key, absPath string) (ClaimStatus, string, error) {
 func (s *Store) BoundPath(key string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.load(); err != nil {
+	vroot, err := s.openVersionsRoot(false)
+	if err != nil {
+		return "", false
+	}
+	defer vroot.Close()
+	if err := s.load(vroot); err != nil {
 		return "", false
 	}
 	h, ok := s.index[key]
@@ -609,14 +747,17 @@ func (s *Store) HasHistory(key, absPath string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir, err := s.historyDir(key, absPath, false)
+	vroot, err := s.openVersionsRoot(false)
 	if err != nil {
 		return false
 	}
-	if err := s.contain(dir); err != nil {
+	defer vroot.Close()
+	ref, err := s.openHistory(vroot, key, absPath, false)
+	if err != nil {
 		return false
 	}
-	entries, err := listEntries(dir)
+	defer ref.Close()
+	entries, err := listEntries(ref.root)
 	return err == nil && len(entries) > 0
 }
 
@@ -625,7 +766,12 @@ func (s *Store) HasHistory(key, absPath string) bool {
 func (s *Store) Rebind(key, absPath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.load(); err != nil {
+	vroot, err := s.openVersionsRoot(false)
+	if err != nil {
+		return err
+	}
+	defer vroot.Close()
+	if err := s.load(vroot); err != nil {
 		return err
 	}
 	h, ok := s.index[key]
@@ -634,11 +780,12 @@ func (s *Store) Rebind(key, absPath string) error {
 	}
 	h.absPath = absPath
 	s.index[key] = h
-	dir := filepath.Join(s.baseDir, h.folder)
-	if err := s.contain(dir); err != nil {
+	hroot, err := openVerifiedChild(vroot, h.folder, false)
+	if err != nil {
 		return err
 	}
-	return s.writeMeta(dir, key, absPath)
+	defer hroot.Close()
+	return writeMeta(hroot, key, absPath)
 }
 
 // Backup publishes content as a new version of key's history, atomically.
@@ -648,12 +795,19 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir, err := s.historyDir(key, absPath, true)
+	vroot, err := s.openVersionsRoot(true)
 	if err != nil {
 		return false, err
 	}
+	defer vroot.Close()
+	ref, err := s.openHistory(vroot, key, absPath, true)
+	if err != nil {
+		return false, err
+	}
+	defer ref.Close()
+	hroot := ref.root
 
-	entries, err := listEntries(dir)
+	entries, err := listEntries(hroot)
 	if err != nil {
 		return false, err
 	}
@@ -661,7 +815,7 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 	want := Hash(content)
 	if len(entries) > 0 {
 		newest := entries[len(entries)-1]
-		if existing, rErr := os.ReadFile(filepath.Join(dir, newest.Name)); rErr == nil && Hash(existing) == want {
+		if existing, rErr := hroot.ReadFile(newest.Name); rErr == nil && Hash(existing) == want {
 			return false, nil
 		}
 	}
@@ -680,25 +834,22 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 		}
 	}
 
-	tmpPath, err := writeTemp(dir, content)
+	tmpName, err := writeTemp(hroot, content)
 	if err != nil {
 		return false, err
 	}
-	defer os.Remove(tmpPath)
+	defer hroot.Remove(tmpName)
 
 	for i := 0; i < 1000; i++ {
-		final := filepath.Join(dir, entryName(t, seq))
-		if cErr := s.contain(final); cErr != nil {
-			return false, cErr
-		}
-		// os.Link is both exclusive (EEXIST on collision) and atomic, so a crash
+		final := entryName(t, seq)
+		// Root.Link is both exclusive (EEXIST on collision) and atomic, so a crash
 		// never leaves a half-written version under a real name.
-		err = os.Link(tmpPath, final)
+		err = hroot.Link(tmpName, final)
 		if err == nil {
-			if sErr := SyncDir(dir); sErr != nil {
+			if sErr := syncDirRoot(hroot); sErr != nil {
 				return true, sErr
 			}
-			if err := s.writeMeta(dir, key, absPath); err != nil {
+			if err := writeMeta(hroot, key, absPath); err != nil {
 				return true, err
 			}
 			return true, nil
@@ -711,22 +862,18 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 
 	// Filesystems without hard links fall back to reserve-then-rename.
 	for i := 0; i < 1000; i++ {
-		name := entryName(t, seq)
-		final := filepath.Join(dir, name)
-		if cErr := s.contain(final); cErr != nil {
-			return false, cErr
-		}
-		if _, sErr := os.Lstat(final); sErr == nil {
+		final := entryName(t, seq)
+		if _, sErr := hroot.Lstat(final); sErr == nil {
 			seq++
 			continue
 		}
-		if rErr := os.Rename(tmpPath, final); rErr != nil {
+		if rErr := hroot.Rename(tmpName, final); rErr != nil {
 			return false, rErr
 		}
-		if sErr := SyncDir(dir); sErr != nil {
+		if sErr := syncDirRoot(hroot); sErr != nil {
 			return true, sErr
 		}
-		if err := s.writeMeta(dir, key, absPath); err != nil {
+		if err := writeMeta(hroot, key, absPath); err != nil {
 			return true, err
 		}
 		return true, nil
@@ -734,31 +881,29 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 	return false, fmt.Errorf("cannot publish version: %w", err)
 }
 
-func writeTemp(dir string, content []byte) (string, error) {
-	tmp, err := os.CreateTemp(dir, ".htmlclay-ver-*")
+// writeTemp writes content to a hidden same-directory temp beneath root and
+// returns its relative name. The file is fsynced and closed before returning.
+func writeTemp(root *os.Root, content []byte) (string, error) {
+	name := ".htmlclay-ver-" + randSuffix()
+	f, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return "", err
 	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		root.Remove(name)
 		return "", err
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
+	if err := f.Sync(); err != nil {
+		f.Close()
+		root.Remove(name)
 		return "", err
 	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
+	if err := f.Close(); err != nil {
+		root.Remove(name)
 		return "", err
 	}
-	if err := os.Chmod(tmpPath, 0600); err != nil {
-		os.Remove(tmpPath)
-		return "", err
-	}
-	return tmpPath, nil
+	return name, nil
 }
 
 // List returns key's versions, newest first.
@@ -766,17 +911,25 @@ func (s *Store) List(key, absPath string) ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir, err := s.historyDir(key, absPath, false)
+	vroot, err := s.openVersionsRoot(false)
 	if err != nil {
-		if errors.Is(err, ErrNoHistory) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if err := s.contain(dir); err != nil {
+	defer vroot.Close()
+
+	ref, err := s.openHistory(vroot, key, absPath, false)
+	if err != nil {
+		if errors.Is(err, ErrNoHistory) || errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	entries, err := listEntries(dir)
+	defer ref.Close()
+
+	entries, err := listEntries(ref.root)
 	if err != nil {
 		return nil, err
 	}
@@ -787,8 +940,8 @@ func (s *Store) List(key, absPath string) ([]Entry, error) {
 }
 
 // Read returns the bytes of one version. name must be exactly one generated
-// filename; the file is opened beneath the resolved history directory through
-// os.Root so a swapped symlink cannot escape, and must be a regular file.
+// filename; the file is opened beneath the resolved history root through os.Root
+// so a swapped symlink cannot escape, and must be a regular file.
 func (s *Store) Read(key, absPath, name string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -797,27 +950,29 @@ func (s *Store) Read(key, absPath, name string) ([]byte, error) {
 		return nil, err
 	}
 
-	dir, err := s.historyDir(key, absPath, false)
+	vroot, err := s.openVersionsRoot(false)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.contain(dir); err != nil {
-		return nil, err
-	}
+	defer vroot.Close()
 
-	rt, err := os.OpenRoot(dir)
+	ref, err := s.openHistory(vroot, key, absPath, false)
 	if err != nil {
 		return nil, err
 	}
-	defer rt.Close()
+	defer ref.Close()
 
-	if info, lErr := rt.Lstat(name); lErr != nil {
+	return readEntry(ref.root, name)
+}
+
+func readEntry(hroot *os.Root, name string) ([]byte, error) {
+	if info, lErr := hroot.Lstat(name); lErr != nil {
 		return nil, lErr
 	} else if !info.Mode().IsRegular() {
 		return nil, ErrNotRegular
 	}
 
-	f, err := rt.Open(name)
+	f, err := hroot.Open(name)
 	if err != nil {
 		return nil, err
 	}
@@ -846,27 +1001,36 @@ func (s *Store) MaybePrune(key, absPath string) {
 	if last, ok := s.lastPrune[key]; ok && time.Since(last) < pruneInterval {
 		return
 	}
-	dir, err := s.historyDir(key, absPath, false)
+	vroot, err := s.openVersionsRoot(false)
 	if err != nil {
 		return
 	}
-	s.lastPrune[key] = time.Now()
-	if err := s.contain(dir); err != nil {
+	defer vroot.Close()
+	ref, err := s.openHistory(vroot, key, absPath, false)
+	if err != nil {
 		return
 	}
-	pruneDir(dir)
+	defer ref.Close()
+	s.lastPrune[key] = time.Now()
+	pruneDir(ref.root)
 }
 
 // PruneAll prunes every history, including folders left behind by a failed
-// rename. Called once at startup.
+// rename. Called once at startup. A history whose folder is a symlink or is
+// otherwise not a real directory is refused, deleting nothing.
 func (s *Store) PruneAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.load(); err != nil {
+	vroot, err := s.openVersionsRoot(false)
+	if err != nil {
 		return
 	}
-	dirents, err := os.ReadDir(s.baseDir)
+	defer vroot.Close()
+	if err := s.load(vroot); err != nil {
+		return
+	}
+	dirents, err := readDirNames(vroot, ".")
 	if err != nil {
 		return
 	}
@@ -875,21 +1039,23 @@ func (s *Store) PruneAll() {
 		if !d.IsDir() {
 			continue
 		}
-		dir := filepath.Join(s.baseDir, d.Name())
-		if err := s.contain(dir); err != nil {
+		hroot, err := openVerifiedChild(vroot, d.Name(), false)
+		if err != nil {
 			continue
 		}
-		pruneDir(dir)
-		if m, mErr := readMeta(dir); mErr == nil && m.Key != "" {
+		pruneDir(hroot)
+		if m, mErr := readMeta(hroot); mErr == nil && m.Key != "" {
 			s.lastPrune[m.Key] = now
 		}
+		hroot.Close()
 	}
 }
 
 // pruneDir deletes versions older than MaxAge while always retaining the newest
-// MinKeep, keeping the union of the two sets.
-func pruneDir(dir string) {
-	entries, err := listEntries(dir)
+// MinKeep, keeping the union of the two sets. Deletion is oldest first and goes
+// through the opened history root, so it can never resolve outside the store.
+func pruneDir(hroot *os.Root) {
+	entries, err := listEntries(hroot)
 	if err != nil {
 		return
 	}
@@ -902,6 +1068,6 @@ func pruneDir(dir string) {
 		if e.Time.After(cutoff) {
 			continue
 		}
-		os.Remove(filepath.Join(dir, e.Name))
+		hroot.Remove(e.Name)
 	}
 }

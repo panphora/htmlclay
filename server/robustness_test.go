@@ -106,6 +106,83 @@ func TestVersionsSurviveAnExternalDelete(t *testing.T) {
 	}
 }
 
+// H3. Restore identity comes from the stored history key, not the mutable live
+// bytes. An external process stripping the id, or deleting the file, must not make
+// a restore write id-free bytes that orphan the id: history under a path key on
+// the next serve.
+func TestRestoreKeepsHistoryKeyIdentity(t *testing.T) {
+	cases := []struct {
+		name    string
+		corrupt func(t *testing.T, path string)
+	}{
+		{"external strip", func(t *testing.T, path string) { stripIDOnDisk(t, path) }},
+		{"external delete", func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fx := setupFileTest(t, "notes.htmlclay", pageWithID(testUUID, "v1"))
+			fx.serve(t, "notes.htmlclay")
+			if w := fx.save(t, page("v2")); w.Code != 200 {
+				t.Fatalf("save: %d %s", w.Code, w.Body.String())
+			}
+
+			entries := fx.history(t)
+			if len(entries) < 2 {
+				t.Fatalf("need at least 2 versions, got %d", len(entries))
+			}
+			// The oldest version carries testUUID: an A-backed version.
+			target := entries[len(entries)-1].Name
+
+			c.corrupt(t, fx.file.AbsPath)
+
+			if w := fx.restore(t, target); w.Code != 200 {
+				t.Fatalf("restore: %d %s", w.Code, w.Body.String())
+			}
+
+			onDisk, err := os.ReadFile(fx.file.AbsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := htmlutil.ReadHTMLClayID(onDisk); !strings.EqualFold(got, testUUID) {
+				t.Fatalf("restored bytes carry id %q, want %s", got, testUUID)
+			}
+			if got := versions.Key(fx.file.AbsPath, onDisk); got != "id:"+testUUID {
+				t.Fatalf("restored file keys as %q, want id:%s", got, testUUID)
+			}
+
+			// Restart survival: a fresh store over the same directory still lists
+			// the A history and no second folder was created.
+			base, err := fx.srv.versions.Dir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadDir(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh := versions.New(base)
+			list, err := fresh.List("id:"+testUUID, fx.file.AbsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list) == 0 {
+				t.Fatal("the A history did not survive a restart")
+			}
+			after, err := os.ReadDir(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("a second history folder appeared: %d -> %d", len(before), len(after))
+			}
+		})
+	}
+}
+
 // Blocker 2. The safety backup before a restore is mandatory. It used to be
 // attempted only when the current file read cleanly, while the restore itself
 // proceeded whenever the selected version read, so a present-but-unreadable live
@@ -398,20 +475,29 @@ func TestReplayDeliversFramesMissedWhileDisconnected(t *testing.T) {
 	h.relay("/tmp/a.html", "<html>two</html>", "c1", nil)
 
 	h.mu.Lock()
-	buffered := h.replay[replayKey("/tmp/a.html", laneLive)]
+	inc := h.incs["/tmp/a.html"]
+	var buffered []retainedFrame
+	if inc != nil {
+		buffered = inc.bucket(laneLive).frames
+	}
 	h.mu.Unlock()
 	if len(buffered) != 2 {
 		t.Fatalf("hub retained %d frames, want 2", len(buffered))
 	}
 	resumeFrom := buffered[0].seq
 
+	// add returns the frames past the resume point; the writer sends them ahead of
+	// the live queue, so replay never touches sub.ch.
 	sub := newSubscriber("/tmp/a.html", laneLive)
 	sub.lastEventID = resumeFrom
-	h.add(sub)
+	_, replay := h.add(sub)
 
-	msg := waitFrame(t, sub, time.Second)
-	if msg["html"] != "<html>two</html>" {
-		t.Fatalf("replay delivered %v, want the frame after the resume point", msg["html"])
+	if len(replay) != 1 {
+		t.Fatalf("replay returned %d frames, want 1 (the frame after the resume point)", len(replay))
+	}
+	_, payload := splitFrame(t, replay[0])
+	if payload["html"] != "<html>two</html>" {
+		t.Fatalf("replay delivered %v, want the frame after the resume point", payload["html"])
 	}
 	expectNoFrame(t, sub, 100*time.Millisecond)
 }
@@ -421,7 +507,10 @@ func TestFreshSubscriberIsNotReplayedTo(t *testing.T) {
 	h.relay("/tmp/a.html", "<html>old</html>", "c1", nil)
 
 	sub := newSubscriber("/tmp/a.html", laneLive)
-	h.add(sub)
+	_, replay := h.add(sub)
+	if len(replay) != 0 {
+		t.Fatalf("a fresh subscriber was replayed %d frames, want 0", len(replay))
+	}
 	expectNoFrame(t, sub, 100*time.Millisecond)
 }
 
@@ -453,11 +542,14 @@ func TestEvictedSubscriberRecoversItsEventsOnReconnect(t *testing.T) {
 
 	next := newSubscriber("/tmp/a.html", laneLive)
 	next.lastEventID = lastSeen
-	h.add(next)
+	_, replay := h.add(next)
 
-	msg := waitFrame(t, next, time.Second)
-	if msg["html"] == nil {
+	if len(replay) == 0 {
 		t.Fatal("reconnecting after an eviction replayed nothing")
+	}
+	_, payload := splitFrame(t, replay[0])
+	if payload["html"] == nil {
+		t.Fatal("reconnecting after an eviction replayed a frame with no html")
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/panphora/htmlclay/htmlutil"
 	"github.com/panphora/htmlclay/session"
@@ -164,12 +166,24 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Preserve the file's canonical htmlclayid rather than adopting the one stored
-	// inside the version, which may have come from a clone or a rename.
+	// Identity comes from the resolved history key, not the mutable current disk
+	// bytes. An external process that stripped the htmlclayid or deleted the file
+	// must not make the restore write id-free bytes: the next serve would derive a
+	// new id and orphan the id-keyed history. The version's own id is never
+	// adopted either; it may have come from a clone or a rename.
 	data = htmlutil.StripToken(data)
-	if id := htmlutil.ReadHTMLClayID(current); versions.IsCanonicalUUID(id) {
+	if id, ok := versions.IDFromKey(key); ok {
+		if live := htmlutil.ReadHTMLClayID(current); versions.IsCanonicalUUID(live) && !strings.EqualFold(live, id) {
+			s.logger.Printf("Restoring %s: live id %s differs from history id %s; keeping the history id",
+				f.RelPath, live, id)
+		}
 		data = htmlutil.SetHTMLClayID(data, id)
 	} else {
+		// A path-keyed .htmlclay history cannot be promoted to an identity
+		// implicitly; a plain .html file never carries one. Both strip.
+		if strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
+			s.logger.Printf("Restoring %s: path-keyed .htmlclay history cannot adopt an id implicitly", f.RelPath)
+		}
 		data = htmlutil.StripHTMLClayID(data)
 	}
 
@@ -183,8 +197,9 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	// A restore advances both per-file records, so it participates in save
 	// suppression exactly like a save does, and emits a live notification.
 	f.RecordServerWrite(versions.Hash(data))
+	s.coord.acceptServerReplacement(f)
 	s.broadcastDiskHTML(f, data)
-	s.hub.notifyWarning(f.AbsPath, f.Name+" was restored from a backup")
+	s.coord.notifyWarning(f, f.Name+" was restored from a backup")
 	f.Unlock()
 
 	s.versions.MaybePrune(key, f.AbsPath)

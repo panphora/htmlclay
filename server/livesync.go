@@ -43,15 +43,29 @@ const (
 	// an otherwise silent stream.
 	keepaliveInterval = 25 * time.Second
 
-	// replayDepth and replayMaxBytes bound the per-key, per-lane replay buffer that
-	// backs Last-Event-ID recovery. Frames are whole HTML documents, so the byte
-	// cap rather than the count is what actually holds memory down.
-	replayDepth    = 16
-	replayMaxBytes = 4 * 1024 * 1024
+	// Replay is a bounded, incarnation-aware cache. A frame lives at most
+	// replayFrameTTL; each (path incarnation, lane) bucket holds at most
+	// perIncarnationMaxFrames / perIncarnationMaxBytes; the whole cache holds at
+	// most globalMaxReplayFrames / globalMaxReplayBytes, maxInactiveIncarnations
+	// idle incarnations, and maxDisconnectedCursors disconnected resume cursors.
+	// A frame larger than perIncarnationMaxBytes is delivered live but never
+	// retained: there is no oversize exception.
+	replayFrameTTL          = 5 * time.Minute
+	cursorTTL               = 5 * time.Minute
+	perIncarnationMaxFrames = 64
+	perIncarnationMaxBytes  = 16 * 1024 * 1024
+	globalMaxReplayFrames   = 512
+	globalMaxReplayBytes    = 64 * 1024 * 1024
+	maxInactiveIncarnations = 256
+	maxDisconnectedCursors  = 1024
+	janitorInterval         = 30 * time.Second
 
 	// seqPersistWindow is how far ahead of the live sequence the high-water mark is
 	// persisted, so the counter survives a restart without an fsync per event.
 	seqPersistWindow = 10000
+
+	// maxResumeIDLen bounds the client-supplied resume id.
+	maxResumeIDLen = 128
 )
 
 // ShutdownBudget is how long graceful shutdown may take. main.go uses it for its
@@ -75,20 +89,74 @@ type subscriber struct {
 	// lastEventID is the client's Last-Event-ID, zero when it is a fresh
 	// connection with nothing to catch up on.
 	lastEventID int64
+
+	// resumeID is the client's per-start resume-id query parameter. Native
+	// EventSource reuses the same URL, and thus the same resumeID, on reconnect,
+	// so a stream that died before parsing any SSE id still resumes from the
+	// server-recorded cursor.
+	resumeID string
+
+	// removed is set once by the coordinator so remove and eviction are
+	// idempotent for one subscriber. Guarded by streamCoordinator.mu.
+	removed bool
 }
 
 func (sub *subscriber) stop() {
 	sub.once.Do(func() { close(sub.done) })
 }
 
-// retainedFrame is one frame held for Last-Event-ID replay.
+// retainedFrame is one frame held for reconnect replay.
 type retainedFrame struct {
-	seq   int64
-	frame []byte
+	seq         int64
+	frame       []byte
+	publishedAt time.Time
+}
+
+// laneBucket holds one lane's retained frames for one incarnation, plus the
+// recovery markers for frames it could no longer retain.
+type laneBucket struct {
+	frames         []retainedFrame
+	bytes          int
+	droppedThrough int64
+	needsResync    bool
+}
+
+// incarnation is one generation of the file at a path. A new file at the same
+// path is a new incarnation and never inherits the old one's retained frames.
+// The anchor is an open read-only handle whose identity is compared with
+// os.SameFile; keeping it open until comparison prevents Unix inode reuse from
+// making a distinct new file look like the same one.
+type incarnation struct {
+	generation int64
+	anchor     *os.File
+	anchorInfo os.FileInfo
+	lastTouch  time.Time
+	live       *laneBucket
+	saved      *laneBucket
+}
+
+func (inc *incarnation) bucket(lane string) *laneBucket {
+	if lane == laneSaved {
+		return inc.saved
+	}
+	return inc.live
+}
+
+// resumeCursor is the server-recorded baseline for one (path incarnation, lane,
+// resume id), so a stream that died before parsing its first SSE id can resume.
+type resumeCursor struct {
+	path         string
+	generation   int64
+	lane         string
+	resumeID     string
+	baseline     int64
+	disconnectAt time.Time // zero while an active stream owns it
+	touched      time.Time
 }
 
 // hub owns every SSE subscriber and the single broadcast sequence counter shared
-// by the relay leg (B3) and the watcher (B4). There is exactly one counter.
+// by the relay leg (B3) and the watcher (B4). There is exactly one counter. It
+// also owns incarnation-aware, bounded replay and the resume cursors.
 type hub struct {
 	mu      sync.Mutex
 	subs    map[string]map[*subscriber]struct{}
@@ -96,13 +164,14 @@ type hub struct {
 	closing chan struct{}
 	closed  bool
 
-	// replay holds the most recent frames per key and lane so a subscriber that
-	// reconnects with Last-Event-ID gets what it missed. Delivery was previously
-	// lossy in two places with no way to notice: a relay landing between the header
-	// flush and hub.add had no recipient, and a subscriber whose bounded queue
-	// filled was evicted along with the event that filled it.
-	replay      map[string][]retainedFrame
-	replayBytes map[string]int
+	// incs is one incarnation per active path; cursors is the disconnected/active
+	// resume cursors keyed by (path, generation, lane, resume id). replayFrames
+	// and replayBytes are the global running totals used to enforce the global
+	// caps in O(1).
+	incs         map[string]*incarnation
+	cursors      map[string]*resumeCursor
+	replayFrames int
+	replayBytes  int
 
 	// seqPath persists the sequence high-water mark. Seeding from the wall clock
 	// alone meant a backward clock change plus a restart put every new sequence
@@ -110,6 +179,12 @@ type hub struct {
 	// update until real time caught up. Empty disables persistence.
 	seqPath   string
 	persisted int64
+
+	// now is an injectable clock; nil means time.Now. It drives frame TTL and
+	// cursor TTL so a test can advance time deterministically.
+	now func() time.Time
+
+	janitorStop chan struct{}
 }
 
 func newHub(seqPath string) *hub {
@@ -122,9 +197,9 @@ func newHub(seqPath string) *hub {
 		}
 	}
 	return &hub{
-		subs:        make(map[string]map[*subscriber]struct{}),
-		replay:      make(map[string][]retainedFrame),
-		replayBytes: make(map[string]int),
+		subs:    make(map[string]map[*subscriber]struct{}),
+		incs:    make(map[string]*incarnation),
+		cursors: make(map[string]*resumeCursor),
 		// Seed from wall-clock milliseconds, as the parity implementation does, but
 		// never below the persisted high-water mark. A counter restarting below what
 		// the client retained is rejected and the stream silently stops updating.
@@ -133,6 +208,13 @@ func newHub(seqPath string) *hub {
 		closing:   make(chan struct{}),
 		seqPath:   seqPath,
 	}
+}
+
+func (h *hub) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
 }
 
 // nextSeq allocates the next sequence. Caller must hold h.mu, so allocation and
@@ -201,18 +283,49 @@ func writeSeqHighWater(path string, v int64) {
 	}
 }
 
-// add registers a subscriber.
-//
-// It deliberately reports nothing about being the first on a key. Watcher
-// lifecycle is driven by the stream handler calling watch and unwatch once each,
-// because inferring it from map transitions breaks the moment eviction removes a
-// subscriber the handler will later remove again.
-func (h *hub) add(sub *subscriber) {
+// startJanitor runs periodic expiry so idle replay, cursors, and incarnations do
+// not survive their bounds even with no traffic. Idempotent; the Server starts it.
+func (h *hub) startJanitor() {
+	h.mu.Lock()
+	if h.closed || h.janitorStop != nil {
+		h.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	h.janitorStop = stop
+	h.mu.Unlock()
+	go func() {
+		t := time.NewTicker(janitorInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				h.expire()
+			}
+		}
+	}()
+}
+
+// expire runs one sweep of the bounded caches. Also invoked from add and retain.
+func (h *hub) expire() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.expireLocked()
+}
+
+// add registers a subscriber, records or looks up its resume cursor after
+// observing the current file incarnation, and returns the resume baseline (the
+// seq the cursor frame should carry) plus the frames to replay. It never pushes
+// replay into the bounded live queue; the writer sends the returned slice first.
+func (h *hub) add(sub *subscriber) (baseline int64, replay [][]byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.expireLocked()
 	if h.closed {
 		sub.stop()
-		return
+		return h.seq, nil
 	}
 	set, ok := h.subs[sub.key]
 	if !ok {
@@ -221,48 +334,356 @@ func (h *hub) add(sub *subscriber) {
 	}
 	set[sub] = struct{}{}
 
-	// Replay whatever this client missed while it was disconnected. A fresh client
-	// sends no Last-Event-ID and gets nothing: it just loaded the page and holds
-	// current content already.
-	if sub.lastEventID <= 0 {
+	// Observe identity BEFORE selecting replay: a same-path B is recognized and
+	// rolls the generation before any A frame can be returned.
+	inc := h.observeIdentityLocked(sub.key)
+	from := h.resumePointLocked(inc, sub)
+
+	bucket := inc.bucket(sub.lane)
+	for _, rf := range bucket.frames {
+		if rf.seq > from {
+			replay = append(replay, rf.frame)
+		}
+	}
+	return from, replay
+}
+
+// resumePointLocked decides where this subscriber resumes and keeps its cursor
+// active. An explicit Last-Event-ID for the current incarnation wins unless it is
+// a future id above the high-water; otherwise the saved cursor baseline is used;
+// a first connection records the current sequence as its baseline.
+func (h *hub) resumePointLocked(inc *incarnation, sub *subscriber) int64 {
+	if sub.lastEventID > 0 && sub.lastEventID <= h.seq {
+		if sub.resumeID != "" {
+			h.activateCursorLocked(inc, sub, sub.lastEventID)
+		}
+		return sub.lastEventID
+	}
+	if sub.resumeID == "" {
+		return h.seq
+	}
+	ck := cursorKey(sub.key, inc.generation, sub.lane, sub.resumeID)
+	if c, ok := h.cursors[ck]; ok && c.generation == inc.generation {
+		c.disconnectAt = time.Time{}
+		c.touched = h.clock()
+		return c.baseline
+	}
+	h.cursors[ck] = &resumeCursor{
+		path:       sub.key,
+		generation: inc.generation,
+		lane:       sub.lane,
+		resumeID:   sub.resumeID,
+		baseline:   h.seq,
+		touched:    h.clock(),
+	}
+	return h.seq
+}
+
+// activateCursorLocked marks a Last-Event-ID reconnect's cursor active so a later
+// header-less reconnect has a baseline to fall back to. An existing baseline is
+// never lowered.
+func (h *hub) activateCursorLocked(inc *incarnation, sub *subscriber, baseline int64) {
+	ck := cursorKey(sub.key, inc.generation, sub.lane, sub.resumeID)
+	c, ok := h.cursors[ck]
+	if !ok {
+		c = &resumeCursor{
+			path:       sub.key,
+			generation: inc.generation,
+			lane:       sub.lane,
+			resumeID:   sub.resumeID,
+			baseline:   baseline,
+		}
+		h.cursors[ck] = c
+	}
+	c.disconnectAt = time.Time{}
+	c.touched = h.clock()
+}
+
+func cursorKey(path string, gen int64, lane, resumeID string) string {
+	return path + "\x00" + strconv.FormatInt(gen, 10) + "\x00" + lane + "\x00" + resumeID
+}
+
+// ensureIncarnationLocked returns the incarnation for path, creating a fresh
+// generation-1 one without touching the disk if none exists.
+func (h *hub) ensureIncarnationLocked(path string) *incarnation {
+	inc, ok := h.incs[path]
+	if !ok {
+		inc = &incarnation{
+			generation: 1,
+			lastTouch:  h.clock(),
+			live:       &laneBucket{},
+			saved:      &laneBucket{},
+		}
+		h.incs[path] = inc
+	}
+	return inc
+}
+
+// observeIdentityLocked compares the live file against the anchor and rolls the
+// generation on an external identity change, clearing the old buckets and
+// cursors. A server-authorized atomic write does not reach here: acceptServer
+// Replacement re-anchors first, so the next observe sees the same file.
+func (h *hub) observeIdentityLocked(path string) *incarnation {
+	inc := h.ensureIncarnationLocked(path)
+	cur, err := os.Open(path)
+	if err != nil {
+		return inc
+	}
+	info, serr := cur.Stat()
+	if serr != nil || !info.Mode().IsRegular() {
+		cur.Close()
+		return inc
+	}
+	if inc.anchor == nil {
+		inc.anchor = cur
+		inc.anchorInfo = info
+		inc.lastTouch = h.clock()
+		return inc
+	}
+	if os.SameFile(inc.anchorInfo, info) {
+		cur.Close()
+		return inc
+	}
+	// External replacement: roll to a new generation.
+	h.clearBucketsLocked(inc)
+	h.clearCursorsForPathLocked(path)
+	inc.anchor.Close()
+	inc.anchor = cur
+	inc.anchorInfo = info
+	inc.generation++
+	inc.lastTouch = h.clock()
+	return inc
+}
+
+// acceptServerReplacement re-anchors an existing incarnation to the file's
+// current inode without rolling the generation: save, id injection, clone fork
+// and restore are all changes to the same logical file. It never creates an
+// incarnation for a path with no live-sync interest, so it opens no descriptor
+// for a file nobody is streaming. Caller holds f.Lock.
+func (h *hub) acceptServerReplacement(path string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	inc, ok := h.incs[path]
+	if !ok {
 		return
 	}
-	var missed [][]byte
-	for _, rf := range h.replay[replayKey(sub.key, sub.lane)] {
-		if rf.seq > sub.lastEventID {
-			missed = append(missed, rf.frame)
-		}
+	cur, err := os.Open(path)
+	if err != nil {
+		return
 	}
-	if len(missed) > 0 && !offer(sub, missed) {
-		delete(set, sub)
-		if len(set) == 0 {
-			delete(h.subs, sub.key)
+	info, serr := cur.Stat()
+	if serr != nil || !info.Mode().IsRegular() {
+		cur.Close()
+		return
+	}
+	if inc.anchor != nil {
+		inc.anchor.Close()
+	}
+	inc.anchor = cur
+	inc.anchorInfo = info
+	inc.lastTouch = h.clock()
+}
+
+// markAbsent clears an incarnation's buffers when the watcher sees the file gone,
+// without emitting a deletion event.
+func (h *hub) markAbsent(path string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	inc, ok := h.incs[path]
+	if !ok {
+		return
+	}
+	h.clearBucketsLocked(inc)
+}
+
+func (h *hub) clearBucketsLocked(inc *incarnation) {
+	h.replayFrames -= len(inc.live.frames) + len(inc.saved.frames)
+	h.replayBytes -= inc.live.bytes + inc.saved.bytes
+	inc.live = &laneBucket{}
+	inc.saved = &laneBucket{}
+}
+
+func (h *hub) clearCursorsForPathLocked(path string) {
+	for k, c := range h.cursors {
+		if c.path == path {
+			delete(h.cursors, k)
 		}
-		sub.stop()
 	}
 }
 
-func replayKey(key, lane string) string { return key + "\x00" + lane }
-
-// retain records a frame for Last-Event-ID replay, bounded by both count and
-// total bytes so whole-document frames cannot grow memory without limit. A client
-// disconnected for longer than the buffer holds still loses events; that residual
-// is bounded and visible here rather than silent.
-//
-// Caller must hold h.mu.
-func (h *hub) retain(key, lane string, seq int64, f []byte) {
-	rk := replayKey(key, lane)
-	buf := append(h.replay[rk], retainedFrame{seq: seq, frame: f})
-	total := h.replayBytes[rk] + len(f)
-	for len(buf) > replayDepth || (total > replayMaxBytes && len(buf) > 1) {
-		total -= len(buf[0].frame)
-		buf = buf[1:]
+// retainLocked records a frame in its incarnation-lane bucket, then enforces the
+// per-incarnation and global caps. A frame too large to retain leaves a resync
+// marker instead. Caller holds h.mu.
+func (h *hub) retainLocked(path, lane string, seq int64, f []byte) {
+	inc := h.ensureIncarnationLocked(path)
+	inc.lastTouch = h.clock()
+	b := inc.bucket(lane)
+	if len(f) > perIncarnationMaxBytes {
+		if seq > b.droppedThrough {
+			b.droppedThrough = seq
+		}
+		b.needsResync = true
+		return
 	}
-	h.replay[rk] = buf
-	h.replayBytes[rk] = total
+	b.frames = append(b.frames, retainedFrame{seq: seq, frame: f, publishedAt: h.clock()})
+	b.bytes += len(f)
+	h.replayFrames++
+	h.replayBytes += len(f)
+	for len(b.frames) > perIncarnationMaxFrames || b.bytes > perIncarnationMaxBytes {
+		h.dropOldestFromBucket(b)
+	}
+	h.enforceGlobalCapsLocked()
 }
 
-// remove drops a subscriber.
+func (h *hub) dropOldestFromBucket(b *laneBucket) {
+	if len(b.frames) == 0 {
+		return
+	}
+	f := b.frames[0]
+	b.frames = b.frames[1:]
+	b.bytes -= len(f.frame)
+	h.replayFrames--
+	h.replayBytes -= len(f.frame)
+	if f.seq > b.droppedThrough {
+		b.droppedThrough = f.seq
+	}
+}
+
+func (h *hub) enforceGlobalCapsLocked() {
+	for h.replayFrames > globalMaxReplayFrames || h.replayBytes > globalMaxReplayBytes {
+		if !h.dropGlobalOldestLocked() {
+			break
+		}
+	}
+}
+
+func (h *hub) dropGlobalOldestLocked() bool {
+	var oldest *laneBucket
+	var oldestAt time.Time
+	for _, inc := range h.incs {
+		for _, b := range []*laneBucket{inc.live, inc.saved} {
+			if len(b.frames) == 0 {
+				continue
+			}
+			at := b.frames[0].publishedAt
+			if oldest == nil || at.Before(oldestAt) {
+				oldest, oldestAt = b, at
+			}
+		}
+	}
+	if oldest == nil {
+		return false
+	}
+	h.dropOldestFromBucket(oldest)
+	return true
+}
+
+// expireLocked drops frames past their TTL, disconnected cursors past theirs,
+// and reaps idle incarnations and surplus cursors. Caller holds h.mu.
+func (h *hub) expireLocked() {
+	now := h.clock()
+	fcut := now.Add(-replayFrameTTL)
+	for _, inc := range h.incs {
+		for _, b := range []*laneBucket{inc.live, inc.saved} {
+			for len(b.frames) > 0 && b.frames[0].publishedAt.Before(fcut) {
+				h.dropOldestFromBucket(b)
+			}
+		}
+	}
+	ccut := now.Add(-cursorTTL)
+	for k, c := range h.cursors {
+		if !c.disconnectAt.IsZero() && c.disconnectAt.Before(ccut) {
+			delete(h.cursors, k)
+		}
+	}
+	h.reapIncarnationsLocked()
+	h.capDisconnectedCursorsLocked()
+}
+
+func (h *hub) hasCursorLocked(path string) bool {
+	for _, c := range h.cursors {
+		if c.path == path {
+			return true
+		}
+	}
+	return false
+}
+
+// reapIncarnationsLocked closes and drops fully idle incarnations, then enforces
+// the inactive-incarnation cap by dropping the least recently touched.
+func (h *hub) reapIncarnationsLocked() {
+	for path, inc := range h.incs {
+		if len(h.subs[path]) > 0 {
+			continue
+		}
+		if len(inc.live.frames) > 0 || len(inc.saved.frames) > 0 {
+			continue
+		}
+		if h.hasCursorLocked(path) {
+			continue
+		}
+		if inc.anchor != nil {
+			inc.anchor.Close()
+		}
+		delete(h.incs, path)
+	}
+
+	type idle struct {
+		path string
+		inc  *incarnation
+	}
+	var inactive []idle
+	for path, inc := range h.incs {
+		if len(h.subs[path]) == 0 {
+			inactive = append(inactive, idle{path, inc})
+		}
+	}
+	for len(inactive) > maxInactiveIncarnations {
+		oldest := 0
+		for i := 1; i < len(inactive); i++ {
+			if inactive[i].inc.lastTouch.Before(inactive[oldest].inc.lastTouch) {
+				oldest = i
+			}
+		}
+		victim := inactive[oldest]
+		h.clearBucketsLocked(victim.inc)
+		h.clearCursorsForPathLocked(victim.path)
+		if victim.inc.anchor != nil {
+			victim.inc.anchor.Close()
+		}
+		delete(h.incs, victim.path)
+		inactive[oldest] = inactive[len(inactive)-1]
+		inactive = inactive[:len(inactive)-1]
+	}
+}
+
+// capDisconnectedCursorsLocked drops the oldest disconnected cursors past the cap.
+func (h *hub) capDisconnectedCursorsLocked() {
+	type dc struct {
+		key string
+		at  time.Time
+	}
+	var disconnected []dc
+	for k, c := range h.cursors {
+		if !c.disconnectAt.IsZero() {
+			disconnected = append(disconnected, dc{k, c.disconnectAt})
+		}
+	}
+	for len(disconnected) > maxDisconnectedCursors {
+		oldest := 0
+		for i := 1; i < len(disconnected); i++ {
+			if disconnected[i].at.Before(disconnected[oldest].at) {
+				oldest = i
+			}
+		}
+		delete(h.cursors, disconnected[oldest].key)
+		disconnected[oldest] = disconnected[len(disconnected)-1]
+		disconnected = disconnected[:len(disconnected)-1]
+	}
+}
+
+// remove drops a subscriber and marks its resume cursors disconnected so they
+// expire on the cursor TTL rather than immediately.
 func (h *hub) remove(sub *subscriber) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -270,9 +691,20 @@ func (h *hub) remove(sub *subscriber) {
 	if !ok {
 		return
 	}
+	if _, ok := set[sub]; !ok {
+		return
+	}
 	delete(set, sub)
 	if len(set) == 0 {
 		delete(h.subs, sub.key)
+	}
+	if sub.resumeID != "" {
+		now := h.clock()
+		for _, c := range h.cursors {
+			if c.path == sub.key && c.lane == sub.lane && c.resumeID == sub.resumeID && c.disconnectAt.IsZero() {
+				c.disconnectAt = now
+			}
+		}
 	}
 }
 
@@ -282,17 +714,13 @@ func (h *hub) subscriberCount(key string) int {
 	return len(h.subs[key])
 }
 
-// enqueue posts one pre-serialized frame to every subscriber on lane, and retains
-// it for replay. Frames for one subscriber keep their insertion order. A
-// subscriber whose queue is full is evicted and unblocked: dropping it from the
-// map alone would not free a goroutine already stuck inside Write, which is what
-// the rolling write deadline on the connection handles. The evicted client
-// reconnects with Last-Event-ID and is replayed from the buffer, so eviction
-// costs it a reconnect rather than the events themselves.
-//
-// Caller must hold h.mu.
-func (h *hub) enqueue(key, lane string, seq int64, f []byte) {
-	h.retain(key, lane, seq, f)
+// enqueue retains one pre-serialized frame for reconnect replay, then posts it to
+// every subscriber on lane. A subscriber whose bounded queue is full is removed
+// from the delivery set and unblocked, and returned so the coordinator can drop
+// its watcher reference; the retained frame means its reconnect recovers the
+// event rather than losing it. Caller must hold h.mu.
+func (h *hub) enqueue(key, lane string, seq int64, f []byte) []*subscriber {
+	h.retainLocked(key, lane, seq, f)
 
 	set := h.subs[key]
 	var evicted []*subscriber
@@ -311,6 +739,7 @@ func (h *hub) enqueue(key, lane string, seq int64, f []byte) {
 	if len(set) == 0 {
 		delete(h.subs, key)
 	}
+	return evicted
 }
 
 // offer posts every frame to sub, keeping insertion order. It reports false as
@@ -338,6 +767,7 @@ type notifyPayload struct {
 	Type    string `json:"type"`
 	MsgType string `json:"msgType"`
 	Msg     string `json:"msg"`
+	Seq     int64  `json:"seq"`
 }
 
 // frame serializes one SSE frame, carrying the shared sequence as the SSE id so a
@@ -363,34 +793,50 @@ func frame(seq int64, v interface{}) []byte {
 	return buf.Bytes()
 }
 
+// cursorFrame is a named SSE event carrying the resume baseline as its id. It
+// does not reach onmessage, so it never looks like data; it exists only so a
+// native EventSource records an id as early as possible on connect.
+func cursorFrame(seq int64) []byte {
+	var buf bytes.Buffer
+	buf.WriteString("event: cursor\nid: ")
+	buf.WriteString(strconv.FormatInt(seq, 10))
+	buf.WriteString("\ndata: {\"seq\":")
+	buf.WriteString(strconv.FormatInt(seq, 10))
+	buf.WriteString("}\n\n")
+	return buf.Bytes()
+}
+
 // relay broadcasts a peer snapshot to the live lane. It never persists, backs up,
-// or advances either per-file record.
-func (h *hub) relay(key, html, sender string, identityMap json.RawMessage) {
+// or advances either per-file record. It returns any evicted subscribers for the
+// coordinator to drop watcher-side.
+func (h *hub) relay(key, html, sender string, identityMap json.RawMessage) []*subscriber {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	seq := h.nextSeq()
 	f := frame(seq, livePayload{HTML: html, Sender: sender, Seq: seq, IdentityMap: identityMap})
 	if f == nil {
-		return
+		return nil
 	}
-	h.enqueue(key, laneLive, seq, f)
+	return h.enqueue(key, laneLive, seq, f)
 }
 
 // broadcastSaved sends post-strip on-disk HTML to the saved lane. Used by disk
 // saves and restores.
-func (h *hub) broadcastSaved(key, html, sender string) {
+func (h *hub) broadcastSaved(key, html, sender string) []*subscriber {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	seq := h.nextSeq()
 	f := frame(seq, livePayload{HTML: html, Sender: sender, Seq: seq})
 	if f == nil {
-		return
+		return nil
 	}
-	h.enqueue(key, laneSaved, seq, f)
+	return h.enqueue(key, laneSaved, seq, f)
 }
 
 // publishExternalChange is what an external edit produces: a notification on the
-// live lane, and the stable on-disk HTML on the saved lane.
+// live lane, and the stable on-disk HTML on the saved lane. It observes identity
+// first, so an external replacement rolls the generation before the new frame is
+// retained.
 //
 // The live lane gets a notice and not content on purpose. After B0 every htmlclay
 // tab is an edit-mode tab holding unsaved DOM state, and pushing content there
@@ -398,46 +844,67 @@ func (h *hub) broadcastSaved(key, html, sender string) {
 //
 // Sequence allocation and enqueue happen together under one lock so the watcher
 // and the relay leg share a single ordering.
-func (h *hub) publishExternalChange(key, msg, html string) {
+func (h *hub) publishExternalChange(key, msg, html string) []*subscriber {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	h.observeIdentityLocked(key)
+
+	var evicted []*subscriber
 	nSeq := h.nextSeq()
-	if n := frame(nSeq, notifyPayload{Type: "notification", MsgType: "warning", Msg: msg}); n != nil {
-		h.enqueue(key, laneLive, nSeq, n)
+	if n := frame(nSeq, notifyPayload{Type: "notification", MsgType: "warning", Msg: msg, Seq: nSeq}); n != nil {
+		evicted = append(evicted, h.enqueue(key, laneLive, nSeq, n)...)
 	}
 	bSeq := h.nextSeq()
 	if b := frame(bSeq, livePayload{HTML: html, Sender: "file-system", Seq: bSeq}); b != nil {
-		h.enqueue(key, laneSaved, bSeq, b)
+		evicted = append(evicted, h.enqueue(key, laneSaved, bSeq, b)...)
 	}
+	return evicted
 }
 
 // notifyWarning sends a warning notification to the live lane.
-func (h *hub) notifyWarning(key, msg string) {
+func (h *hub) notifyWarning(key, msg string) []*subscriber {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	seq := h.nextSeq()
-	if n := frame(seq, notifyPayload{Type: "notification", MsgType: "warning", Msg: msg}); n != nil {
-		h.enqueue(key, laneLive, seq, n)
+	if n := frame(seq, notifyPayload{Type: "notification", MsgType: "warning", Msg: msg, Seq: seq}); n != nil {
+		return h.enqueue(key, laneLive, seq, n)
 	}
+	return nil
 }
 
-// shutdown closes every stream. Called before http.Server.Shutdown, because
-// active streams otherwise hold graceful shutdown open until its timeout and are
-// then force-closed.
+// shutdown closes every stream and clears all replay state. Called before
+// http.Server.Shutdown, because active streams otherwise hold graceful shutdown
+// open until its timeout and are then force-closed.
 func (h *hub) shutdown() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.closed {
+		h.mu.Unlock()
 		return
 	}
 	h.closed = true
 	close(h.closing)
+	stop := h.janitorStop
+	h.janitorStop = nil
 	for key, set := range h.subs {
 		for sub := range set {
 			sub.stop()
 		}
 		delete(h.subs, key)
+	}
+	for path, inc := range h.incs {
+		if inc.anchor != nil {
+			inc.anchor.Close()
+		}
+		delete(h.incs, path)
+	}
+	h.cursors = make(map[string]*resumeCursor)
+	h.replayFrames = 0
+	h.replayBytes = 0
+	h.mu.Unlock()
+
+	if stop != nil {
+		close(stop)
 	}
 }
 
@@ -490,6 +957,11 @@ func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
 		lane = laneSaved
 	}
 
+	resumeID := parseResumeID(r)
+	if resumeID == "" {
+		s.logger.Printf("live-sync stream for %s has no resume-id; Last-Event-ID recovery only", f.RelPath)
+	}
+
 	rc := http.NewResponseController(w)
 	// Clear the write deadline for this connection only. Zeroing the server-wide
 	// WriteTimeout would remove the bound from every other request.
@@ -505,24 +977,18 @@ func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
 		ch:          make(chan []byte, subQueueSize),
 		done:        make(chan struct{}),
 		lastEventID: parseLastEventID(r),
+		resumeID:    resumeID,
 	}
 
 	// The subscriber is registered BEFORE the headers are flushed, so nothing that
-	// happens during setup has no recipient. Flushing first left a window in which
-	// a relay found an empty subscriber set and the event was simply gone. Frames
-	// arriving before the flush sit in the bounded queue and go out right after it.
-	//
-	// One watch and one unwatch per connection. The watcher refcounts, so it polls
-	// only currently-subscribed files and stops when the last stream goes away.
-	s.hub.add(sub)
-	s.watcher.watch(f)
-	defer func() {
-		// unwatch runs before hub.remove so a poll that is mid-flight cannot publish
-		// into a set this connection has already left: unwatch is what tells the
-		// watcher to stop, and it only returns once no orphaned check can record.
-		s.watcher.unwatch(f)
-		s.hub.remove(sub)
-	}()
+	// happens during setup has no recipient. Registration observes the current
+	// incarnation and selects replay under f.Lock, and the coordinator raises the
+	// watcher reference and hub membership in one critical section. Frames arriving
+	// before the flush sit in the bounded queue and go out after the replay slice.
+	f.Lock()
+	baseline, replay := s.coord.add(sub, f)
+	f.Unlock()
+	defer s.coord.remove(sub, f)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
@@ -532,6 +998,17 @@ func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
 	if err := rc.Flush(); err != nil {
 		s.logger.Printf("live-sync: cannot flush stream: %v", err)
 		return
+	}
+
+	// The cursor frame first, so a native EventSource records an id as early as
+	// possible, then the bounded replay slice, then the live queue.
+	if !writeSSE(rc, w, cursorFrame(baseline)) {
+		return
+	}
+	for _, fr := range replay {
+		if !writeSSE(rc, w, fr) {
+			return
+		}
 	}
 
 	ticker := time.NewTicker(keepaliveInterval)
@@ -572,6 +1049,25 @@ func parseLastEventID(r *http.Request) int64 {
 		return 0
 	}
 	return v
+}
+
+// parseResumeID reads and validates the client's resume-id query parameter: 1 to
+// maxResumeIDLen URL-safe (RFC 3986 unreserved) bytes. An absent or malformed id
+// returns "", which the stream still serves via Last-Event-ID alone.
+func parseResumeID(r *http.Request) string {
+	raw := r.URL.Query().Get("resume-id")
+	if raw == "" || len(raw) > maxResumeIDLen {
+		return ""
+	}
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '~' {
+			continue
+		}
+		return ""
+	}
+	return raw
 }
 
 func writeSSE(rc *http.ResponseController, w http.ResponseWriter, msg []byte) bool {
@@ -638,7 +1134,7 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.hub.relay(f.AbsPath, payload.HTML, payload.Sender, identityMap)
+	s.coord.relay(f, payload.HTML, payload.Sender, identityMap)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -647,5 +1143,5 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 
 // broadcastDiskHTML publishes bytes that just landed on disk to the saved lane.
 func (s *Server) broadcastDiskHTML(f *session.File, data []byte) {
-	s.hub.broadcastSaved(f.AbsPath, string(htmlutil.StripToken(data)), "file-system")
+	s.coord.broadcastSaved(f, string(htmlutil.StripToken(data)), "file-system")
 }

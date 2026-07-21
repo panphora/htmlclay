@@ -157,6 +157,13 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		}
 		pruneKey = key
 	}
+
+	// A server-authorized write changes the file's inode via the atomic rename;
+	// re-anchor the live-sync incarnation to it so the change is not later mistaken
+	// for an external reincarnation. A no-op when nothing is streaming this file.
+	if serverWrote {
+		s.coord.acceptServerReplacement(f)
+	}
 	f.Unlock()
 
 	// Bulk pruning runs on the store lock only, never inside f.Lock().
@@ -520,6 +527,7 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	err = atomicWriteFile(f.AbsPath, body)
 	if err == nil {
 		f.RecordServerWrite(versions.Hash(body))
+		s.coord.acceptServerReplacement(f)
 		s.broadcastDiskHTML(f, body)
 	}
 	f.Unlock()

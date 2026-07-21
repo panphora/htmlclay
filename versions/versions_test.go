@@ -21,6 +21,66 @@ func newStore(t *testing.T) *Store {
 	return New(filepath.Join(dir, "versions"))
 }
 
+// historyDirForTest materializes key's history and returns its absolute folder
+// path so a test can plant fixture version files with plain os calls. Production
+// code opens the folder through an *os.Root and never joins this path for a
+// mutation; this is a test affordance only.
+func historyDirForTest(t *testing.T, s *Store, key, absPath string) string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vroot, err := s.openVersionsRoot(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vroot.Close()
+	ref, err := s.openHistory(vroot, key, absPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ref.Close()
+	return filepath.Join(s.baseDir, ref.folder)
+}
+
+// lookupHistoryDirForTest returns the absolute folder path of an existing
+// history without materializing anything, so a test can assert lookups do not
+// rename a stable folder.
+func lookupHistoryDirForTest(t *testing.T, s *Store, key, absPath string) string {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vroot, err := s.openVersionsRoot(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vroot.Close()
+	ref, err := s.openHistory(vroot, key, absPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ref.Close()
+	return filepath.Join(s.baseDir, ref.folder)
+}
+
+// pruneHistoryForTest prunes one history directly, bypassing the once-per-hour
+// throttle, the way the pruner's per-history deletion runs.
+func pruneHistoryForTest(t *testing.T, s *Store, key, absPath string) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vroot, err := s.openVersionsRoot(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vroot.Close()
+	ref, err := s.openHistory(vroot, key, absPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ref.Close()
+	pruneDir(ref.root)
+}
+
 func doc(body string) []byte {
 	return []byte("<!DOCTYPE html>\n<html><body>" + body + "</body></html>")
 }
@@ -263,10 +323,7 @@ func TestFallBackDSTOrdersByInstantNotWallClock(t *testing.T) {
 	path := "/home/u/dst.html"
 	key := Key(path, nil)
 
-	dir, err := s.historyDir(key, path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := historyDirForTest(t, s, key, path)
 
 	// Written in real-time order A, B, C. C is the newest despite wearing the
 	// same wall clock as A.
@@ -382,10 +439,7 @@ func TestClockRollbackAppendsAfterNewest(t *testing.T) {
 
 	// Stand in for a clock that has since been rolled back: plant an entry dated
 	// far in the future, so "now" is behind the newest entry.
-	dir, err := s.historyDir(key, path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := historyDirForTest(t, s, key, path)
 	future := time.Now().UTC().Add(72 * time.Hour)
 	futureName := entryName(future, 0)
 	if err := os.WriteFile(filepath.Join(dir, futureName), doc("future"), 0600); err != nil {
@@ -483,15 +537,9 @@ func TestLookupDoesNotRenameStableFolder(t *testing.T) {
 	path := "/home/u/big.html"
 	key := Key(path, nil)
 
-	dir, err := s.historyDir(key, path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := historyDirForTest(t, s, key, path)
 	for i := 0; i < 5; i++ {
-		again, err := s.historyDir(key, path, false)
-		if err != nil {
-			t.Fatal(err)
-		}
+		again := lookupHistoryDirForTest(t, s, key, path)
 		if again != dir {
 			t.Fatalf("history folder moved on lookup %d: %q -> %q", i, dir, again)
 		}
@@ -541,10 +589,7 @@ func TestReadRejectsSymlinkedVersion(t *testing.T) {
 	if _, err := s.Backup(key, path, doc("x")); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := s.historyDir(key, path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := historyDirForTest(t, s, key, path)
 
 	secret := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(secret, []byte("classified"), 0600); err != nil {
@@ -564,10 +609,7 @@ func TestPruneKeepsNewestAndRecentUnion(t *testing.T) {
 	s := newStore(t)
 	path := "/home/u/big.html"
 	key := Key(path, nil)
-	dir, err := s.historyDir(key, path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := historyDirForTest(t, s, key, path)
 
 	// 30 ancient versions plus 3 recent ones.
 	ancient := time.Now().UTC().Add(-90 * 24 * time.Hour)
@@ -587,7 +629,7 @@ func TestPruneKeepsNewestAndRecentUnion(t *testing.T) {
 		}
 	}
 
-	pruneDir(dir)
+	pruneHistoryForTest(t, s, key, path)
 
 	entries, err := s.List(key, path)
 	if err != nil {
@@ -614,10 +656,7 @@ func TestPruneNeverDeletesWhenUnderFloor(t *testing.T) {
 	s := newStore(t)
 	path := "/home/u/small.html"
 	key := Key(path, nil)
-	dir, err := s.historyDir(key, path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := historyDirForTest(t, s, key, path)
 	ancient := time.Now().UTC().Add(-365 * 24 * time.Hour)
 	for i := 0; i < 5; i++ {
 		name := entryName(ancient.Add(time.Duration(i)*time.Minute), 0)
@@ -626,7 +665,7 @@ func TestPruneNeverDeletesWhenUnderFloor(t *testing.T) {
 		}
 	}
 
-	pruneDir(dir)
+	pruneHistoryForTest(t, s, key, path)
 
 	entries, _ := s.List(key, path)
 	if len(entries) != 5 {
@@ -823,6 +862,58 @@ func TestContainsResolvesASymlinkedBase(t *testing.T) {
 	if !s.Contains(inside) {
 		t.Fatalf("a resolved request path inside the versions directory was not "+
 			"recognized as internal: %q against base %q", inside, s.BaseDir())
+	}
+}
+
+// C1. The reproduced pruner escape, made permanent. A history folder swapped for
+// a symlink between the path check and the delete used to let pruning resolve
+// through the symlink and delete files outside the store. With structural
+// containment the symlinked history is refused and nothing outside is touched.
+func TestPrunerRefusesToDeleteThroughASymlinkedHistory(t *testing.T) {
+	s := newStore(t)
+	path := "/home/u/notes.html"
+	key := Key(path, nil)
+
+	if _, err := s.Backup(key, path, doc("seed")); err != nil {
+		t.Fatal(err)
+	}
+	folder := historyDirForTest(t, s, key, path)
+
+	// 25 old, prunable-age, version-named files in an outside directory. Pruning
+	// keeps the newest 20 and deletes the 5 oldest, so the unfixed code deletes 5
+	// through the symlink.
+	outside := t.TempDir()
+	ancient := time.Now().UTC().Add(-365 * 24 * time.Hour)
+	var names []string
+	for i := 0; i < 25; i++ {
+		name := entryName(ancient.Add(time.Duration(i)*time.Minute), 0)
+		names = append(names, name)
+		if err := os.WriteFile(filepath.Join(outside, name), doc(fmt.Sprintf("outside%d", i)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Move the real folder aside and plant a symlink at the indexed name.
+	if err := os.Rename(folder, folder+"-real"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, folder); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	// The escape is reachable through both entry points; neither may delete.
+	s.MaybePrune(key, path)
+	s.PruneAll()
+
+	survivors := 0
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(outside, name)); err == nil {
+			survivors++
+		}
+	}
+	if survivors != len(names) {
+		t.Fatalf("pruning through a symlinked history deleted %d of %d outside files",
+			len(names)-survivors, len(names))
 	}
 }
 

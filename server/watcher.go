@@ -69,7 +69,7 @@ type watcher struct {
 	running bool
 	stopCh  chan struct{}
 
-	hub    *hub
+	coord  *streamCoordinator
 	logger *logging.Logger
 	poll   time.Duration
 	quiet  time.Duration
@@ -77,10 +77,9 @@ type watcher struct {
 	wg sync.WaitGroup
 }
 
-func newWatcher(h *hub, logger *logging.Logger) *watcher {
+func newWatcher(logger *logging.Logger) *watcher {
 	return &watcher{
 		entries: make(map[string]*watchEntry),
-		hub:     h,
 		logger:  logger,
 		poll:    watchPoll,
 		quiet:   watchQuiet,
@@ -195,8 +194,12 @@ func (wt *watcher) check(e *watchEntry) {
 		// A vanished file is not a change event. Record the absence and wait. If
 		// it reappears with different content, that is one change event. This also
 		// covers the brief gap during an atomic replacement, which is why deletion
-		// must not fire on its own.
-		e.absent = true
+		// must not fire on its own. On the transition to absent, clear the
+		// incarnation's buffers so nothing from the old file replays past its life.
+		if !e.absent {
+			e.absent = true
+			wt.coord.markAbsent(path)
+		}
 		e.pendingHash = ""
 		e.pendingData = nil
 		return
@@ -239,14 +242,25 @@ func (wt *watcher) isRemoved(e *watchEntry) bool {
 	return e.removed
 }
 
+// isWatched reports whether this file still has a live watch lease. The
+// coordinator checks it before delivering an external change, so a change with no
+// audience never advances suppression.
+func (wt *watcher) isWatched(f *session.File) bool {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+	e, ok := wt.entries[f.AbsPath]
+	return ok && !e.removed
+}
+
 // publish reacquires the file lock, revalidates that the candidate is still the
-// current disk content, compares against lastStableObservation, allocates the
-// sequence from the shared counter and enqueues, all inside one critical section.
+// current disk content, and asks the coordinator to retain and deliver the change.
+// It advances lastStableObservation only after the coordinator confirms the change
+// was secured: publish before record, so a change that could not be delivered is
+// rediscovered on the next poll rather than suppressed forever.
 //
-// The watcher lock is held across the removal check, the record and the enqueue,
-// so unwatch cannot slip in between them. Lock order is file lock, then watcher
-// lock, then hub lock; watch and unwatch take only the watcher lock, so there is
-// no cycle.
+// The watcher lock is released before the coordinator call, so the coordinator can
+// take the watcher lock again to evict watcher-first without a self-deadlock. Lock
+// order is file lock, then coordinator, then watcher, then hub.
 func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
 	f := e.file
 
@@ -254,15 +268,15 @@ func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
 	defer f.Unlock()
 
 	wt.mu.Lock()
-	defer wt.mu.Unlock()
-
+	removed := e.removed
 	e.pendingHash = ""
 	e.pendingData = nil
+	wt.mu.Unlock()
 
 	// An entry whose last subscriber left must not record or publish: it would
 	// advance lastStableObservation for a change nobody received, and that change
 	// would then be suppressed forever on reconnect.
-	if e.removed {
+	if removed {
 		return
 	}
 
@@ -279,9 +293,9 @@ func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
 		return
 	}
 
-	f.RecordStableObservation(hash)
-
 	msg := fmt.Sprintf("%s changed on disk outside this tab", f.Name)
-	wt.hub.publishExternalChange(f.AbsPath, msg, string(htmlutil.StripToken(data)))
-	wt.logger.Printf("External change detected in %s", f.RelPath)
+	if wt.coord.publishExternalChange(f, msg, string(htmlutil.StripToken(data))) {
+		f.RecordStableObservation(hash)
+		wt.logger.Printf("External change detected in %s", f.RelPath)
+	}
 }
