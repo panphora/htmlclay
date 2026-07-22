@@ -1,6 +1,7 @@
 package versions
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -670,6 +671,104 @@ func TestPruneNeverDeletesWhenUnderFloor(t *testing.T) {
 	entries, _ := s.List(key, path)
 	if len(entries) != 5 {
 		t.Fatalf("pruning deleted below the %d-version floor: %d left", MinKeep, len(entries))
+	}
+}
+
+// backdateMetaForTest rewrites a history's meta.json with an older updatedAt, so
+// an age-dependent rule can be exercised without waiting for real time.
+func backdateMetaForTest(t *testing.T, dir string, age time.Duration) {
+	t.Helper()
+	path := filepath.Join(dir, "meta.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m meta
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	m.UpdatedAt = time.Now().Add(-age).UTC().Format(time.RFC3339)
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A first-open snapshot taken under a freshly minted identity is provisional. If
+// no save ever makes it durable, PruneAll reclaims the whole history once it ages
+// out, so opening a file and never saving it does not leak a copy forever.
+// pruneDir alone cannot do this: it always retains MinKeep, so a one-entry
+// snapshot would otherwise be immortal.
+func TestPruneAllReclaimsAnAgedProvisionalHistory(t *testing.T) {
+	s := newStore(t)
+	path := filepath.Join(t.TempDir(), "notes.htmlclay")
+	key := "id:" + validUUID
+
+	if _, err := s.Backup(key, path, doc("first open")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetProvisional(key, path, true); err != nil {
+		t.Fatal(err)
+	}
+	dir := lookupHistoryDirForTest(t, s, key, path)
+	backdateMetaForTest(t, dir, ProvisionalMaxAge+time.Hour)
+
+	s.PruneAll()
+
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("the aged provisional history survived: %v", err)
+	}
+	s.mu.Lock()
+	_, indexed := s.index[key]
+	s.mu.Unlock()
+	if indexed {
+		t.Fatal("the reclaimed key is still in the index")
+	}
+}
+
+// The inverse: a save clears the provisional flag, and a durable history is never
+// reclaimed however old its meta is.
+func TestPruneAllKeepsAnAgedSavedHistory(t *testing.T) {
+	s := newStore(t)
+	path := filepath.Join(t.TempDir(), "notes.htmlclay")
+	key := "id:" + validUUID
+
+	if _, err := s.Backup(key, path, doc("first open")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetProvisional(key, path, true); err != nil {
+		t.Fatal(err)
+	}
+	// The save that makes the history durable.
+	if _, err := s.Backup(key, path, doc("saved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetProvisional(key, path, false); err != nil {
+		t.Fatal(err)
+	}
+	dir := lookupHistoryDirForTest(t, s, key, path)
+	backdateMetaForTest(t, dir, ProvisionalMaxAge+time.Hour)
+
+	s.PruneAll()
+
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("a saved history was reclaimed: %v", err)
+	}
+	entries, err := s.List(key, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("the saved history lost versions: %d left, want 2", len(entries))
+	}
+	s.mu.Lock()
+	_, indexed := s.index[key]
+	s.mu.Unlock()
+	if !indexed {
+		t.Fatal("a saved history left the index")
 	}
 }
 

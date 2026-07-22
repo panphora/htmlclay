@@ -56,6 +56,32 @@ func setupFileTest(t *testing.T, name, content string) *fileFixture {
 	return &fileFixture{srv: srv, file: f, home: homeDir}
 }
 
+// reopen builds a fresh server and session over the same home directory and the
+// same versions store, the way quitting and opening the file again does. It is
+// what makes identity resolution run a second time, since a live session resolves
+// it exactly once.
+func (fx *fileFixture) reopen(t *testing.T, relPath string) *fileFixture {
+	t.Helper()
+	base, err := fx.srv.versions.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := session.NewManagerWithHome(fx.home)
+	f, err := mgr.Register(filepath.Join(fx.home, relPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(base))
+	t.Cleanup(func() { srv.hub.shutdown(); srv.watcher.shutdown() })
+	return &fileFixture{srv: srv, file: f, home: fx.home}
+}
+
 func (fx *fileFixture) serve(t *testing.T, relPath string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("GET", "/"+relPath, nil)
@@ -79,15 +105,14 @@ func (fx *fileFixture) save(t *testing.T, body string) *httptest.ResponseRecorde
 	return w
 }
 
-// withCurrentID stamps the file's live htmlclayid onto body, the way a browser
-// round trip does.
+// withCurrentID stamps the file's tracked htmlclayid onto body, the way a browser
+// round trip does: the browser serializes the SERVED bytes, which carry the id the
+// host injected, not the (id-less) bytes on disk.
 func (fx *fileFixture) withCurrentID(body string) string {
-	current, err := os.ReadFile(fx.file.AbsPath)
-	if err != nil {
-		return body
-	}
-	id := htmlutil.ReadHTMLClayID(current)
-	if id == "" || htmlutil.ReadHTMLClayID([]byte(body)) != "" {
+	fx.file.Lock()
+	id, ok := versions.IDFromKey(fx.file.HistoryKey())
+	fx.file.Unlock()
+	if !ok || htmlutil.ReadHTMLClayID([]byte(body)) != "" {
 		return body
 	}
 	return string(htmlutil.SetHTMLClayID([]byte(body), id))
@@ -203,9 +228,9 @@ func TestFirstSaveVersionsExistingContent(t *testing.T) {
 	}
 }
 
-// The htmlclayid injection is a server write, so it advances lastServerWrite, and
-// the first save of a new .htmlclay does not false-positive against the server's
-// own edit.
+// The htmlclayid rides in the served bytes only, so serving leaves disk untouched
+// and the first save of a new .htmlclay does not false-positive against an edit
+// the server never made.
 func TestIDInjectionDoesNotTriggerStaleWarning(t *testing.T) {
 	fx := setupFileTest(t, "notes.htmlclay", page("fresh"))
 
@@ -213,14 +238,30 @@ func TestIDInjectionDoesNotTriggerStaleWarning(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("serve: %d", w.Code)
 	}
+	if !versions.IsCanonicalUUID(htmlutil.ReadHTMLClayID(w.Body.Bytes())) {
+		t.Fatal("serving did not inject a canonical htmlclayid into the response")
+	}
 	onDisk, _ := os.ReadFile(fx.file.AbsPath)
-	if !versions.IsCanonicalUUID(htmlutil.ReadHTMLClayID(onDisk)) {
-		t.Fatal("serving did not inject a canonical htmlclayid")
+	if htmlutil.ReadHTMLClayID(onDisk) != "" {
+		t.Fatal("serving wrote the htmlclayid to disk")
 	}
 
 	body := decodeJSON(t, fx.save(t, page("first")))
 	if body["msgType"] != "success" {
 		t.Fatalf("first save after injection warned: %v", body)
+	}
+
+	// The save is what puts the id on disk, and both records track those bytes.
+	saved, _ := os.ReadFile(fx.file.AbsPath)
+	if !versions.IsCanonicalUUID(htmlutil.ReadHTMLClayID(saved)) {
+		t.Fatalf("the save did not carry the id back to disk: %q", saved)
+	}
+	fx.file.Lock()
+	write, stable := fx.file.LastServerWrite(), fx.file.LastStableObservation()
+	fx.file.Unlock()
+	if want := versions.Hash(saved); write != want || stable != want {
+		t.Fatalf("the save did not advance both records: lastServerWrite=%q "+
+			"lastStableObservation=%q want %q", write, stable, want)
 	}
 }
 
@@ -341,27 +382,34 @@ func TestServingNeverAdvancesLastServerWrite(t *testing.T) {
 	}
 }
 
-// A hand-edited file can carry `..` or a short string in htmlclayid. The id is
-// used only after it validates, so a malformed one falls back to the path key and
-// never reaches the filesystem.
-func TestMalformedHTMLClayIDFallsBackToPathKey(t *testing.T) {
+// A hand-edited file can carry `..` or a short string in htmlclayid. The raw id is
+// never trusted as a key: a .htmlclay carrying one is minted a fresh canonical
+// identity instead, which rides in the served bytes and never reaches the
+// filesystem as a folder name.
+func TestMalformedHTMLClayIDMintsAFreshIdentity(t *testing.T) {
 	fx := setupFileTest(t, "notes.htmlclay", pageWithID("../../escape", "hi"))
 
-	if w := fx.serve(t, "notes.htmlclay"); w.Code != 200 {
+	w := fx.serve(t, "notes.htmlclay")
+	if w.Code != 200 {
 		t.Fatalf("serve: %d", w.Code)
 	}
 
 	onDisk, _ := os.ReadFile(fx.file.AbsPath)
 	if id := htmlutil.ReadHTMLClayID(onDisk); id != "../../escape" {
-		t.Fatalf("serving rewrote a present-but-invalid id to %q", id)
+		t.Fatalf("serving rewrote disk: id is now %q", id)
 	}
 
-	key := versions.Key(fx.file.AbsPath, onDisk)
-	if !strings.HasPrefix(key, "path:") {
-		t.Fatalf("malformed id produced key %q", key)
+	minted := htmlutil.ReadHTMLClayID(w.Body.Bytes())
+	if !versions.IsCanonicalUUID(minted) {
+		t.Fatalf("the served bytes carry %q, want a freshly minted canonical UUID", minted)
 	}
-	if entries, _ := fx.srv.versions.List(key, fx.file.AbsPath); len(entries) != 1 {
-		t.Fatalf("expected the snapshot under the path key, got %d", len(entries))
+
+	key := fx.key(t)
+	if !strings.HasPrefix(key, "id:") {
+		t.Fatalf("malformed id produced key %q, want an id: key", key)
+	}
+	if entries := fx.history(t); len(entries) != 1 {
+		t.Fatalf("expected the snapshot under the minted key, got %d", len(entries))
 	}
 
 	base, _ := fx.srv.versions.Dir()
@@ -400,7 +448,10 @@ func TestPlainHTMLNeverGetsAnID(t *testing.T) {
 
 // Copying a .htmlclay file duplicates its id. On first open, when the id belongs
 // to a history bound to a different absolute path that STILL EXISTS, the copy is
-// a clone and gets a fresh id, so the fork survives a reopen.
+// a clone and is minted a fresh id. Serving never rewrites disk, so both copies
+// keep the shared id in their bytes: the fork lives in the tracked key and the
+// served bytes, and it survives a reopen because the fresh identity is bound to
+// the copy's path.
 func TestCopiedHTMLClayIDForksAFreshID(t *testing.T) {
 	fx := setupFileTest(t, "original.htmlclay", pageWithID(testUUID, "original"))
 
@@ -411,33 +462,63 @@ func TestCopiedHTMLClayIDForksAFreshID(t *testing.T) {
 	if err := os.WriteFile(copyPath, []byte(pageWithID(testUUID, "original")), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fx.srv.sessions.Register(copyPath); err != nil {
+	copyFile, err := fx.srv.sessions.Register(copyPath)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if w := fx.serve(t, "copy.htmlclay"); w.Code != 200 {
+	w := fx.serve(t, "copy.htmlclay")
+	if w.Code != 200 {
 		t.Fatalf("serve copy: %d", w.Code)
 	}
 
-	copyBytes, _ := os.ReadFile(copyPath)
-	copyID := htmlutil.ReadHTMLClayID(copyBytes)
+	copyID := htmlutil.ReadHTMLClayID(w.Body.Bytes())
 	if copyID == testUUID {
-		t.Fatal("the clone kept the original id, so both files share one history")
+		t.Fatal("the clone was served the original id, so both files share one history")
 	}
 	if !versions.IsCanonicalUUID(copyID) {
 		t.Fatalf("the clone was given a non-canonical id %q", copyID)
 	}
 
-	originalBytes, _ := os.ReadFile(fx.file.AbsPath)
-	if htmlutil.ReadHTMLClayID(originalBytes) != testUUID {
-		t.Fatal("the original file's id was changed")
+	copyFile.Lock()
+	copyKey := copyFile.HistoryKey()
+	copyFile.Unlock()
+	if copyKey != "id:"+copyID {
+		t.Fatalf("the clone tracks %q, want id:%s", copyKey, copyID)
+	}
+	if origKey := fx.key(t); origKey == copyKey {
+		t.Fatalf("original and clone share the tracked key %q", origKey)
+	} else if origKey != "id:"+testUUID {
+		t.Fatalf("the original stopped tracking its own id: %q", origKey)
+	}
+
+	// Serving rewrites nothing: both files still carry the shared id on disk.
+	for _, p := range []string{fx.file.AbsPath, copyPath} {
+		onDisk, _ := os.ReadFile(p)
+		if got := htmlutil.ReadHTMLClayID(onDisk); got != testUUID {
+			t.Fatalf("serving rewrote %s on disk: id is now %q", p, got)
+		}
 	}
 
 	// Two separate histories, one version each.
 	origHistory, _ := fx.srv.versions.List("id:"+testUUID, fx.file.AbsPath)
-	cloneHistory, _ := fx.srv.versions.List("id:"+copyID, copyPath)
+	cloneHistory, _ := fx.srv.versions.List(copyKey, copyPath)
 	if len(origHistory) != 1 || len(cloneHistory) != 1 {
 		t.Fatalf("histories did not fork: original=%d clone=%d", len(origHistory), len(cloneHistory))
+	}
+
+	// The fork survives a reopen: a fresh store over the same directory resolves
+	// the copy's path back to its forked identity rather than to the shared id.
+	base, err := fx.srv.versions.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, err := versions.New(base).ResolveIdentity(copyPath, testUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened != copyID {
+		t.Fatalf("a reopen resolved the clone to %q, want the forked %s", reopened, copyID)
 	}
 }
 
@@ -473,6 +554,100 @@ func TestRenamedHTMLClayIDKeepsItsIdentity(t *testing.T) {
 	}
 	if entries, _ := fx.srv.versions.List("id:"+testUUID, afterPath); len(entries) != 1 {
 		t.Fatalf("the rename split the history: %d versions", len(entries))
+	}
+}
+
+// B′ rule 1: a path that already owns an id-history keeps it, even when the bytes
+// on disk are clobbered in place by a copy of a different document. The
+// pre-clobber versions stay restorable instead of the file forking to whatever id
+// the intruding bytes carry.
+func TestClobberInPlaceResumesTheResidentHistory(t *testing.T) {
+	fx := setupFileTest(t, "notes.htmlclay", page("v1"))
+
+	w := fx.serve(t, "notes.htmlclay")
+	if w.Code != 200 {
+		t.Fatalf("serve: %d", w.Code)
+	}
+	resident := htmlutil.ReadHTMLClayID(w.Body.Bytes())
+	if !versions.IsCanonicalUUID(resident) {
+		t.Fatalf("serving minted no canonical identity: %q", resident)
+	}
+	fx.save(t, page("v2"))
+	fx.save(t, page("v3"))
+	if entries := fx.history(t); len(entries) != 3 {
+		t.Fatalf("expected 3 versions under the resident identity, got %d", len(entries))
+	}
+
+	// An offline copy-over: a different document's bytes, carrying its own id.
+	otherUUID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if err := os.WriteFile(fx.file.AbsPath, []byte(pageWithID(otherUUID, "clobber")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// This session already resolved the identity, so only a reopen re-runs the rule.
+	next := fx.reopen(t, "notes.htmlclay")
+	rw := next.serve(t, "notes.htmlclay")
+	if rw.Code != 200 {
+		t.Fatalf("serve after the clobber: %d", rw.Code)
+	}
+	if got := htmlutil.ReadHTMLClayID(rw.Body.Bytes()); got != resident {
+		t.Fatalf("the clobber forked identity to %q, want the resident %s", got, resident)
+	}
+	if key := next.key(t); key != "id:"+resident {
+		t.Fatalf("the reopened session tracks %q, want id:%s", key, resident)
+	}
+
+	found := false
+	for _, e := range next.history(t) {
+		if strings.Contains(next.versionBody(t, e.Name), "v2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the resident history did not survive the clobber")
+	}
+}
+
+// A save body carrying someone else's id is stored exactly as sent, but the id is
+// never adopted: the history stays under the identity resolved at first serve, and
+// the next serve re-anchors disk (model B′).
+func TestForeignIDInASaveBodyIsNotAdopted(t *testing.T) {
+	fx := setupFileTest(t, "notes.htmlclay", page("v1"))
+
+	w := fx.serve(t, "notes.htmlclay")
+	if w.Code != 200 {
+		t.Fatalf("serve: %d", w.Code)
+	}
+	resident := htmlutil.ReadHTMLClayID(w.Body.Bytes())
+	if !versions.IsCanonicalUUID(resident) {
+		t.Fatalf("serving minted no canonical identity: %q", resident)
+	}
+
+	// withCurrentID leaves a body that already carries an id alone, so this is a
+	// document pasted in from somewhere else.
+	foreignID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if sw := fx.save(t, pageWithID(foreignID, "pasted")); sw.Code != 200 {
+		t.Fatalf("save: %d %s", sw.Code, sw.Body.String())
+	}
+
+	if key := fx.key(t); key != "id:"+resident {
+		t.Fatalf("the foreign id moved the tracked key to %q, want id:%s", key, resident)
+	}
+	newest := fx.versionBody(t, fx.history(t)[0].Name)
+	if !strings.Contains(newest, "pasted") {
+		t.Fatalf("the incoming bytes were not versioned under the resident history: %q", newest)
+	}
+	if got := htmlutil.ReadHTMLClayID([]byte(newest)); got != foreignID {
+		t.Fatalf("the backup rewrote the body's id to %q; it is stored as sent", got)
+	}
+	onDisk, _ := os.ReadFile(fx.file.AbsPath)
+	if got := htmlutil.ReadHTMLClayID(onDisk); got != foreignID {
+		t.Fatalf("disk carries %q, want the body as sent (%s)", got, foreignID)
+	}
+
+	sw := fx.serve(t, "notes.htmlclay")
+	if got := htmlutil.ReadHTMLClayID(sw.Body.Bytes()); got != resident {
+		t.Fatalf("the serve after a foreign-id save carries %q, want %s", got, resident)
 	}
 }
 
@@ -533,8 +708,9 @@ func TestInternalVersionsDirectoryIsDenied(t *testing.T) {
 	}
 }
 
-// B2: restore keeps the target file's canonical htmlclayid rather than adopting
-// the one stored inside the version.
+// B2: restore never adopts the id stored inside the version, and never asserts
+// any identity on disk. The file's own canonical identity is preserved in the
+// tracked key and re-injected by the next serve.
 func TestRestorePreservesCanonicalID(t *testing.T) {
 	fx := setupFileTest(t, "notes.htmlclay", pageWithID(testUUID, "v1"))
 	fx.serve(t, "notes.htmlclay")
@@ -563,11 +739,23 @@ func TestRestorePreservesCanonicalID(t *testing.T) {
 	if !strings.Contains(string(onDisk), "restored body") {
 		t.Fatalf("content was not restored: %q", onDisk)
 	}
-	if got := htmlutil.ReadHTMLClayID(onDisk); got != testUUID {
-		t.Fatalf("restore adopted the version's id: got %q, want the file's %q", got, testUUID)
+	if got := htmlutil.ReadHTMLClayID(onDisk); got != "" {
+		t.Fatalf("restore asserted an identity on disk: %q", got)
 	}
 	if strings.Contains(string(onDisk), "htmlclaytoken") {
 		t.Fatal("restore left a session token in the file")
+	}
+	if key := fx.key(t); key != "id:"+testUUID {
+		t.Fatalf("restore moved the tracked key to %q, want id:%s", key, testUUID)
+	}
+
+	// The next serve re-injects the tracked id, so the file's identity is intact.
+	sw := fx.serve(t, "notes.htmlclay")
+	if sw.Code != 200 {
+		t.Fatalf("serve after restore: %d", sw.Code)
+	}
+	if got := htmlutil.ReadHTMLClayID(sw.Body.Bytes()); got != testUUID {
+		t.Fatalf("the serve after a restore carries id %q, want %s", got, testUUID)
 	}
 }
 
@@ -673,9 +861,7 @@ func TestRestoreRejectsIncompleteDocument(t *testing.T) {
 	fx := setupFileTest(t, "notes.htmlclay", page("v1"))
 	fx.serve(t, "notes.htmlclay")
 
-	data, _ := os.ReadFile(fx.file.AbsPath)
-	key := versions.Key(fx.file.AbsPath, data)
-	if _, err := fx.srv.versions.Backup(key, fx.file.AbsPath, []byte("<html><body>partial")); err != nil {
+	if _, err := fx.srv.versions.Backup(fx.key(t), fx.file.AbsPath, []byte("<html><body>partial")); err != nil {
 		t.Fatal(err)
 	}
 	truncated := fx.history(t)[0].Name

@@ -6,8 +6,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/panphora/htmlclay/htmlutil"
 	"github.com/panphora/htmlclay/session"
@@ -166,26 +164,14 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Identity comes from the resolved history key, not the mutable current disk
-	// bytes. An external process that stripped the htmlclayid or deleted the file
-	// must not make the restore write id-free bytes: the next serve would derive a
-	// new id and orphan the id-keyed history. The version's own id is never
-	// adopted either; it may have come from a clone or a rename.
+	// Restore writes the selected version's bytes without asserting any identity on
+	// disk. The host never writes a documentid (spec §4): the id is re-injected at
+	// the next serve from the tracked key, exactly as for a normal open, so a
+	// restored-but-not-yet-saved file still resolves to the right history (model B′
+	// rule 1 keys by the resident path). The version's own stored id is stripped,
+	// never adopted; it may have come from a clone or a rename.
 	data = htmlutil.StripToken(data)
-	if id, ok := versions.IDFromKey(key); ok {
-		if live := htmlutil.ReadHTMLClayID(current); versions.IsCanonicalUUID(live) && !strings.EqualFold(live, id) {
-			s.logger.Printf("Restoring %s: live id %s differs from history id %s; keeping the history id",
-				f.RelPath, live, id)
-		}
-		data = htmlutil.SetHTMLClayID(data, id)
-	} else {
-		// A path-keyed .htmlclay history cannot be promoted to an identity
-		// implicitly; a plain .html file never carries one. Both strip.
-		if strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
-			s.logger.Printf("Restoring %s: path-keyed .htmlclay history cannot adopt an id implicitly", f.RelPath)
-		}
-		data = htmlutil.StripHTMLClayID(data)
-	}
+	data = htmlutil.StripHTMLClayID(data)
 
 	if wErr := atomicWriteFile(f.AbsPath, data); wErr != nil {
 		f.Unlock()
@@ -197,6 +183,11 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	// A restore advances both per-file records, so it participates in save
 	// suppression exactly like a save does, and emits a live notification.
 	f.RecordServerWrite(versions.Hash(data))
+	// Restoring engages the history, so it is no longer a throwaway first-open
+	// snapshot: clear any provisional flag so it is never reclaimed.
+	if pErr := s.versions.SetProvisional(key, f.AbsPath, false); pErr != nil {
+		s.logger.Printf("Could not clear provisional flag for %s: %v", f.RelPath, pErr)
+	}
 	s.coord.acceptServerReplacement(f)
 	s.broadcastDiskHTML(f, data)
 	s.coord.notifyWarning(f, f.Name+" was restored from a backup")

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/panphora/htmlclay/htmlutil"
 	"github.com/panphora/htmlclay/logging"
 	"github.com/panphora/htmlclay/session"
 	"github.com/panphora/htmlclay/versions"
@@ -408,7 +409,9 @@ func TestServeOpenedHTMLFileNotMutated(t *testing.T) {
 	}
 }
 
-func TestServeHTMLClayFilePersistsID(t *testing.T) {
+// The host never writes an identity to disk. The tracked id rides in the response
+// bytes only; it reaches the file when the client's own save carries it back.
+func TestServeHTMLClayFileInjectsIDWithoutWritingDisk(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	req := httptest.NewRequest("GET", "/test.htmlclay", nil)
@@ -420,9 +423,13 @@ func TestServeHTMLClayFilePersistsID(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
+	served := htmlutil.ReadHTMLClayID(w.Body.Bytes())
+	if !versions.IsCanonicalUUID(served) {
+		t.Errorf("the response carries no canonical htmlclayid: %q", served)
+	}
 	onDisk, _ := os.ReadFile(f.AbsPath)
-	if !strings.Contains(string(onDisk), "htmlclayid=") {
-		t.Error(".htmlclay file should get a persistent htmlclayid on disk")
+	if strings.Contains(string(onDisk), "htmlclayid=") {
+		t.Error("serving wrote an htmlclayid to disk")
 	}
 }
 

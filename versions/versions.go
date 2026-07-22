@@ -57,6 +57,11 @@ const (
 	// pruneInterval throttles opportunistic pruning to at most once per hour
 	// per history.
 	pruneInterval = time.Hour
+	// ProvisionalMaxAge is how long a first-open snapshot taken under a freshly
+	// minted identity survives when no save ever makes it durable. Past this,
+	// PruneAll deletes the whole history at startup, so opening a file and never
+	// saving it does not leak a copy forever.
+	ProvisionalMaxAge = 7 * 24 * time.Hour
 	// maxEntrySize bounds a version read back off disk during a restore.
 	maxEntrySize = 50 * 1024 * 1024
 )
@@ -144,6 +149,12 @@ type meta struct {
 	AbsPath   string `json:"absPath"`
 	Key       string `json:"key"`
 	UpdatedAt string `json:"updatedAt"`
+	// Provisional marks a history whose only content is a first-open snapshot
+	// taken under a freshly minted identity that no save has yet made durable.
+	// writeMeta leaves it false (a normal backup is durable), so the first save's
+	// meta rewrite clears it; SetProvisional(true) is what a first-open snapshot
+	// sets, and PruneAll deletes a still-provisional history once it ages out.
+	Provisional bool `json:"provisional,omitempty"`
 }
 
 type history struct {
@@ -692,7 +703,13 @@ func (s *Store) Claim(key, absPath string) (ClaimStatus, string, error) {
 	if err := s.load(vroot); err != nil {
 		return ClaimOwned, "", err
 	}
+	return s.claimLocked(vroot, key, absPath)
+}
 
+// claimLocked is Claim's ownership decision, factored out so ResolveIdentity can
+// reuse it in the same store transaction. Caller holds s.mu and has loaded the
+// index from vroot.
+func (s *Store) claimLocked(vroot *os.Root, key, absPath string) (ClaimStatus, string, error) {
 	h, ok := s.index[key]
 	if !ok {
 		s.index[key] = history{absPath: absPath}
@@ -719,6 +736,102 @@ func (s *Store) Claim(key, absPath string) (ClaimStatus, string, error) {
 		return ClaimRenamed, bound, writeMeta(hroot, key, absPath)
 	}
 	return ClaimClone, bound, nil
+}
+
+// ResolveIdentity resolves the durable identity of a .htmlclay file at first
+// open, in one store transaction and without writing anything to disk. The
+// caller injects the returned id into the bytes it serves; the client's own save
+// is what puts it on disk. This is the whole reason serving no longer mutates a
+// file.
+//
+// diskID is the id currently in the file's bytes ("" if absent or not a
+// canonical UUID). The rules, in order:
+//
+//  1. If this exact absPath already owns an id-history, that identity wins over
+//     whatever the disk bytes carry. A file clobbered in place by a copy of a
+//     different document keeps the resident history instead of forking (model
+//     B′): the pre-clobber versions stay restorable.
+//  2. Otherwise a valid diskID runs the normal owned / renamed / clone claim.
+//  3. A missing diskID, or a clone, mints a fresh id. A freshly minted id is
+//     provisional: its only history is the first-open snapshot, which PruneAll
+//     deletes if no save ever makes it durable.
+func (s *Store) ResolveIdentity(absPath, diskID string) (id string, provisional bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	vroot, err := s.openVersionsRoot(true)
+	if err != nil {
+		return "", false, err
+	}
+	defer vroot.Close()
+	if err := s.load(vroot); err != nil {
+		return "", false, err
+	}
+
+	// Rule 1: this path already owns an id-history, so resume it.
+	for k, h := range s.index {
+		if samePath(h.absPath, absPath) {
+			if uid, ok := IDFromKey(k); ok {
+				return uid, false, nil
+			}
+		}
+	}
+
+	// Rule 2: a valid disk id runs the normal claim.
+	if IsCanonicalUUID(diskID) {
+		lowered := strings.ToLower(diskID)
+		status, _, cErr := s.claimLocked(vroot, "id:"+lowered, absPath)
+		if cErr != nil {
+			return "", false, cErr
+		}
+		if status != ClaimClone {
+			return lowered, false, nil
+		}
+		// A clone falls through to mint a fresh identity.
+	}
+
+	// Rule 3: mint a fresh, provisional identity, claiming it in the same
+	// transaction so a concurrently opened sibling cannot reserve the same id.
+	fresh, err := htmlutil.GenerateHTMLClayID()
+	if err != nil {
+		return "", false, err
+	}
+	if _, _, cErr := s.claimLocked(vroot, "id:"+fresh, absPath); cErr != nil {
+		return "", false, cErr
+	}
+	return fresh, true, nil
+}
+
+// SetProvisional records whether key's history is a first-open snapshot taken
+// under a freshly minted identity that no save has yet made durable. A first-open
+// snapshot sets it true; the first save clears it (both explicitly here, and
+// implicitly because writeMeta defaults it false on the save's own backup).
+func (s *Store) SetProvisional(key, absPath string, provisional bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	vroot, err := s.openVersionsRoot(false)
+	if err != nil {
+		return err
+	}
+	defer vroot.Close()
+	ref, err := s.openHistory(vroot, key, absPath, false)
+	if err != nil {
+		return err
+	}
+	defer ref.Close()
+
+	m, err := readMeta(ref.root)
+	if err != nil {
+		return err
+	}
+	m.Provisional = provisional
+	m.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicPublishBytes(ref.root, "meta.json", data)
 }
 
 // BoundPath returns the absolute path a key's history is currently bound to.
@@ -1043,12 +1156,40 @@ func (s *Store) PruneAll() {
 		if err != nil {
 			continue
 		}
+		m, mErr := readMeta(hroot)
+
+		// A provisional history is a first-open snapshot that no save ever made
+		// durable. Once it ages out, delete it whole (pruneDir only trims within a
+		// history and always keeps MinKeep, so a one-entry snapshot is otherwise
+		// immortal). Deleting an opened-but-never-saved file's snapshot is
+		// deliberate: recovery of pre-first-save state is best-effort.
+		if mErr == nil && m.Provisional && provisionalExpired(m.UpdatedAt, now) {
+			hroot.Close()
+			if rErr := vroot.RemoveAll(d.Name()); rErr == nil {
+				if m.Key != "" {
+					delete(s.index, m.Key)
+				}
+			}
+			continue
+		}
+
 		pruneDir(hroot)
-		if m, mErr := readMeta(hroot); mErr == nil && m.Key != "" {
+		if mErr == nil && m.Key != "" {
 			s.lastPrune[m.Key] = now
 		}
 		hroot.Close()
 	}
+}
+
+// provisionalExpired reports whether a provisional history's last update is older
+// than ProvisionalMaxAge. An unparseable stamp is treated as not expired, so a
+// malformed meta never triggers deletion.
+func provisionalExpired(updatedAt string, now time.Time) bool {
+	t, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) > ProvisionalMaxAge
 }
 
 // pruneDir deletes versions older than MaxAge while always retaining the newest

@@ -94,55 +94,41 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// firstServe is captured before any record is touched, so both the clone check
-	// and the first-open snapshot still see a genuinely fresh file even after the
-	// htmlclayid injection below advances the records.
+	// firstServe is captured before any record is touched, so the first-open
+	// snapshot still sees a genuinely fresh file.
 	firstServe := !f.Observed()
-	serverWrote := false
 
-	// Only .htmlclay files carry a persistent identity; a plain .html file
-	// opened for viewing is never modified on disk.
-	if strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") && htmlutil.ReadHTMLClayID(data) == "" {
-		id, err := htmlutil.GenerateHTMLClayID()
-		if err != nil {
-			s.logger.Printf("Error generating htmlclayid: %v", err)
-		} else {
-			data = htmlutil.InjectHTMLClayID(data, id)
-			if wErr := atomicWriteFile(f.AbsPath, data); wErr != nil {
-				s.logger.Printf("Error persisting htmlclayid for %s: %v", f.AbsPath, wErr)
+	// Resolve the file's durable identity exactly once, without ever writing to
+	// disk. The id rides only in the bytes served (below); it reaches the file
+	// only when the client's own save carries it back. Every later list, read,
+	// restore and save reads this stored key.
+	provisional := false
+	if f.HistoryKey() == "" {
+		if strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
+			id, prov, rErr := s.versions.ResolveIdentity(f.AbsPath, htmlutil.ReadHTMLClayID(data))
+			if rErr != nil {
+				s.logger.Printf("Could not resolve identity for %s: %v", f.RelPath, rErr)
+				f.SetHistoryKey(versions.Key(f.AbsPath, data))
 			} else {
-				serverWrote = true
-				s.logger.Printf("Assigned htmlclayid %s to %s", id, f.RelPath)
+				f.SetHistoryKey("id:" + id)
+				provisional = prov
 			}
+		} else {
+			f.SetHistoryKey(versions.Key(f.AbsPath, data))
 		}
 	}
-
-	if firstServe {
-		var forked bool
-		data, forked = s.resolveIdentityOnFirstOpen(f, data)
-		serverWrote = serverWrote || forked
-	}
-
-	// The file's backup identity is resolved exactly once, here, after injection
-	// and clone resolution have settled what identity the file actually carries.
-	// Every later list, read, restore and save reads this stored key instead of
-	// re-deriving one from bytes an external process may have changed.
-	f.SetHistoryKey(versions.Key(f.AbsPath, data))
 	key := f.HistoryKey()
 
-	// The injection is a server write, so it advances both records on every
-	// injection and not only the first. Guarding the update by firstServe meant
-	// that an external editor stripping the id, followed by a reload, had the
-	// server inject a fresh id, write disk, leave the records untouched, and then
-	// broadcast its own write as a foreign edit and warn stale against itself.
-	// Serving on its own still never advances anything.
-	if firstServe || serverWrote {
-		f.RecordServerWrite(versions.Hash(data))
+	// served carries the durable id; the bytes on disk never do. Injecting the
+	// tracked id over whatever disk holds is also model B′'s self-heal: a file
+	// whose id was stripped or replaced externally is re-anchored on the next serve.
+	served := data
+	if id, ok := versions.IDFromKey(key); ok {
+		served = htmlutil.SetHTMLClayID(data, id)
 	}
 
-	// B1a: capture a version when a file is first served, only if it differs from
-	// the newest existing backup. Without this, a freshly opened file that has
-	// never been saved has nothing to restore.
+	// B1a: capture a version when a file is first served, so a freshly opened file
+	// that is never saved still has something to restore.
 	//
 	// Published inside f.Lock(), per B1. Publishing after the unlock let two
 	// concurrent GETs interleave: GET1 captured H0 and was descheduled, GET2 saw
@@ -152,17 +138,23 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	// is ordinary.
 	pruneKey := ""
 	if firstServe {
+		// Seed both per-file records from the DISK bytes, so the first real save
+		// compares like-for-like and does not false-positive as a stale write.
+		f.NoteFirstObservation(versions.Hash(data))
+
+		// The snapshot stores the raw disk bytes, not the injected ones, so it
+		// dedups against the first save's pre-write backup instead of doubling
+		// every file.
 		if _, bErr := s.versions.Backup(key, f.AbsPath, data); bErr != nil {
 			s.logger.Printf("First-open snapshot failed for %s: %v", f.RelPath, bErr)
+		} else if provisional {
+			// This snapshot's identity was freshly minted; mark it so it is
+			// reclaimed if no save ever makes it durable.
+			if pErr := s.versions.SetProvisional(key, f.AbsPath, true); pErr != nil {
+				s.logger.Printf("Could not mark provisional history for %s: %v", f.RelPath, pErr)
+			}
 		}
 		pruneKey = key
-	}
-
-	// A server-authorized write changes the file's inode via the atomic rename;
-	// re-anchor the live-sync incarnation to it so the change is not later mistaken
-	// for an external reincarnation. A no-op when nothing is streaming this file.
-	if serverWrote {
-		s.coord.acceptServerReplacement(f)
 	}
 	f.Unlock()
 
@@ -171,7 +163,7 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		s.versions.MaybePrune(pruneKey, f.AbsPath)
 	}
 
-	data = htmlutil.InjectToken(data, f.Token)
+	served = htmlutil.InjectToken(served, f.Token)
 
 	// B0: edit mode via cookie, matching hyperclay-local. Both clients fall back
 	// to exactly this cookie, read synchronously from document.cookie, and the
@@ -189,56 +181,7 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	// restart hands back a dead token and every save 401s silently.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
-}
-
-// resolveIdentityOnFirstOpen makes clone identity self-healing, and reports
-// whether it wrote to disk.
-//
-// Ownership is checked and claimed in one store transaction. Doing it in two let
-// two copies of one file, first-opened concurrently, both see no owner, so
-// neither got a fresh id and both landed in a single history.
-//
-// Caller must hold f.Lock().
-func (s *Server) resolveIdentityOnFirstOpen(f *session.File, data []byte) ([]byte, bool) {
-	if !strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
-		return data, false
-	}
-	id := htmlutil.ReadHTMLClayID(data)
-	if !versions.IsCanonicalUUID(id) {
-		return data, false
-	}
-
-	status, bound, err := s.versions.Claim(versions.Key(f.AbsPath, data), f.AbsPath)
-	if err != nil {
-		s.logger.Printf("Could not claim history for %s: %v", f.RelPath, err)
-		return data, false
-	}
-	switch status {
-	case versions.ClaimOwned:
-		return data, false
-	case versions.ClaimRenamed:
-		s.logger.Printf("Rebound history %s from %s to %s", id, bound, f.AbsPath)
-		return data, false
-	}
-
-	newID, err := htmlutil.GenerateHTMLClayID()
-	if err != nil {
-		s.logger.Printf("Error generating htmlclayid for clone %s: %v", f.RelPath, err)
-		return data, false
-	}
-	forked := htmlutil.SetHTMLClayID(data, newID)
-	if wErr := atomicWriteFile(f.AbsPath, forked); wErr != nil {
-		s.logger.Printf("Error forking htmlclayid for %s: %v", f.AbsPath, wErr)
-		return data, false
-	}
-	// Claim the fresh identity in the same breath, so a second clone opened
-	// concurrently sees this one as the owner rather than racing for the same id.
-	if _, _, cErr := s.versions.Claim(versions.Key(f.AbsPath, forked), f.AbsPath); cErr != nil {
-		s.logger.Printf("Could not claim forked history for %s: %v", f.RelPath, cErr)
-	}
-	s.logger.Printf("Detected clone of %s: assigned fresh htmlclayid %s to %s", bound, newID, f.RelPath)
-	return forked, true
+	w.Write(served)
 }
 
 // serveAsset serves a file that was never opened directly: an asset (css, js,
@@ -483,13 +426,24 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	f.Lock()
 	current, readErr := os.ReadFile(f.AbsPath)
 
-	// The backup identity comes from the stored key, never from the bytes that
-	// happen to be on disk right now. Re-deriving it here meant that an external
-	// process deleting the file or stripping its htmlclayid silently moved the key
-	// to a path hash, so this save's backups went somewhere the versions API would
-	// never list, while the warning told the user their previous version was in
-	// Backups. A file saved before it was ever served resolves its key here.
-	f.SetHistoryKey(versions.Key(f.AbsPath, current))
+	// The backup identity comes from the key resolved at first serve, never from
+	// the bytes on disk or in the body. Deriving it from disk meant that on a first
+	// save the id-less on-disk bytes (the host no longer writes the id) keyed by
+	// path hash while everything later keyed by id, orphaning the pre-save backup.
+	// A save that somehow precedes a serve resolves identity the same way serving
+	// does; the body's own id is never adopted, so a pasted-in foreign id cannot
+	// move the history (model B′).
+	if f.HistoryKey() == "" {
+		if strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
+			if id, _, rErr := s.versions.ResolveIdentity(f.AbsPath, htmlutil.ReadHTMLClayID(body)); rErr == nil {
+				f.SetHistoryKey("id:" + id)
+			} else {
+				f.SetHistoryKey(versions.Key(f.AbsPath, body))
+			}
+		} else {
+			f.SetHistoryKey(versions.Key(f.AbsPath, body))
+		}
+	}
 	key := f.HistoryKey()
 
 	// B5: compare the on-disk hash against lastServerWrite. Hashing the on-disk
@@ -527,6 +481,12 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	err = atomicWriteFile(f.AbsPath, body)
 	if err == nil {
 		f.RecordServerWrite(versions.Hash(body))
+		// This save makes the history durable. The backup above already defaulted
+		// the meta to non-provisional, but a save that only deduplicated skips that
+		// write, so clear the flag explicitly.
+		if pErr := s.versions.SetProvisional(key, f.AbsPath, false); pErr != nil {
+			s.logger.Printf("Could not clear provisional flag for %s: %v", f.RelPath, pErr)
+		}
 		s.coord.acceptServerReplacement(f)
 		s.broadcastDiskHTML(f, body)
 	}
@@ -627,9 +587,19 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Report the tracked identity, which the host injects when serving. Between
+	// first serve and first save the disk carries no id, so reading it off disk
+	// would report none while the served document already has one.
 	var htmlclayID string
-	if data, err := os.ReadFile(f.AbsPath); err == nil {
-		htmlclayID = htmlutil.ReadHTMLClayID(data)
+	f.Lock()
+	if id, ok := versions.IDFromKey(f.HistoryKey()); ok {
+		htmlclayID = id
+	}
+	f.Unlock()
+	if htmlclayID == "" {
+		if data, err := os.ReadFile(f.AbsPath); err == nil {
+			htmlclayID = htmlutil.ReadHTMLClayID(data)
+		}
 	}
 
 	meta := fileMeta{

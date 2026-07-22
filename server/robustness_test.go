@@ -147,11 +147,19 @@ func TestRestoreKeepsHistoryKeyIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := htmlutil.ReadHTMLClayID(onDisk); !strings.EqualFold(got, testUUID) {
-				t.Fatalf("restored bytes carry id %q, want %s", got, testUUID)
+			// The host asserts no identity on disk; the tracked key is what carries it.
+			if got := htmlutil.ReadHTMLClayID(onDisk); got != "" {
+				t.Fatalf("restored bytes assert an identity on disk: %q", got)
 			}
-			if got := versions.Key(fx.file.AbsPath, onDisk); got != "id:"+testUUID {
-				t.Fatalf("restored file keys as %q, want id:%s", got, testUUID)
+			if got := fx.key(t); got != "id:"+testUUID {
+				t.Fatalf("restore moved the tracked key to %q, want id:%s", got, testUUID)
+			}
+			sw := fx.serve(t, "notes.htmlclay")
+			if sw.Code != 200 {
+				t.Fatalf("serve after restore: %d", sw.Code)
+			}
+			if got := htmlutil.ReadHTMLClayID(sw.Body.Bytes()); !strings.EqualFold(got, testUUID) {
+				t.Fatalf("the serve after a restore carries id %q, want %s", got, testUUID)
 			}
 
 			// Restart survival: a fresh store over the same directory still lists
@@ -244,10 +252,13 @@ func TestConcurrentFirstOpensOfOneIDForkDistinctIdentities(t *testing.T) {
 		}
 
 		mgr := session.NewManagerWithHome(homeDir)
+		files := make([]*session.File, 0, len(paths))
 		for _, p := range paths {
-			if _, err := mgr.Register(p); err != nil {
+			f, err := mgr.Register(p)
+			if err != nil {
 				t.Fatal(err)
 			}
+			files = append(files, f)
 		}
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -256,25 +267,36 @@ func TestConcurrentFirstOpensOfOneIDForkDistinctIdentities(t *testing.T) {
 		srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
 
 		var wg sync.WaitGroup
-		for _, p := range paths {
+		served := make([]*httptest.ResponseRecorder, len(paths))
+		for i, p := range paths {
 			wg.Add(1)
-			go func(rel string) {
+			go func(idx int, rel string) {
 				defer wg.Done()
 				req := httptest.NewRequest("GET", "/"+rel, nil)
 				req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 				req.SetPathValue("path", rel)
-				srv.handleServeFile(httptest.NewRecorder(), req)
-			}(filepath.Base(p))
+				w := httptest.NewRecorder()
+				srv.handleServeFile(w, req)
+				served[idx] = w
+			}(i, filepath.Base(p))
 		}
 		wg.Wait()
 
+		// Serving never rewrites disk, so both copies still carry the shared id
+		// there. The fork lives in the tracked key and the bytes served.
 		ids := make([]string, 0, len(paths))
-		for _, p := range paths {
-			data, rErr := os.ReadFile(p)
-			if rErr != nil {
-				t.Fatal(rErr)
+		for i, f := range files {
+			f.Lock()
+			key := f.HistoryKey()
+			f.Unlock()
+			id, ok := versions.IDFromKey(key)
+			if !ok {
+				t.Fatalf("attempt %d: %s tracks %q, want an id: key", attempt, paths[i], key)
 			}
-			ids = append(ids, htmlutil.ReadHTMLClayID(data))
+			if got := htmlutil.ReadHTMLClayID(served[i].Body.Bytes()); got != id {
+				t.Fatalf("attempt %d: %s served id %q but tracks %q", attempt, paths[i], got, id)
+			}
+			ids = append(ids, id)
 		}
 		srv.hub.shutdown()
 		srv.watcher.shutdown()
@@ -311,12 +333,8 @@ func TestWatcherObservationDoesNotSkipFirstOpenWork(t *testing.T) {
 		t.Fatalf("the first real GET took %d snapshots, want 1: a watcher observation "+
 			"suppressed the first-open work", len(entries))
 	}
-	onDisk, err := os.ReadFile(fx.file.AbsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if htmlutil.ReadHTMLClayID(onDisk) == "" {
-		t.Fatal("the first real GET skipped identity resolution")
+	if key := fx.key(t); !strings.HasPrefix(key, "id:") {
+		t.Fatalf("the first real GET skipped identity resolution: key is %q", key)
 	}
 }
 
@@ -406,43 +424,125 @@ func TestFirstOpenSnapshotCannotLandAfterALaterSave(t *testing.T) {
 	}
 }
 
-// Blocker 5. An htmlclayid injection is a server write on every serve, not only
-// the first. When the record update was guarded by firstServe, an external editor
-// stripping the id followed by a reload had the server inject a fresh id, write
-// disk, leave both records untouched, and then warn stale against its own edit.
-func TestIDInjectionOnALaterServeAdvancesTheRecords(t *testing.T) {
+// Blocker 5, under model B′. The host never writes an identity to disk, so a
+// reload can no longer manufacture a stale warning against an edit of its own:
+// there is nothing on disk for an external strip to take away, which is the whole
+// point. What a later serve must still do is self-heal, re-anchoring the file to
+// the tracked identity in the bytes it serves and leaving disk byte-for-byte as it
+// found it.
+func TestLaterServeSelfHealsTheIDWithoutWritingDisk(t *testing.T) {
 	fx := setupFileTest(t, "notes.htmlclay", page("original"))
-	fx.serve(t, "notes.htmlclay")
 
+	first := fx.serve(t, "notes.htmlclay")
+	if first.Code != 200 {
+		t.Fatalf("first serve: %d", first.Code)
+	}
+	tracked := htmlutil.ReadHTMLClayID(first.Body.Bytes())
+	if !versions.IsCanonicalUUID(tracked) {
+		t.Fatalf("the first serve carried no canonical htmlclayid: %q", tracked)
+	}
+
+	// An external editor round-tripping the file through a tool that does not
+	// understand htmlclayid.
 	stripIDOnDisk(t, fx.file.AbsPath)
+	before, err := os.ReadFile(fx.file.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// The reload: the server notices the missing id and writes a fresh one.
-	if w := fx.serve(t, "notes.htmlclay"); w.Code != 200 {
+	w := fx.serve(t, "notes.htmlclay")
+	if w.Code != 200 {
 		t.Fatalf("second serve: %d", w.Code)
 	}
+	if got := htmlutil.ReadHTMLClayID(w.Body.Bytes()); got != tracked {
+		t.Fatalf("the reload served id %q, want the tracked %s", got, tracked)
+	}
+
 	onDisk, err := os.ReadFile(fx.file.AbsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if htmlutil.ReadHTMLClayID(onDisk) == "" {
-		t.Fatal("the reload did not re-inject an htmlclayid")
+	if got := htmlutil.ReadHTMLClayID(onDisk); got != "" {
+		t.Fatalf("the reload wrote an id to disk: %q", got)
+	}
+	if versions.Hash(onDisk) != versions.Hash(before) {
+		t.Fatalf("the reload rewrote the file: %q", onDisk)
 	}
 
-	fx.file.Lock()
-	recorded := fx.file.LastServerWrite()
-	stable := fx.file.LastStableObservation()
-	fx.file.Unlock()
-	if want := versions.Hash(onDisk); recorded != want || stable != want {
-		t.Fatalf("the injection did not advance both records: lastServerWrite=%q "+
-			"lastStableObservation=%q want %q", recorded, stable, want)
+	sw := fx.save(t, page("after reload"))
+	if sw.Code != 200 {
+		t.Fatalf("save: %d %s", sw.Code, sw.Body.String())
+	}
+	if got := decodeJSON(t, sw)["msgType"]; got != "success" {
+		t.Fatalf("the save warned %q although the host never wrote the file", got)
+	}
+}
+
+// An external editor stripping the id AFTER a real save is the case that matters:
+// disk genuinely carried the identity and genuinely lost it. The tracked id must
+// survive, and it must survive a restart too, because the store still binds it to
+// this path (model B′ rule 1). Before this design, a strip meant the next serve
+// minted a fresh id and wrote it to disk, orphaning the whole history.
+func TestExternalStripOfASavedIDSelfHeals(t *testing.T) {
+	fx := setupFileTest(t, "notes.htmlclay", page("original"))
+
+	first := fx.serve(t, "notes.htmlclay")
+	if first.Code != 200 {
+		t.Fatalf("first serve: %d", first.Code)
+	}
+	tracked := htmlutil.ReadHTMLClayID(first.Body.Bytes())
+	if !versions.IsCanonicalUUID(tracked) {
+		t.Fatalf("the first serve carried no canonical htmlclayid: %q", tracked)
 	}
 
-	w := fx.save(t, page("after reload"))
+	// A real client round trip puts the id on disk, which is the only way it ever
+	// gets there.
+	if sw := fx.save(t, page("v2")); sw.Code != 200 {
+		t.Fatalf("save: %d %s", sw.Code, sw.Body.String())
+	}
+	saved, _ := os.ReadFile(fx.file.AbsPath)
+	if got := htmlutil.ReadHTMLClayID(saved); got != tracked {
+		t.Fatalf("the client's save did not land the id on disk: %q", got)
+	}
+
+	stripIDOnDisk(t, fx.file.AbsPath)
+
+	// Same process: the session still holds the identity.
+	w := fx.serve(t, "notes.htmlclay")
 	if w.Code != 200 {
-		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+		t.Fatalf("serve after the strip: %d", w.Code)
 	}
-	if got := decodeJSON(t, w)["msgType"]; got != "success" {
-		t.Fatalf("the save warned %q against the server's own injection", got)
+	if got := htmlutil.ReadHTMLClayID(w.Body.Bytes()); got != tracked {
+		t.Fatalf("the serve after a strip carried %q, want the tracked %s", got, tracked)
+	}
+	afterServe, _ := os.ReadFile(fx.file.AbsPath)
+	if got := htmlutil.ReadHTMLClayID(afterServe); got != "" {
+		t.Fatalf("serving wrote the id back to disk: %q", got)
+	}
+
+	// Across a restart: disk carries no id at all, so only the store's binding of
+	// this path can recover the identity.
+	next := fx.reopen(t, "notes.htmlclay")
+	rw := next.serve(t, "notes.htmlclay")
+	if rw.Code != 200 {
+		t.Fatalf("serve after reopen: %d", rw.Code)
+	}
+	if got := htmlutil.ReadHTMLClayID(rw.Body.Bytes()); got != tracked {
+		t.Fatalf("the reopened serve minted %q instead of resuming the tracked %s", got, tracked)
+	}
+	if key := next.key(t); key != "id:"+tracked {
+		t.Fatalf("the reopened session tracks %q, want id:%s", key, tracked)
+	}
+
+	// The history the strip would have orphaned is still reachable.
+	found := false
+	for _, e := range next.history(t) {
+		if strings.Contains(next.versionBody(t, e.Name), "v2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the saved version was orphaned by the strip")
 	}
 }
 
