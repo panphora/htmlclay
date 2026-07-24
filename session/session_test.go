@@ -253,6 +253,73 @@ func TestHomeDirNeverBecomesAssetRoot(t *testing.T) {
 	}
 }
 
+func TestGrantReadRoot(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, "review", "fable"), 0755)
+	asset := filepath.Join(home, "review", "redpen.js")
+	os.WriteFile(asset, []byte("//"), 0644)
+
+	m := NewManagerWithHome(home)
+	if _, _, ok := m.AssetRoot(asset); ok {
+		t.Fatal("nothing granted yet")
+	}
+	if err := m.GrantReadRoot(filepath.Join(home, "review"), false); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	root, rel, ok := m.AssetRoot(asset)
+	if !ok || root != filepath.Join(home, "review") || rel != "redpen.js" {
+		t.Errorf("after grant AssetRoot = %q, %q, %v", root, rel, ok)
+	}
+
+	m.RevokeReadRoot(filepath.Join(home, "review"))
+	if _, _, ok := m.AssetRoot(asset); ok {
+		t.Error("RevokeReadRoot should remove the grant")
+	}
+}
+
+func TestGrantReadRootRejects(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, ".ssh"), 0755)
+	os.MkdirAll(filepath.Join(home, "config", "versions"), 0755)
+
+	m := NewManagerWithHome(home)
+	m.SetGuard(func(dir string) bool { return dir == filepath.Join(home, "config", "versions") })
+
+	if err := m.GrantReadRoot(home, false); err == nil {
+		t.Error("granting the home directory must be refused")
+	}
+	if err := m.GrantReadRoot(filepath.Join(home, ".ssh"), false); err == nil {
+		t.Error("granting a hidden directory must be refused")
+	}
+	if err := m.GrantReadRoot(filepath.Join(home, "config", "versions"), false); err == nil {
+		t.Error("guard-vetoed directory must be refused")
+	}
+	if err := m.GrantReadRoot(filepath.Dir(home), false); err == nil {
+		t.Error("granting outside home must be refused")
+	}
+}
+
+func TestAssetRootMostSpecific(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, "site", "img"), 0755)
+	page := filepath.Join(home, "site", "page.html")
+	os.WriteFile(page, []byte("<html></html>"), 0644)
+	asset := filepath.Join(home, "site", "img", "logo.png")
+	os.WriteFile(asset, []byte("png"), 0644)
+
+	m := NewManagerWithHome(home)
+	if _, err := m.Register(page); err != nil { // opened root = home/site
+		t.Fatalf("register: %v", err)
+	}
+	if err := m.GrantReadRoot(filepath.Join(home, "site", "img"), false); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	root, rel, ok := m.AssetRoot(asset)
+	if !ok || root != filepath.Join(home, "site", "img") || rel != "logo.png" {
+		t.Errorf("most-specific root should win: got %q, %q, %v", root, rel, ok)
+	}
+}
+
 // There are exactly two per-file records. lastServerWrite is set by save,
 // restore, htmlclayid injection, and the first observation of a file, and never
 // by serving a page or by the watcher.

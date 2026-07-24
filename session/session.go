@@ -119,12 +119,36 @@ func (f *File) NoteFirstObservation(hash string) bool {
 	return true
 }
 
+// rootKind distinguishes how a read root came to exist. It carries no
+// authorization difference (a page may read through either) and exists so the
+// tray can label roots and so persistence only ever writes granted ones.
+type rootKind int
+
+const (
+	rootOpened  rootKind = iota // dir of a file the user explicitly opened
+	rootGranted                 // dir the user approved via the permission dialog
+)
+
+// readRoot is a directory a session's page is allowed to read. Reads are
+// authorized by the presence of a readRoot, never by "a file happens to sit in
+// this folder"; registration installs an opened root, grants install granted
+// ones, and the two are otherwise identical.
+type readRoot struct {
+	path      string
+	kind      rootKind
+	persisted bool // AllowAlways: this grant is written to config and restored on next open
+}
+
 type Manager struct {
-	mu      sync.RWMutex
-	byToken map[string]*File
-	byPath  map[string]string
-	roots   map[string]struct{}
-	homeDir string
+	mu        sync.RWMutex
+	byToken   map[string]*File
+	byPath    map[string]string
+	readRoots map[string]*readRoot
+	homeDir   string
+	// guard, when set, reports directories that must never become a granted
+	// read root (the config dir and the versions/backup dir). It is injected by
+	// the runtime, which knows those paths; the session manager does not.
+	guard func(dir string) bool
 }
 
 func NewManager() (*Manager, error) {
@@ -147,11 +171,19 @@ func normalizeHome(homeDir string) string {
 
 func NewManagerWithHome(homeDir string) *Manager {
 	return &Manager{
-		byToken: make(map[string]*File),
-		byPath:  make(map[string]string),
-		roots:   make(map[string]struct{}),
-		homeDir: normalizeHome(homeDir),
+		byToken:   make(map[string]*File),
+		byPath:    make(map[string]string),
+		readRoots: make(map[string]*readRoot),
+		homeDir:   normalizeHome(homeDir),
 	}
+}
+
+// SetGuard installs the predicate that vetoes granted read roots. Call it once,
+// at construction, before the manager serves any request.
+func (m *Manager) SetGuard(guard func(dir string) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.guard = guard
 }
 
 func (m *Manager) HomeDir() string {
@@ -242,12 +274,84 @@ func (m *Manager) Register(absPath string) (*File, error) {
 
 	m.byToken[token] = f
 	m.byPath[cleaned] = token
-	// The home directory itself never becomes an asset root: a file opened loose
-	// in ~ must not expose the whole home tree to every page.
-	if dir := filepath.Dir(cleaned); dir != m.homeDir {
-		m.roots[dir] = struct{}{}
-	}
+	// Opening a file grants its page read access to that file's own folder,
+	// nothing more. installReadRoot refuses the home directory itself, so a file
+	// opened loose in ~ never exposes the whole home tree.
+	m.installReadRoot(filepath.Dir(cleaned), rootOpened, false)
 	return f, nil
+}
+
+// installReadRoot records dir as a readable root under the given kind. Caller
+// must hold m.mu. The home directory is never installed: a page must not be able
+// to read the entire home tree. A later granted root supersedes an earlier
+// opened one for the same dir (the widest intent wins), and AllowAlways is
+// sticky once set.
+func (m *Manager) installReadRoot(dir string, kind rootKind, persisted bool) {
+	if dir == m.homeDir {
+		return
+	}
+	if existing, ok := m.readRoots[dir]; ok {
+		if kind == rootGranted {
+			existing.kind = rootGranted
+		}
+		if persisted {
+			existing.persisted = true
+		}
+		return
+	}
+	m.readRoots[dir] = &readRoot{path: dir, kind: kind, persisted: persisted}
+}
+
+// GrantReadRoot widens a session's reads to dir (read-only), the operation a
+// granted permission performs. It resolves symlinks, requires dir to sit
+// strictly inside home, and refuses the home directory, any hidden
+// (dot-prefixed) component, and any dir vetoed by the guard (config/versions).
+// persisted marks an AllowAlways grant for the config writer to pick up.
+func (m *Manager) GrantReadRoot(dir string, persisted bool) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fmt.Errorf("cannot resolve grant dir %q: %w", dir, err)
+	}
+	resolved = filepath.Clean(resolved)
+
+	canonical, ok := ContainWithinHome(m.homeDir, resolved)
+	if !ok {
+		return fmt.Errorf("grant dir %q is outside home directory: %w", resolved, ErrOutsideHome)
+	}
+	if m.hasHiddenComponent(canonical) {
+		return fmt.Errorf("grant dir %q contains a hidden component", canonical)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.guard != nil && m.guard(canonical) {
+		return fmt.Errorf("grant dir %q is a forbidden root", canonical)
+	}
+	m.installReadRoot(canonical, rootGranted, persisted)
+	return nil
+}
+
+// RevokeReadRoot removes a read root (used by the tray's per-root revoke).
+func (m *Manager) RevokeReadRoot(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.readRoots, dir)
+}
+
+// hasHiddenComponent reports whether any path segment of path below home starts
+// with a dot. It keeps grants from ever covering ~/.ssh, ~/.git, ~/.config, and
+// the like.
+func (m *Manager) hasHiddenComponent(path string) bool {
+	rel, err := filepath.Rel(m.homeDir, path)
+	if err != nil {
+		return true
+	}
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) Lookup(token string) (*File, bool) {
@@ -267,19 +371,24 @@ func (m *Manager) LookupByPath(absPath string) (*File, bool) {
 	return m.byToken[token], true
 }
 
-// AssetRoot returns the asset root containing absPath (the directory of an
-// opened file whose folder tree absPath sits under) and absPath's path relative
-// to that root, in the root's canonical casing. Opening a file grants its page
-// access to that folder tree, nothing more.
+// AssetRoot returns the read root that authorizes absPath and absPath's path
+// relative to that root, in the root's canonical casing. A read root is either
+// the folder of an opened file or a folder the user granted. When roots nest,
+// the MOST SPECIFIC (longest) containing root wins, so the result is
+// deterministic regardless of map order.
 func (m *Manager) AssetRoot(absPath string) (root, rel string, ok bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for r := range m.roots {
+	var bestRoot, bestRel string
+	found := false
+	for r := range m.readRoots {
 		if canonical, ok := ContainWithinHome(r, absPath); ok {
-			return r, canonical[len(r)+1:], true
+			if !found || len(r) > len(bestRoot) {
+				bestRoot, bestRel, found = r, canonical[len(r)+1:], true
+			}
 		}
 	}
-	return "", "", false
+	return bestRoot, bestRel, found
 }
 
 func (m *Manager) RevokeAll() {
@@ -287,5 +396,5 @@ func (m *Manager) RevokeAll() {
 	defer m.mu.Unlock()
 	m.byToken = make(map[string]*File)
 	m.byPath = make(map[string]string)
-	m.roots = make(map[string]struct{})
+	m.readRoots = make(map[string]*readRoot)
 }
