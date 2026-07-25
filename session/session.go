@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -127,16 +128,30 @@ type rootKind int
 const (
 	rootOpened  rootKind = iota // dir of a file the user explicitly opened
 	rootGranted                 // dir the user approved via the permission dialog
+	rootTrusted                 // dir the user marked trusted; seeded for anchors inside it
 )
 
 // readRoot is a directory a session's page is allowed to read. Reads are
 // authorized by the presence of a readRoot, never by "a file happens to sit in
 // this folder"; registration installs an opened root, grants install granted
 // ones, and the two are otherwise identical.
+//
+// Provenance is independent flags rather than one kind, because a directory can
+// be more than one thing at once: the folder of an explicitly opened file, the
+// target of a grant, and inside a trusted folder. Collapsing them lost that:
+// revoking a grant deleted the whole entry and took away the capability the open
+// (or trust) had created, silently 404ing the opened page's own siblings.
 type readRoot struct {
 	path      string
-	kind      rootKind
+	opened    bool
+	granted   bool
+	trusted   bool // seeded from a TrustedFolders entry this anchor lives inside
 	persisted bool // AllowAlways: this grant is written to config and restored on next open
+	// root is the held capability, opened when the root is installed and closed
+	// when it is revoked. Reads go through it rather than re-opening the directory
+	// per request, so a component swapped for a symlink between authorization and
+	// open cannot escape. Always non-nil for an installed root.
+	root *os.Root
 }
 
 type Manager struct {
@@ -219,6 +234,38 @@ func ContainWithinHome(home, child string) (string, bool) {
 	return prefix + rest, true
 }
 
+// EqualOrUnder reports whether child is parent or sits below it, folding case on
+// the platforms whose filesystem ignores it.
+//
+// It exists so forbidden-root guards cannot disagree with ContainWithinHome
+// about whether two spellings name the same directory. A plain byte-wise
+// strings.HasPrefix is wrong here: filepath.EvalSymlinks preserves the caller's
+// spelling of non-symlink components, so on macOS the same directory reaches a
+// guard as both "Library/Application Support" and "library/application support"
+// and a case-sensitive test waves the second one through.
+func EqualOrUnder(child, parent string) bool {
+	c, p := filepath.Clean(child), filepath.Clean(parent)
+	if caseInsensitiveFS() {
+		c, p = strings.ToLower(c), strings.ToLower(p)
+	}
+	if c == p {
+		return true
+	}
+	return strings.HasPrefix(c, p+string(os.PathSeparator))
+}
+
+// SamePathComponent reports whether two single path components name the same
+// thing, folding case on case-insensitive platforms. It exists so the broker's LCA
+// computation agrees with the rest of the authorization code about casing: a
+// byte-wise comparison split one real directory into two on macOS and could grant a
+// broader ancestor than the assets needed.
+func SamePathComponent(a, b string) bool {
+	if caseInsensitiveFS() {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func resolveAndValidate(absPath, homeDir string) (string, error) {
 	cleaned, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
@@ -276,73 +323,155 @@ func (m *Manager) Register(absPath string) (*File, error) {
 	m.byPath[cleaned] = token
 	// Opening a file grants its page read access to that file's own folder,
 	// nothing more. installReadRoot refuses the home directory itself, so a file
-	// opened loose in ~ never exposes the whole home tree.
-	m.installReadRoot(filepath.Dir(cleaned), rootOpened, false)
+	// opened loose in ~ never exposes the whole home tree. A failure to open the
+	// capability handle here is silently tolerated: the file still serves and
+	// saves (that path reads f.AbsPath directly); only its sibling assets, which
+	// go through the handle, would 404, and the directory we just resolved a file
+	// in cannot realistically fail to open.
+	_ = m.installReadRoot(filepath.Dir(cleaned), rootOpened, false)
 	return f, nil
 }
 
-// installReadRoot records dir as a readable root under the given kind. Caller
-// must hold m.mu. The home directory is never installed: a page must not be able
-// to read the entire home tree. A later granted root supersedes an earlier
-// opened one for the same dir (the widest intent wins), and AllowAlways is
-// sticky once set.
-func (m *Manager) installReadRoot(dir string, kind rootKind, persisted bool) {
+// installReadRoot records dir as a readable root with the given provenance and,
+// for a new root, opens its capability handle. Caller must hold m.mu. The home
+// directory is never installed: a page must not be able to read the entire home
+// tree. Provenance accumulates rather than replaces, so a dir that is both opened
+// and granted carries both, and AllowAlways is sticky once set. Returns an error
+// only when a new root's handle cannot be opened; an existing root never fails.
+func (m *Manager) installReadRoot(dir string, kind rootKind, persisted bool) error {
 	if dir == m.homeDir {
-		return
+		return nil
 	}
-	if existing, ok := m.readRoots[dir]; ok {
-		if kind == rootGranted {
-			existing.kind = rootGranted
-		}
-		if persisted {
-			existing.persisted = true
-		}
-		return
-	}
-	m.readRoots[dir] = &readRoot{path: dir, kind: kind, persisted: persisted}
-}
-
-// GrantReadRoot widens a session's reads to dir (read-only), the operation a
-// granted permission performs. It resolves symlinks, requires dir to sit
-// strictly inside home, and refuses the home directory, any hidden
-// (dot-prefixed) component, and any dir vetoed by the guard (config/versions).
-// persisted marks an AllowAlways grant for the config writer to pick up.
-func (m *Manager) GrantReadRoot(dir string, persisted bool) error {
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return fmt.Errorf("cannot resolve grant dir %q: %w", dir, err)
-	}
-	resolved = filepath.Clean(resolved)
-
-	canonical, ok := ContainWithinHome(m.homeDir, resolved)
+	rr, ok := m.readRoots[dir]
 	if !ok {
-		return fmt.Errorf("grant dir %q is outside home directory: %w", resolved, ErrOutsideHome)
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			return err
+		}
+		rr = &readRoot{path: dir, root: root}
+		m.readRoots[dir] = rr
 	}
-	if m.hasHiddenComponent(canonical) {
-		return fmt.Errorf("grant dir %q contains a hidden component", canonical)
+	switch kind {
+	case rootOpened:
+		rr.opened = true
+	case rootGranted:
+		rr.granted = true
+		if persisted {
+			rr.persisted = true
+		}
+	case rootTrusted:
+		rr.trusted = true
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.guard != nil && m.guard(canonical) {
-		return fmt.Errorf("grant dir %q is a forbidden root", canonical)
-	}
-	m.installReadRoot(canonical, rootGranted, persisted)
 	return nil
 }
 
-// RevokeReadRoot removes a read root (used by the tray's per-root revoke).
+// GrantReadRoot widens a session's reads to dir (read-only), the operation a
+// granted permission performs. persisted marks an AllowAlways grant for the
+// config writer to pick up.
+func (m *Manager) GrantReadRoot(dir string, persisted bool) error {
+	return m.installValidatedRoot(dir, rootGranted, persisted)
+}
+
+// InstallTrustedRoot installs an ALREADY-canonical trusted folder (resolved and
+// home-validated by the caller at trust time) as a silent, read-only capability
+// over its whole tree, with its own provenance so untrusting never disturbs a root
+// an open or a grant also created.
+//
+// It deliberately does NOT re-resolve symlinks. The caller's stored path is the
+// folder's identity; re-running EvalSymlinks on it could, if a component were
+// swapped for a symlink in between, open a different tree under a key that no
+// longer matches the stored path and so could never be revoked. The path is still
+// re-validated (inside home, no hidden component, not guard-vetoed) so a stale or
+// tampered config entry can never install a forbidden root.
+func (m *Manager) InstallTrustedRoot(canonical string) error {
+	return m.installCanonicalRoot(canonical, rootTrusted, false)
+}
+
+// installValidatedRoot resolves symlinks in dir, then installs the resolved path.
+// Used by GrantReadRoot, whose dir arrives fresh from a live request rather than
+// from persisted state.
+func (m *Manager) installValidatedRoot(dir string, kind rootKind, persisted bool) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fmt.Errorf("cannot resolve read root %q: %w", dir, err)
+	}
+	return m.installCanonicalRoot(filepath.Clean(resolved), kind, persisted)
+}
+
+// installCanonicalRoot installs an already symlink-resolved path without touching
+// the filesystem to re-resolve it. It requires the path strictly inside home (so
+// home itself is refused), with no hidden (dot-prefixed) component and not vetoed
+// by the guard (config/versions), then opens the os.Root capability and records it
+// under its ContainWithinHome-normalized path. That normalization is idempotent on
+// an already-canonical input, so a caller that stored the same canonical string
+// can always revoke the root by that string. Shared by GrantReadRoot (via
+// installValidatedRoot) and InstallTrustedRoot so every gate stays identical.
+func (m *Manager) installCanonicalRoot(canonical string, kind rootKind, persisted bool) error {
+	c, ok := ContainWithinHome(m.homeDir, canonical)
+	if !ok {
+		return fmt.Errorf("read root %q is outside home directory: %w", canonical, ErrOutsideHome)
+	}
+	if m.hasHiddenComponent(c) {
+		return fmt.Errorf("read root %q contains a hidden component", c)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.guard != nil && m.guard(c) {
+		return fmt.Errorf("read root %q is a forbidden root", c)
+	}
+	if err := m.installReadRoot(c, kind, persisted); err != nil {
+		return fmt.Errorf("cannot open read root %q: %w", c, err)
+	}
+	return nil
+}
+
+// RevokeReadRoot withdraws a grant (used by the tray's per-root revoke). A root
+// that also exists because the user explicitly opened a file in it, or because it
+// was seeded from a trusted folder, survives with that provenance intact:
+// revoking a grant must never take away the capability an open or trust created.
 func (m *Manager) RevokeReadRoot(dir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.readRoots, dir)
+	rr, ok := m.readRoots[dir]
+	if !ok {
+		return
+	}
+	rr.granted = false
+	rr.persisted = false
+	if !rr.opened && !rr.trusted {
+		if rr.root != nil {
+			rr.root.Close()
+		}
+		delete(m.readRoots, dir)
+	}
 }
 
-// hasHiddenComponent reports whether any path segment of path below home starts
-// with a dot. It keeps grants from ever covering ~/.ssh, ~/.git, ~/.config, and
+// RevokeTrustedRoot withdraws a seeded trusted root when the user untrusts its
+// folder in the tray. dir must be the canonical trusted-folder path (the same
+// value InstallTrustedRoot keyed on). A root the open or a grant also created
+// survives with that provenance intact.
+func (m *Manager) RevokeTrustedRoot(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rr, ok := m.readRoots[dir]
+	if !ok {
+		return
+	}
+	rr.trusted = false
+	if !rr.opened && !rr.granted {
+		if rr.root != nil {
+			rr.root.Close()
+		}
+		delete(m.readRoots, dir)
+	}
+}
+
+// HasHiddenComponent reports whether any component of path below home starts with
+// a dot. It keeps grants and asset reads away from ~/.ssh, ~/.git, ~/.config, and
 // the like.
-func (m *Manager) hasHiddenComponent(path string) bool {
-	rel, err := filepath.Rel(m.homeDir, path)
+func HasHiddenComponent(home, path string) bool {
+	rel, err := filepath.Rel(home, path)
 	if err != nil {
 		return true
 	}
@@ -352,6 +481,29 @@ func (m *Manager) hasHiddenComponent(path string) bool {
 		}
 	}
 	return false
+}
+
+func (m *Manager) hasHiddenComponent(path string) bool {
+	return HasHiddenComponent(m.homeDir, path)
+}
+
+// CanGrant reports whether dir could be granted as a read root: strictly inside
+// home, no hidden component, and not vetoed by the guard (config/versions tree). The
+// broker calls this before prompting so it never raises a dialog for a folder that
+// GrantReadRoot would then refuse (e.g. macOS ~/Library, which swallows the config
+// dir). It does not resolve symlinks; the broker's dir is an already-resolved LCA,
+// and GrantReadRoot re-validates on the actual grant.
+func (m *Manager) CanGrant(dir string) bool {
+	if _, ok := ContainWithinHome(m.homeDir, dir); !ok {
+		return false
+	}
+	if m.hasHiddenComponent(dir) {
+		return false
+	}
+	m.mu.RLock()
+	guard := m.guard
+	m.mu.RUnlock()
+	return guard == nil || !guard(dir)
 }
 
 func (m *Manager) Lookup(token string) (*File, bool) {
@@ -377,23 +529,92 @@ func (m *Manager) LookupByPath(absPath string) (*File, bool) {
 // the MOST SPECIFIC (longest) containing root wins, so the result is
 // deterministic regardless of map order.
 func (m *Manager) AssetRoot(absPath string) (root, rel string, ok bool) {
+	root, rel, _, ok = m.assetRoot(absPath)
+	return root, rel, ok
+}
+
+// AssetRootOpened is AssetRoot plus whether the winning root exists because the
+// user explicitly opened a file in it, rather than only because of a grant.
+// Site routing prefers an opened root so a read-only grant never pulls a later
+// explicit open into the granting origin, where an already-running page could
+// lift the new file's save token.
+func (m *Manager) AssetRootOpened(absPath string) (root, rel string, opened, ok bool) {
+	return m.assetRoot(absPath)
+}
+
+func (m *Manager) assetRoot(absPath string) (root, rel string, opened, ok bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var bestRoot, bestRel string
-	found := false
-	for r := range m.readRoots {
-		if canonical, ok := ContainWithinHome(r, absPath); ok {
-			if !found || len(r) > len(bestRoot) {
-				bestRoot, bestRel, found = r, canonical[len(r)+1:], true
+	best, bestRel := m.bestRootLocked(absPath)
+	if best == nil {
+		return "", "", false, false
+	}
+	return best.path, bestRel, best.opened, true
+}
+
+// bestRootLocked returns the most specific read root containing absPath and
+// absPath relative to it. Caller holds m.mu (read or write).
+func (m *Manager) bestRootLocked(absPath string) (*readRoot, string) {
+	var best *readRoot
+	var bestRel string
+	for _, rr := range m.readRoots {
+		if canonical, hit := ContainWithinHome(rr.path, absPath); hit {
+			if best == nil || len(rr.path) > len(best.path) {
+				best, bestRel = rr, canonical[len(rr.path)+1:]
 			}
 		}
 	}
-	return bestRoot, bestRel, found
+	return best, bestRel
+}
+
+// OpenAsset opens absPath for reading through the held capability of the most
+// specific read root that authorizes it, and reports whether any root authorized
+// it at all. The returned *os.File is an independent descriptor the caller closes;
+// the root handle stays owned by the manager. The open happens under the read
+// lock, so RevokeReadRoot / RevokeAll (write lock) cannot close the handle
+// mid-open, and reading through the handle keeps a directory component swapped for
+// a symlink after authorization from escaping the root.
+func (m *Manager) OpenAsset(absPath string) (file *os.File, authorized bool, err error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	best, rel := m.bestRootLocked(absPath)
+	if best == nil {
+		return nil, false, nil
+	}
+	f, err := best.root.Open(rel)
+	return f, true, err
+}
+
+// RootInfo is a snapshot of one installed read root, for the tray to display and
+// manage. The provenance flags are independent (a dir can be more than one).
+type RootInfo struct {
+	Path    string
+	Opened  bool
+	Granted bool
+	Trusted bool
+}
+
+// ReadRoots returns a snapshot of the installed read roots, sorted by path for
+// stable display.
+func (m *Manager) ReadRoots() []RootInfo {
+	m.mu.RLock()
+	out := make([]RootInfo, 0, len(m.readRoots))
+	for _, rr := range m.readRoots {
+		out = append(out, RootInfo{Path: rr.path, Opened: rr.opened, Granted: rr.granted, Trusted: rr.trusted})
+	}
+	m.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 func (m *Manager) RevokeAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, rr := range m.readRoots {
+		if rr.root != nil {
+			rr.root.Close()
+		}
+	}
 	m.byToken = make(map[string]*File)
 	m.byPath = make(map[string]string)
 	m.readRoots = make(map[string]*readRoot)

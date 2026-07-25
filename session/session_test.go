@@ -1,8 +1,10 @@
 package session
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -296,6 +298,325 @@ func TestGrantReadRootRejects(t *testing.T) {
 	}
 	if err := m.GrantReadRoot(filepath.Dir(home), false); err == nil {
 		t.Error("granting outside home must be refused")
+	}
+}
+
+// Revoking a grant must not take away the capability an explicit open created.
+// Collapsing both into one "kind" field meant revoke deleted the whole entry and
+// the opened page's own siblings started 404ing.
+func TestRevokeGrantKeepsOpenedCapability(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, "site"), 0755)
+	page := filepath.Join(home, "site", "page.html")
+	os.WriteFile(page, []byte("<html></html>"), 0644)
+	asset := filepath.Join(home, "site", "style.css")
+	os.WriteFile(asset, []byte("body{}"), 0644)
+
+	m := NewManagerWithHome(home)
+	if _, err := m.Register(page); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	dir := filepath.Join(home, "site")
+
+	if err := m.GrantReadRoot(dir, false); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	m.RevokeReadRoot(dir)
+
+	if _, _, ok := m.AssetRoot(asset); !ok {
+		t.Error("revoking a grant must not remove the opened file's own read root")
+	}
+
+	// A root that exists only because of a grant does disappear on revoke.
+	other := filepath.Join(home, "other")
+	os.MkdirAll(other, 0755)
+	if err := m.GrantReadRoot(other, false); err != nil {
+		t.Fatalf("grant other: %v", err)
+	}
+	m.RevokeReadRoot(other)
+	if _, _, ok := m.AssetRoot(filepath.Join(other, "x.txt")); ok {
+		t.Error("revoking a grant-only root must remove it")
+	}
+}
+
+// A trusted root grants the same silent read capability a grant does, but survives
+// a grant revoke and only disappears when its own trust is withdrawn.
+func TestInstallTrustedRoot(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, "sites", "shared"), 0755)
+	asset := filepath.Join(home, "sites", "shared", "lib.js")
+	os.WriteFile(asset, []byte("//"), 0644)
+
+	m := NewManagerWithHome(home)
+	dir := filepath.Join(home, "sites")
+	if err := m.InstallTrustedRoot(dir); err != nil {
+		t.Fatalf("trust: %v", err)
+	}
+	if _, _, ok := m.AssetRoot(asset); !ok {
+		t.Fatal("a trusted root should make its whole tree readable")
+	}
+
+	// A grant revoke must not remove a trusted root.
+	m.RevokeReadRoot(dir)
+	if _, _, ok := m.AssetRoot(asset); !ok {
+		t.Error("revoking a grant must never take away a trusted root")
+	}
+
+	// Untrusting it does.
+	m.RevokeTrustedRoot(dir)
+	if _, _, ok := m.AssetRoot(asset); ok {
+		t.Error("RevokeTrustedRoot should remove a trust-only root")
+	}
+}
+
+func TestInstallTrustedRootRejects(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, ".hidden"), 0755)
+	os.MkdirAll(filepath.Join(home, "config", "versions"), 0755)
+
+	m := NewManagerWithHome(home)
+	m.SetGuard(func(dir string) bool { return dir == filepath.Join(home, "config", "versions") })
+
+	if err := m.InstallTrustedRoot(home); err == nil {
+		t.Error("trusting the home directory must be refused")
+	}
+	if err := m.InstallTrustedRoot(filepath.Join(home, ".hidden")); err == nil {
+		t.Error("trusting a hidden directory must be refused")
+	}
+	if err := m.InstallTrustedRoot(filepath.Join(home, "config", "versions")); err == nil {
+		t.Error("a guard-vetoed directory must be refused")
+	}
+	if err := m.InstallTrustedRoot(filepath.Dir(home)); err == nil {
+		t.Error("trusting outside home must be refused")
+	}
+}
+
+// A directory that is both trusted and granted keeps its trusted capability when
+// the grant is revoked: the provenances are independent flags on one entry.
+func TestRevokeGrantKeepsTrustedCapability(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	dir := filepath.Join(home, "sites")
+	os.MkdirAll(dir, 0755)
+	asset := filepath.Join(dir, "x.js")
+	os.WriteFile(asset, []byte("//"), 0644)
+
+	m := NewManagerWithHome(home)
+	if err := m.InstallTrustedRoot(dir); err != nil {
+		t.Fatalf("trust: %v", err)
+	}
+	if err := m.GrantReadRoot(dir, false); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	m.RevokeReadRoot(dir)
+	if _, _, ok := m.AssetRoot(asset); !ok {
+		t.Error("revoking the grant must leave the trusted capability intact")
+	}
+}
+
+func TestAssetRootOpenedReportsProvenance(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, "opened"), 0755)
+	os.MkdirAll(filepath.Join(home, "granted"), 0755)
+	page := filepath.Join(home, "opened", "page.html")
+	os.WriteFile(page, []byte("<html></html>"), 0644)
+
+	m := NewManagerWithHome(home)
+	if _, err := m.Register(page); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := m.GrantReadRoot(filepath.Join(home, "granted"), false); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	if _, _, opened, ok := m.AssetRootOpened(filepath.Join(home, "opened", "x.css")); !ok || !opened {
+		t.Errorf("opened root should report opened=true (ok=%v opened=%v)", ok, opened)
+	}
+	if _, _, opened, ok := m.AssetRootOpened(filepath.Join(home, "granted", "x.css")); !ok || opened {
+		t.Errorf("grant-only root should report opened=false (ok=%v opened=%v)", ok, opened)
+	}
+}
+
+// ReadRoots reports each installed root's provenance independently, so the tray
+// can show only the runtime grants, and returns them sorted by path.
+func TestReadRootsReportsProvenance(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(home, "opened"), 0755)
+	os.MkdirAll(filepath.Join(home, "granted"), 0755)
+	os.MkdirAll(filepath.Join(home, "trusted"), 0755)
+	page := filepath.Join(home, "opened", "page.html")
+	os.WriteFile(page, []byte("<html></html>"), 0644)
+
+	m := NewManagerWithHome(home)
+	if _, err := m.Register(page); err != nil { // opened root = home/opened
+		t.Fatalf("register: %v", err)
+	}
+	if err := m.GrantReadRoot(filepath.Join(home, "granted"), false); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if err := m.InstallTrustedRoot(filepath.Join(home, "trusted")); err != nil {
+		t.Fatalf("trust: %v", err)
+	}
+
+	roots := m.ReadRoots()
+	if len(roots) != 3 {
+		t.Fatalf("ReadRoots = %d roots, want 3: %+v", len(roots), roots)
+	}
+	by := make(map[string]RootInfo, len(roots))
+	for _, r := range roots {
+		by[r.Path] = r
+	}
+
+	if r := by[filepath.Join(home, "opened")]; !r.Opened || r.Granted || r.Trusted {
+		t.Errorf("opened root = %+v, want Opened only", r)
+	}
+	if r := by[filepath.Join(home, "granted")]; !r.Granted || r.Opened || r.Trusted {
+		t.Errorf("granted root = %+v, want Granted only", r)
+	}
+	if r := by[filepath.Join(home, "trusted")]; !r.Trusted || r.Opened || r.Granted {
+		t.Errorf("trusted root = %+v, want Trusted only", r)
+	}
+
+	for i := 1; i < len(roots); i++ {
+		if roots[i-1].Path > roots[i].Path {
+			t.Errorf("ReadRoots not sorted by path: %q before %q", roots[i-1].Path, roots[i].Path)
+		}
+	}
+}
+
+// A path component swapped for a symlink AFTER a read root is installed cannot
+// escape the pinned os.Root capability. Reads resolve through the handle opened at
+// install time, so following a component that was replaced with a symlink pointing
+// outside the root is refused, never served. The swap happens between install and
+// read, so the containment is deterministic without any racing goroutine.
+func TestReadThroughPinnedRootContainsComponentSwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on windows")
+	}
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	root := filepath.Join(home, "proj")
+	sub := filepath.Join(root, "assets")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "ok.txt"), []byte("in-scope"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "secret")
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "loot.txt"), []byte("loot"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManagerWithHome(home)
+	if err := m.GrantReadRoot(root, false); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	// The pinned root reads in-scope files before the swap, proving it is valid.
+	f, authorized, err := m.OpenAsset(filepath.Join(sub, "ok.txt"))
+	if !authorized || err != nil {
+		t.Fatalf("in-scope read failed before swap: authorized=%v err=%v", authorized, err)
+	}
+	f.Close()
+
+	// Replace the subdirectory with a symlink that leaves the root.
+	if err := os.RemoveAll(sub); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, sub); err != nil {
+		t.Fatal(err)
+	}
+
+	// A read through the swapped component must not escape: the pinned handle
+	// refuses to follow a symlink that leaves the root.
+	escaped, _, err := m.OpenAsset(filepath.Join(sub, "loot.txt"))
+	if escaped != nil {
+		data, _ := io.ReadAll(escaped)
+		escaped.Close()
+		if strings.Contains(string(data), "loot") {
+			t.Fatal("the pinned root escaped through a swapped symlink component")
+		}
+	}
+	if err == nil {
+		t.Fatal("expected the pinned root to refuse the swapped-out component")
+	}
+}
+
+// The pinned root capability is bound to the directory it opened, not to that
+// directory's name. Replacing the whole root path with a symlink to a different
+// tree after the handle is open must not redirect reads through it: this is the
+// root-level companion to the component-swap test above, and it fails if the
+// capability were resolved by path per request rather than held as an inode handle.
+func TestReadThroughPinnedRootSurvivesRootReplacedBySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on windows")
+	}
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	root := filepath.Join(home, "proj")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("in-scope"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "evil")
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "ok.txt"), []byte("loot"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManagerWithHome(home)
+	if err := m.GrantReadRoot(root, false); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	// Replace the root directory itself with a symlink to a sibling tree, after the
+	// capability handle is already open.
+	if err := os.Rename(root, filepath.Join(home, "proj.orig")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+
+	// The pinned handle still resolves ok.txt to the ORIGINAL inode, never the
+	// swapped-in tree; the capability follows the directory it opened, not its name.
+	f, authorized, err := m.OpenAsset(filepath.Join(root, "ok.txt"))
+	if !authorized || err != nil {
+		t.Fatalf("pinned read after root swap: authorized=%v err=%v", authorized, err)
+	}
+	data, _ := io.ReadAll(f)
+	f.Close()
+	if string(data) != "in-scope" {
+		t.Fatalf("pinned root followed the swapped name, read %q", string(data))
+	}
+}
+
+func TestEqualOrUnder(t *testing.T) {
+	sep := string(os.PathSeparator)
+	base := sep + "a" + sep + "b"
+
+	if !EqualOrUnder(base, base) {
+		t.Error("a directory must equal itself")
+	}
+	if !EqualOrUnder(base+sep+"c", base) {
+		t.Error("a child must be under its parent")
+	}
+	if EqualOrUnder(base, base+sep+"c") {
+		t.Error("a parent must not be under its child")
+	}
+	// A shared string prefix that is not a path boundary must not match.
+	if EqualOrUnder(sep+"a"+sep+"bc", base) {
+		t.Error("sibling with a shared prefix must not match")
+	}
+	// On case-insensitive platforms the same directory spelled differently is
+	// the same directory; a byte-wise guard was the bug this closes.
+	if caseInsensitiveFS() && !EqualOrUnder(strings.ToUpper(base)+sep+"c", base) {
+		t.Error("case-insensitive platform must fold case")
 	}
 }
 
