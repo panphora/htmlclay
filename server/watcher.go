@@ -67,6 +67,7 @@ type watcher struct {
 	mu      sync.Mutex
 	entries map[string]*watchEntry
 	running bool
+	closed  bool
 	stopCh  chan struct{}
 
 	coord  *streamCoordinator
@@ -89,6 +90,14 @@ func newWatcher(logger *logging.Logger) *watcher {
 func (wt *watcher) watch(f *session.File) {
 	wt.mu.Lock()
 	defer wt.mu.Unlock()
+
+	// Shutdown is terminal. The hub refuses new subscribers once closed, but the
+	// coordinator still calls watch, and listeners keep accepting until each
+	// site's HTTP server drains. Without this a late stream would start a fresh
+	// polling goroutine after shutdown returned, racing its own wg.Wait.
+	if wt.closed {
+		return
+	}
 
 	if e, ok := wt.entries[f.AbsPath]; ok {
 		e.refs++
@@ -135,6 +144,7 @@ func (wt *watcher) unwatch(f *session.File) {
 
 func (wt *watcher) shutdown() {
 	wt.mu.Lock()
+	wt.closed = true
 	var stop chan struct{}
 	if wt.running {
 		wt.running = false

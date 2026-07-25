@@ -126,6 +126,72 @@ func TestReadValid(t *testing.T) {
 	}
 }
 
+// The token read route reads a registered file by its pinned path. If a local process
+// swaps that path for a symlink into htmlclay's internal state, the descriptor-bound
+// check in openRegisteredFile must refuse it: the read goes through the held
+// descriptor, asks the OS where it really points, and 404s when that is the internal
+// tree. Before this route had no internal check at all, so a stable symlink leaked
+// config with no race needed.
+func TestReadRouteRefusesSymlinkIntoInternal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on windows")
+	}
+	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
+	internalDir := filepath.Join(homeDir, "internal")
+	if err := os.MkdirAll(internalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(internalDir, "config.json"), []byte("SECRETVALUE"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	page := filepath.Join(homeDir, "page.htmlclay")
+	if err := os.WriteFile(page, []byte("<!DOCTYPE html>\n<html><body>ok</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := session.NewManagerWithHome(homeDir)
+	f, err := mgr.Register(page)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
+	srv.SetInternalDir(internalDir)
+
+	read := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/_/read/"+f.Token, nil)
+		req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+		req.SetPathValue("token", f.Token)
+		w := httptest.NewRecorder()
+		srv.handleRead(w, req)
+		return w
+	}
+
+	if w := read(); w.Code != 200 {
+		t.Fatalf("pre-swap read should be 200, got %d", w.Code)
+	}
+
+	// A local process swaps the registered file for a symlink into the internal tree.
+	if err := os.Remove(page); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(internalDir, "config.json"), page); err != nil {
+		t.Fatal(err)
+	}
+
+	w := read()
+	if strings.Contains(w.Body.String(), "SECRETVALUE") {
+		t.Fatalf("read route leaked internal state through a swapped symlink (code %d)", w.Code)
+	}
+	if w.Code == 200 {
+		t.Errorf("read route should refuse the swapped path, got 200")
+	}
+}
+
 func TestReadInvalidToken(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 
@@ -292,8 +358,10 @@ func TestServeAssetOutsideOpenedDirs(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleServeFile(w, req)
 
-	if w.Code != 404 {
-		t.Errorf("expected 404, got %d", w.Code)
+	// An out-of-scope but grantable sibling now parks and prompts; the test
+	// confirm denies, so the request resolves to the fixed 403, never served.
+	if w.Code != 403 {
+		t.Errorf("expected 403, got %d", w.Code)
 	}
 }
 
@@ -368,8 +436,162 @@ func TestServeAssetSymlinkEscape(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleServeFile(w, req)
 
+	// The symlink resolves to an out-of-scope in-home file, so it is treated as
+	// any other out-of-scope read: parked, prompted, and (test-denied) refused
+	// with 403. The escape target is never served without an explicit grant.
+	if w.Code != 403 {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+// An asset inside an opened folder that does not exist returns 404 promptly. The
+// missing path fails resolution before the broker is ever consulted, so a missing
+// in-scope file is never parked and never answered with the out-of-scope 403.
+func TestMissingInScopeAssetReturns404(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	registerSubdirPage(t, srv, "site")
+
+	req := httptest.NewRequest("GET", "/site/missing.css", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("path", "site/missing.css")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+
 	if w.Code != 404 {
-		t.Errorf("expected 404, got %d", w.Code)
+		t.Errorf("a missing in-scope asset must 404, not park or 403: got %d", w.Code)
+	}
+}
+
+// A symlink inside a served tree that resolves OUTSIDE home is refused: the
+// resolved target leaves home, so it is never served whatever the read roots say.
+// The existing symlink test covers an in-home, out-of-scope target; this covers
+// the escape past home entirely.
+func TestServeAssetSymlinkEscapeOutsideHomeRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on windows")
+	}
+	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
+	outside, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(homeDir, "site"), 0755)
+	pagePath := filepath.Join(homeDir, "site", "page.htmlclay")
+	os.WriteFile(pagePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
+	secret := filepath.Join(outside, "secret.txt")
+	// Assert the fixture and the escaping symlink actually exist, or a failed
+	// creation would 404 for a missing file and pass this denial test vacuously.
+	if err := os.WriteFile(secret, []byte("outside-secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(homeDir, "site", "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := session.NewManagerWithHome(homeDir)
+	if _, err := mgr.Register(pagePath); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
+
+	req := httptest.NewRequest("GET", "/site/escape.txt", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("path", "site/escape.txt")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+
+	if w.Code != 404 {
+		t.Errorf("a symlink escaping home must be refused with 404, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "outside-secret") {
+		t.Error("the out-of-home target must never be served")
+	}
+}
+
+// A dotfile under an opened folder is never served as an asset: hidden components
+// are refused before authorization, so a page cannot read its own folder's .env,
+// .git, or .ssh even though the folder is in scope.
+func TestServeAssetDotfileRefused(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	dir := registerSubdirPage(t, srv, "site")
+	// Assert the dotfile exists, or a failed write would 404 as a missing file and
+	// pass this denial test without exercising the hidden-component rule.
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("SECRET=1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/site/.env", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("path", "site/.env")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+
+	if w.Code != 404 {
+		t.Errorf("a dotfile must be refused, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "SECRET") {
+		t.Error("a dotfile's contents must never be served")
+	}
+}
+
+// A path inside the versions/backup tree is refused on the serve path even when an
+// opened root would otherwise authorize it. Backups are internal state, denied
+// structurally before any read root is consulted; a sibling non-versions asset
+// under the same root still serves, so the denial is scoped to the versions tree.
+func TestVersionsTreeRefusedOnServePath(t *testing.T) {
+	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(homeDir, "site"), 0755)
+	pagePath := filepath.Join(homeDir, "site", "page.htmlclay")
+	os.WriteFile(pagePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
+	os.WriteFile(filepath.Join(homeDir, "site", "ok.css"), []byte("body{}"), 0644)
+
+	// The store lives inside the opened root, so the opened root covers it; the
+	// serve path must still refuse the whole versions subtree.
+	storeDir := filepath.Join(homeDir, "site", "versions")
+	// Assert the backup fixture exists, or a failed write would 404 as a missing file
+	// and pass this denial test without exercising the versions-tree refusal.
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "backup.html"), []byte("<html>backup</html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	store := versions.New(storeDir)
+
+	mgr := session.NewManagerWithHome(homeDir)
+	if _, err := mgr.Register(pagePath); err != nil { // opened root = home/site
+		t.Fatalf("register: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	srv := New(ln, mgr, logging.NewStdout(), store)
+
+	// A normal in-scope asset serves, proving the opened root is live.
+	reqOK := httptest.NewRequest("GET", "/site/ok.css", nil)
+	reqOK.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	reqOK.SetPathValue("path", "site/ok.css")
+	wOK := httptest.NewRecorder()
+	srv.handleServeFile(wOK, reqOK)
+	if wOK.Code != 200 {
+		t.Fatalf("in-scope asset should serve: got %d", wOK.Code)
+	}
+
+	// The versions subtree under the same opened root is refused.
+	req := httptest.NewRequest("GET", "/site/versions/backup.html", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("path", "site/versions/backup.html")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+	if w.Code != 404 {
+		t.Errorf("a path inside the versions tree must be refused, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "backup") {
+		t.Error("versions-tree contents must never be served")
 	}
 }
 
@@ -444,7 +666,9 @@ func TestServeAssetHomeRootNotExposed(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleServeFile(w, req)
 
-	if w.Code != 404 {
-		t.Errorf("expected 404 for home-root sibling, got %d", w.Code)
+	// A home-root sibling's only grantable ancestor is home itself, which is
+	// never offered, so the broker denies without prompting: fixed 403.
+	if w.Code != 403 {
+		t.Errorf("expected 403 for home-root sibling, got %d", w.Code)
 	}
 }

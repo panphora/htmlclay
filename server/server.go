@@ -10,40 +10,61 @@ import (
 	"time"
 
 	"github.com/panphora/htmlclay/logging"
+	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/session"
 	"github.com/panphora/htmlclay/versions"
 )
 
 type Server struct {
-	httpServer *http.Server
-	listener   net.Listener
-	sessions   *session.Manager
-	port       int
-	logger     *logging.Logger
-	versions   *versions.Store
-	hub        *hub
-	watcher    *watcher
-	coord      *streamCoordinator
+	httpServer   *http.Server
+	listener     net.Listener
+	sessions     *session.Manager
+	port         int
+	logger       *logging.Logger
+	versions     *versions.Store
+	internalDir  string
+	broker       *broker
+	ls           *LiveSync
+	ownsLiveSync bool
+	hub          *hub
+	watcher      *watcher
+	coord        *streamCoordinator
 }
 
+// SeqPath is where the live-sync sequence high-water mark lives, beside the
+// backups in a private 0700 directory the server refuses to serve.
+func SeqPath(store *versions.Store) string {
+	return filepath.Join(store.BaseDir(), ".livesync-seq")
+}
+
+// New builds a server that owns its own live-sync runtime and tears it down on
+// Shutdown/Close. Used by tests and any single-server caller.
 func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store) *Server {
+	s := newServer(ln, sessions, logger, store, NewLiveSync(SeqPath(store), logger))
+	s.ownsLiveSync = true
+	return s
+}
+
+// NewWithLiveSync builds a server that shares an injected live-sync runtime with
+// its sibling sites. The runtime is owned by the process, not by any one server,
+// so Shutdown/Close leave it running; the process shuts it down once.
+func NewWithLiveSync(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store, ls *LiveSync) *Server {
+	return newServer(ln, sessions, logger, store, ls)
+}
+
+func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store, ls *LiveSync) *Server {
 	port := ln.Addr().(*net.TCPAddr).Port
-	// The sequence high-water mark lives beside the backups, which is already a
-	// private 0700 directory the server refuses to serve.
-	h := newHub(filepath.Join(store.BaseDir(), ".livesync-seq"))
-	wt := newWatcher(logger)
-	co := newStreamCoordinator(h, wt)
-	wt.coord = co
-	h.startJanitor()
 	s := &Server{
 		listener: ln,
 		sessions: sessions,
 		port:     port,
 		logger:   logger,
 		versions: store,
-		hub:      h,
-		watcher:  wt,
-		coord:    co,
+		broker:   newBroker(sessions, logger, defaultConfirm),
+		ls:       ls,
+		hub:      ls.hub,
+		watcher:  ls.watcher,
+		coord:    ls.coord,
 	}
 
 	mux := http.NewServeMux()
@@ -73,6 +94,34 @@ func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, sto
 	return s
 }
 
+// SetInternalDir marks a directory the server must never serve, whatever the
+// read roots say. htmlclay's own config tree holds its log and settings, and a
+// grant that happens to cover that directory must not turn into a read path.
+// Denying on the serve path is structural; a grant-time guard can only ever
+// cover the grants it happens to see.
+func (s *Server) SetInternalDir(dir string) { s.internalDir = dir }
+
+// SetSiteLabel names this site in the permission dialog so the user knows which
+// page is asking. Optional; the broker falls back to a generic label.
+func (s *Server) SetSiteLabel(label string) { s.broker.label = label }
+
+// SetConfirm replaces the permission prompt. Production uses the native dialog;
+// tests inject a deterministic decision so no real dialog is ever shown.
+func (s *Server) SetConfirm(fn func(title, message string) (platform.ConfirmChoice, error)) {
+	s.broker.mu.Lock()
+	s.broker.confirm = fn
+	s.broker.mu.Unlock()
+}
+
+// isInternal reports whether absPath belongs to htmlclay's own state and must be
+// refused outright, before any existence check, so the denial is not an oracle.
+func (s *Server) isInternal(absPath string) bool {
+	if s.versions.Contains(absPath) {
+		return true
+	}
+	return s.internalDir != "" && session.EqualOrUnder(absPath, s.internalDir)
+}
+
 func (s *Server) Start() error {
 	s.logger.Printf("Server listening on 127.0.0.1:%d", s.port)
 	err := s.httpServer.Serve(s.listener)
@@ -82,18 +131,24 @@ func (s *Server) Start() error {
 	return err
 }
 
-// Shutdown closes every SSE stream before handing off to http.Server.Shutdown.
-// Without that, active streams hold graceful shutdown open until its timeout and
-// are then force-closed.
+// Shutdown releases parked permission requests and closes every SSE stream
+// before handing off to http.Server.Shutdown. Both otherwise hold graceful
+// shutdown open until its timeout and are then force-closed. A server that shares
+// an injected live-sync runtime leaves it running (the process shuts the shared
+// runtime down once, before the per-site HTTP servers).
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.hub.shutdown()
-	s.watcher.shutdown()
+	s.broker.shutdown()
+	if s.ownsLiveSync {
+		s.ls.Shutdown()
+	}
 	return s.httpServer.Shutdown(ctx)
 }
 
 func (s *Server) Close() error {
-	s.hub.shutdown()
-	s.watcher.shutdown()
+	s.broker.shutdown()
+	if s.ownsLiveSync {
+		s.ls.Shutdown()
+	}
 	return s.httpServer.Close()
 }
 

@@ -15,9 +15,52 @@ import (
 	"time"
 
 	"github.com/panphora/htmlclay/htmlutil"
+	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/session"
 	"github.com/panphora/htmlclay/versions"
 )
+
+// errRefusedInternal marks a registered-file read whose descriptor, once opened,
+// resolves outside home or into htmlclay's own hidden/internal state (a symlink
+// swapped in under the file's pathname). Callers turn it into a 404/403 rather than
+// a 500 and never serve the bytes.
+var errRefusedInternal = errors.New("registered file resolves to a refused location")
+
+// openRegisteredFile opens a registered file for reading and enforces the
+// "never serve internal state" invariant against the OPEN DESCRIPTOR rather than the
+// pathname. os.Open follows any symlink swapped in under absPath, but platform.RealPath
+// then reports where the held inode really lives, so a component swapped for a symlink
+// into the config/versions tree (or out of home, or into a dotfile) is caught no
+// matter how the pathname is raced. Caller closes the returned file.
+func (s *Server) openRegisteredFile(absPath string) (*os.File, error) {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return nil, err
+	}
+	real, err := platform.RealPath(f)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	real = filepath.Clean(real)
+	home := s.sessions.HomeDir()
+	if _, ok := session.ContainWithinHome(home, real); !ok || s.isInternal(real) || session.HasHiddenComponent(home, real) {
+		f.Close()
+		return nil, errRefusedInternal
+	}
+	return f, nil
+}
+
+// readRegisteredFile reads a registered file through openRegisteredFile's descriptor
+// check, so no read route can be tricked into returning internal state.
+func (s *Server) readRegisteredFile(absPath string) ([]byte, error) {
+	f, err := s.openRegisteredFile(absPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
 
 const maxSaveSize = 50 * 1024 * 1024
 
@@ -73,8 +116,8 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	// Backups are internal state and are never served on the app's own origin.
 	// The config directory sits under the user's home on every platform, so this
 	// path would otherwise be reachable from a page opened next to it.
-	if s.versions.Contains(absPath) {
-		s.logger.Printf("Denying request for internal versions path %s", absPath)
+	if s.isInternal(absPath) {
+		s.logger.Printf("Denying request for internal path %s", absPath)
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
@@ -86,9 +129,14 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.Lock()
-	data, err := os.ReadFile(f.AbsPath)
+	data, err := s.readRegisteredFile(f.AbsPath)
 	if err != nil {
 		f.Unlock()
+		if errors.Is(err, errRefusedInternal) {
+			s.logger.Printf("Refusing to serve %s: resolves to a protected location", f.AbsPath)
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
 		s.logger.Printf("Error reading %s: %v", f.AbsPath, err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -205,28 +253,36 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 
 	// serveAsset resolves the untruncated request path, so the internal-directory
 	// denial is rechecked here rather than inherited from the caller.
-	if s.versions.Contains(absPath) {
-		s.logger.Printf("Denying request for internal versions path %s", absPath)
+	if s.isInternal(absPath) {
+		s.logger.Printf("Denying request for internal path %s", absPath)
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 
-	root, rel, ok := s.sessions.AssetRoot(absPath)
-	if !ok {
+	// Hidden files and directories are never served as assets and never prompt,
+	// so a granted folder cannot expose its .git, .env, or .ssh. A file the user
+	// explicitly opened is served by handleServeFile above, never here.
+	if session.HasHiddenComponent(s.sessions.HomeDir(), absPath) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
 
-	// Re-walk the already-resolved path through os.Root so a component swapped
-	// for a symlink between authorization and open cannot escape the root.
-	rt, err := os.OpenRoot(root)
-	if err != nil {
-		http.Error(w, "Not Found", http.StatusNotFound)
-		return
+	file, authorized, err := s.sessions.OpenAsset(absPath)
+	if !authorized {
+		// Out of scope. Hold the request open and ask the user to widen reads;
+		// on Allow the same request resumes with no reload, on Deny a fixed 403.
+		rc := http.NewResponseController(w)
+		_ = rc.SetWriteDeadline(time.Time{})
+		if !s.broker.await(r.Context(), absPath) {
+			write403(w)
+			return
+		}
+		file, authorized, err = s.sessions.OpenAsset(absPath)
+		if !authorized {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
 	}
-	defer rt.Close()
-
-	file, err := rt.Open(rel)
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
@@ -235,6 +291,28 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	// TOCTOU guard, bound to the open descriptor. os.Root follows relative symlinks
+	// that resolve within the root, and the config/versions tree can sit inside an
+	// opened root, so a directory component swapped for a symlink between the
+	// EvalSymlinks check above and this capability open could have redirected the read
+	// into that tree. Ask the OS for the real path of the descriptor we actually hold
+	// and refuse if it is internal or hidden. Unlike a second EvalSymlinks+Stat, this
+	// cannot be defeated by re-swapping the pathname: RealPath reports where the held
+	// inode lives, not what a name currently points at. The checks above stay as the
+	// fast path for the common, unraced case.
+	real, err := platform.RealPath(file)
+	if err != nil {
+		s.logger.Printf("Could not resolve real path for asset %s: %v", absPath, err)
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	real = filepath.Clean(real)
+	if s.isInternal(real) || session.HasHiddenComponent(s.sessions.HomeDir(), real) {
+		s.logger.Printf("Denying asset resolving to internal/hidden path: %s", absPath)
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
@@ -259,6 +337,20 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	}
 
 	http.ServeContent(w, r, name, info.ModTime(), file)
+}
+
+// write403 is the fixed response for a denied out-of-scope read. It carries no
+// path and no proposed root: those appear only in the native dialog and the
+// tray, never in a body a page can read. Classified before any existence check,
+// so it is not an oracle for which out-of-scope files exist.
+func write403(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-HTMLClay-Error", "read-access-required")
+	w.WriteHeader(http.StatusForbidden)
+	w.Write([]byte(`{"type":"about:blank","title":"Read access required","status":403,` +
+		`"detail":"This page requested a file outside its permitted folder; access was not granted."}`))
 }
 
 // maxETagHashSize bounds the bytes hashed to build a content ETag. Above it the
@@ -358,8 +450,13 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := os.ReadFile(f.AbsPath)
+	data, err := s.readRegisteredFile(f.AbsPath)
 	if err != nil {
+		if errors.Is(err, errRefusedInternal) {
+			s.logger.Printf("Refusing to read %s: resolves to a protected location", f.AbsPath)
+			s.writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		s.logger.Printf("Error reading %s: %v", f.AbsPath, err)
 		s.writeError(w, http.StatusInternalServerError, "read error")
 		return
@@ -424,7 +521,17 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.Lock()
-	current, readErr := os.ReadFile(f.AbsPath)
+	current, readErr := s.readRegisteredFile(f.AbsPath)
+	// A registered path that now resolves into protected state (a swapped-in symlink
+	// to the config/versions tree, or out of home) must not be read into a backup or
+	// written over; refuse the whole save rather than proceed. A plain not-found is
+	// left to the normal first-save path below.
+	if errors.Is(readErr, errRefusedInternal) {
+		f.Unlock()
+		s.logger.Printf("Refusing to save %s: resolves to a protected location", f.AbsPath)
+		s.writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 
 	// The backup identity comes from the key resolved at first serve, never from
 	// the bytes on disk or in the body. Deriving it from disk meant that on a first
@@ -580,7 +687,20 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := os.Stat(f.AbsPath)
+	rf, err := s.openRegisteredFile(f.AbsPath)
+	if err != nil {
+		if errors.Is(err, errRefusedInternal) {
+			s.logger.Printf("Refusing meta for %s: resolves to a protected location", f.AbsPath)
+			s.writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		s.logger.Printf("Error stat %s: %v", f.AbsPath, err)
+		s.writeError(w, http.StatusInternalServerError, "stat error")
+		return
+	}
+	defer rf.Close()
+
+	info, err := rf.Stat()
 	if err != nil {
 		s.logger.Printf("Error stat %s: %v", f.AbsPath, err)
 		s.writeError(w, http.StatusInternalServerError, "stat error")
@@ -597,7 +717,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 	f.Unlock()
 	if htmlclayID == "" {
-		if data, err := os.ReadFile(f.AbsPath); err == nil {
+		if data, rErr := io.ReadAll(rf); rErr == nil {
 			htmlclayID = htmlutil.ReadHTMLClayID(data)
 		}
 	}
