@@ -6,13 +6,147 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type Config struct {
+	// mu guards every field below. The one Config is shared across goroutines: the
+	// route path writes SitePorts, the tray writes Mode/StartOnLogin, and the
+	// Trusted Folders hooks write TrustedFolders, and Save marshals all of them at
+	// once. Without one lock a concurrent SitePorts write + marshal panics
+	// ("concurrent map iteration and write") and a slice append tears under marshal.
+	// Every exported mutator and Save take it; callers must not touch the fields
+	// directly. Lock order is a.mu -> cfg.mu (nothing takes cfg.mu then a.mu).
+	mu           sync.Mutex
 	Mode         string `json:"mode"`
 	StartOnLogin bool   `json:"startOnLogin"`
 	Port         int    `json:"port"`
-	baseDir      string
+	// SitePorts remembers the loopback port each opened tree was served on.
+	// Browser storage (localStorage, IndexedDB, cookies) is scoped to an origin,
+	// and the port is part of the origin, so handing a tree a fresh random port
+	// on every launch silently orphans whatever the page stored last time.
+	// Keyed by the tree's root directory.
+	SitePorts map[string]int `json:"sitePorts,omitempty"`
+	// TrustedFolders are folders the user marked as their own. A file opened from
+	// inside one is silently allowed to read that folder's whole tree with no
+	// permission prompt. Stored as canonical absolute paths; the caller canonicalizes
+	// and validates (inside home, not the config tree, no hidden component) before
+	// adding, so containment checks here can stay simple.
+	TrustedFolders []string `json:"trustedFolders,omitempty"`
+	baseDir        string
+}
+
+// AddTrustedFolder records dir as trusted, returning false if it was already
+// present. dir must already be canonical (resolved, home-contained).
+func (c *Config) AddTrustedFolder(dir string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, d := range c.TrustedFolders {
+		if d == dir {
+			return false
+		}
+	}
+	c.TrustedFolders = append(c.TrustedFolders, dir)
+	return true
+}
+
+// RemoveTrustedFolder drops dir from the trusted list, returning whether it was
+// present.
+func (c *Config) RemoveTrustedFolder(dir string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, d := range c.TrustedFolders {
+		if d == dir {
+			c.TrustedFolders = append(c.TrustedFolders[:i], c.TrustedFolders[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// TrustedFolderList returns a copy of the trusted folders. It exists so callers
+// can read the list without touching the field under the lock.
+func (c *Config) TrustedFolderList() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.TrustedFolders...)
+}
+
+// pruneTrustedFolders drops trusted entries whose directory no longer exists, so a
+// deleted folder does not linger in config across the life of an install.
+func (c *Config) pruneTrustedFolders() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.TrustedFolders) == 0 {
+		return
+	}
+	kept := make([]string, 0, len(c.TrustedFolders))
+	for _, d := range c.TrustedFolders {
+		if info, err := os.Stat(d); err == nil && info.IsDir() {
+			kept = append(kept, d)
+		}
+	}
+	c.TrustedFolders = kept
+}
+
+// SitePort returns the port previously used for root, or 0 if there is none.
+func (c *Config) SitePort(root string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.SitePorts[root]
+}
+
+// RememberSitePort records the port a tree was served on so the next launch can
+// reuse it and keep the origin stable.
+func (c *Config) RememberSitePort(root string, port int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.SitePorts == nil {
+		c.SitePorts = make(map[string]int)
+	}
+	c.SitePorts[root] = port
+}
+
+// pruneSitePorts drops remembered ports for trees that no longer exist, so the
+// map cannot grow without bound across the life of an install.
+func (c *Config) pruneSitePorts() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for root := range c.SitePorts {
+		if info, err := os.Stat(root); err != nil || !info.IsDir() {
+			delete(c.SitePorts, root)
+		}
+	}
+}
+
+// CurrentMode returns the launch mode under the lock.
+func (c *Config) CurrentMode() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Mode
+}
+
+// SetMode sets the launch mode and returns the previous value so a caller can roll
+// back if a following Save fails.
+func (c *Config) SetMode(mode string) (prev string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev, c.Mode = c.Mode, mode
+	return prev
+}
+
+// StartOnLoginEnabled reports the start-on-login preference under the lock.
+func (c *Config) StartOnLoginEnabled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.StartOnLogin
+}
+
+// SetStartOnLogin sets the start-on-login preference under the lock.
+func (c *Config) SetStartOnLogin(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.StartOnLogin = v
 }
 
 func defaultConfigDir() (string, error) {
@@ -82,10 +216,18 @@ func LoadFrom(baseDir string) (*Config, error) {
 		fmt.Fprintf(os.Stderr, "[htmlclay] config.json is corrupt (%v), using defaults\n", err)
 		return &Config{Mode: "app", StartOnLogin: false, Port: 0, baseDir: baseDir}, nil
 	}
+	cfg.pruneSitePorts()
+	cfg.pruneTrustedFolders()
 	return cfg, nil
 }
 
 func (c *Config) Save() error {
+	// Hold the lock across the marshal so a concurrent SitePorts/TrustedFolders
+	// mutation cannot tear the snapshot or panic the map iteration. The disk write
+	// stays under the lock too, which serialises Saves and prevents two writers'
+	// temp-rename races from resurrecting a just-removed entry.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	dir := DirFrom(c.baseDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err

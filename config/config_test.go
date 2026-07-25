@@ -1,11 +1,13 @@
 package config
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -110,6 +112,124 @@ func TestEnsureDir(t *testing.T) {
 	if !info.IsDir() {
 		t.Error("expected directory")
 	}
+}
+
+func TestTrustedFolderAddRemoveRoundTrip(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _ := LoadFrom(baseDir)
+
+	dirA := filepath.Join(baseDir, "sites")
+	dirB := filepath.Join(baseDir, "projects")
+	if err := os.MkdirAll(dirA, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dirB, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.AddTrustedFolder(dirA) {
+		t.Error("adding a new folder should report added")
+	}
+	if cfg.AddTrustedFolder(dirA) {
+		t.Error("adding a duplicate should report not-added")
+	}
+	cfg.AddTrustedFolder(dirB)
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := LoadFrom(baseDir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(loaded.TrustedFolders) != 2 {
+		t.Fatalf("expected 2 trusted folders after reload, got %v", loaded.TrustedFolders)
+	}
+
+	if !loaded.RemoveTrustedFolder(dirA) {
+		t.Error("removing a present folder should report removed")
+	}
+	if loaded.RemoveTrustedFolder(dirA) {
+		t.Error("removing an absent folder should report not-removed")
+	}
+	if err := loaded.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	reloaded, _ := LoadFrom(baseDir)
+	if len(reloaded.TrustedFolders) != 1 || reloaded.TrustedFolders[0] != dirB {
+		t.Errorf("expected only %q to remain, got %v", dirB, reloaded.TrustedFolders)
+	}
+}
+
+func TestPruneTrustedFoldersDropsMissing(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _ := LoadFrom(baseDir)
+
+	real := filepath.Join(baseDir, "real")
+	if err := os.MkdirAll(real, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(baseDir, "deleted")
+	cfg.AddTrustedFolder(real)
+	cfg.AddTrustedFolder(gone)
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := LoadFrom(baseDir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(loaded.TrustedFolders) != 1 || loaded.TrustedFolders[0] != real {
+		t.Errorf("load should prune the missing folder, got %v", loaded.TrustedFolders)
+	}
+}
+
+// The one Config is shared across the route, tray, and Trusted-Folders goroutines.
+// Before the mutex, a SitePorts write concurrent with Save's marshal panicked with
+// "concurrent map iteration and map write", and a TrustedFolders append tore under
+// marshal. Run under -race; it must be clean and must not panic.
+func TestConcurrentMutatorsAndSaveAreRaceFree(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _ := LoadFrom(baseDir)
+
+	const iters = 300
+	var wg sync.WaitGroup
+	run := func(f func(i int)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				f(i)
+			}
+		}()
+	}
+
+	run(func(i int) {
+		cfg.RememberSitePort(fmt.Sprintf("/root/%d", i%8), i)
+		_ = cfg.Save()
+	})
+	run(func(i int) {
+		d := fmt.Sprintf("/trusted/%d", i%8)
+		if !cfg.AddTrustedFolder(d) {
+			cfg.RemoveTrustedFolder(d)
+		}
+		_ = cfg.Save()
+	})
+	run(func(i int) {
+		cfg.SetMode([]string{"app", "browser"}[i%2])
+		cfg.SetStartOnLogin(i%2 == 0)
+		_ = cfg.Save()
+	})
+	run(func(i int) {
+		_ = cfg.CurrentMode()
+		_ = cfg.StartOnLoginEnabled()
+		_ = cfg.SitePort("/root/1")
+		_ = cfg.TrustedFolderList()
+	})
+
+	wg.Wait()
 }
 
 func TestResolvePortPicksAvailable(t *testing.T) {
