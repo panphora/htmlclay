@@ -113,6 +113,10 @@ For a deeper exploration of the problem and the landscape of existing solutions,
 
 ---
 
+## Security
+
+HTML Clay only lets you save files you explicitly opened, and only lets a page read inside the folder you opened it from. Anything outside that pauses and asks. [`SECURITY.md`](SECURITY.md) explains the model, what each protection covers, and the current known limitations.
+
 ## Technical deep dive
 
 ### Architecture
