@@ -113,6 +113,15 @@ func (s *Server) SetConfirm(fn func(title, message string) (platform.ConfirmChoi
 	s.broker.mu.Unlock()
 }
 
+// SetTrustFolder wires the durable half of the permission dialog's "Trust this
+// folder" choice. Optional: with no hook the choice still installs the session
+// read root, so the page works and the folder simply asks again next launch.
+func (s *Server) SetTrustFolder(fn func(dir string) error) {
+	s.broker.mu.Lock()
+	s.broker.trust = fn
+	s.broker.mu.Unlock()
+}
+
 // isInternal reports whether absPath belongs to htmlclay's own state and must be
 // refused outright, before any existence check, so the denial is not an oracle.
 func (s *Server) isInternal(absPath string) bool {

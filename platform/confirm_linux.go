@@ -29,8 +29,8 @@ const (
 // present the grant fails closed to ConfirmDeny rather than silently allowing.
 //
 // zenity prints the extra-button label to stdout when it is clicked, so the
-// stdout check runs before the exit-code check: "Always Allow" maps to
-// ConfirmAllowAlways, a zero exit maps to ConfirmAllowOnce, and any non-zero
+// stdout check runs before the exit-code check: "Trust this folder" maps to
+// ConfirmTrustFolder, a zero exit maps to ConfirmAllowOnce, and any non-zero
 // exit (Deny, window close, timeout, or a launch failure) maps to ConfirmDeny.
 //
 // --no-markup is passed so a folder name containing Pango markup cannot restyle or
@@ -46,11 +46,11 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 			"--title", title,
 			"--text", message,
 			"--ok-label", "Allow Once",
-			"--extra-button", "Always Allow",
+			"--extra-button", "Trust this folder",
 			"--cancel-label", "Deny",
 		).Output()
-		if strings.Contains(strings.TrimSpace(string(out)), "Always Allow") {
-			return ConfirmAllowAlways, nil
+		if strings.Contains(strings.TrimSpace(string(out)), "Trust this folder") {
+			return ConfirmTrustFolder, nil
 		}
 		if err != nil {
 			return ConfirmDeny, nil
@@ -58,9 +58,10 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 		return ConfirmAllowOnce, nil
 	}
 
-	// kdialog has no clean third button, so Always-Allow degrades to Allow-Once
-	// here; Trusted Folders is the real persistent-grant path, so this is
-	// acceptable. Yes maps to ConfirmAllowOnce, No/close maps to ConfirmDeny.
+	// kdialog has no clean third button, so ConfirmTrustFolder degrades to
+	// ConfirmAllowOnce here; the tray's own Add Trusted Folder flow is still the
+	// full persistent-grant path, so this is acceptable. Yes maps to
+	// ConfirmAllowOnce, No/close maps to ConfirmDeny.
 	if bin, err := exec.LookPath("kdialog"); err == nil {
 		if err := exec.CommandContext(ctx, bin, "--title", title, "--warningyesno", message).Run(); err != nil {
 			return ConfirmDeny, nil

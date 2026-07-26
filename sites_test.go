@@ -33,6 +33,19 @@ func allowOnceConfirm(string, string) (platform.ConfirmChoice, error) {
 	return platform.ConfirmAllowOnce, nil
 }
 
+func trustFolderConfirm(string, string) (platform.ConfirmChoice, error) {
+	return platform.ConfirmTrustFolder, nil
+}
+
+// countingDenyConfirm denies every prompt and counts how many were raised, so a
+// test can assert that a refusal never reached the user at all.
+func countingDenyConfirm(n *int32) func(string, string) (platform.ConfirmChoice, error) {
+	return func(string, string) (platform.ConfirmChoice, error) {
+		atomic.AddInt32(n, 1)
+		return platform.ConfirmDeny, nil
+	}
+}
+
 func newTestApp(t *testing.T, home string) *app {
 	t.Helper()
 	logger := logging.NewStdout()
@@ -52,6 +65,10 @@ func newTestApp(t *testing.T, home string) *app {
 			home:      home,
 			configDir: configDir,
 			confirm:   denyConfirm,
+			// Swallow notifications by default, for the same reason confirm is
+			// stubbed: no test may put real UI on the user's screen. A test that
+			// cares what the user was told overrides this with a recorder.
+			notify: func(string, string) error { return nil },
 			guard: func(dir string) bool {
 				return session.EqualOrUnder(dir, configDir) || session.EqualOrUnder(configDir, dir)
 			},
@@ -91,6 +108,19 @@ func fetch(t *testing.T, target string) (int, string) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
+}
+
+// fetchFull is fetch plus the response headers, for tests that compare two
+// refusals field by field rather than by status alone.
+func fetchFull(t *testing.T, target string) (int, http.Header, string) {
+	t.Helper()
+	resp, err := http.Get(target)
+	if err != nil {
+		t.Fatalf("GET %s: %v", target, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, string(body)
 }
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -158,7 +188,7 @@ func TestSiblingSharesSiteButGrantedCousinIsIsolated(t *testing.T) {
 		t.Error("a sibling in the same opened folder should reuse the site")
 	}
 
-	if err := siteA.sessions.GrantReadRoot(filepath.Join(home, "work", "review"), false); err != nil {
+	if err := siteA.sessions.GrantReadRoot(filepath.Join(home, "work", "review")); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 
@@ -186,7 +216,7 @@ func TestGrantedCousinTokenUnreachableFromGrantingOrigin(t *testing.T) {
 
 	a := newTestApp(t, home)
 	granting, _ := a.openForTest(t, page)
-	if err := granting.sessions.GrantReadRoot(filepath.Join(home, "work", "review"), false); err != nil {
+	if err := granting.sessions.GrantReadRoot(filepath.Join(home, "work", "review")); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 
@@ -230,7 +260,7 @@ func TestGrantedAssetIsServedWithoutToken(t *testing.T) {
 		t.Error("asset outside the opened folder should not be readable yet")
 	}
 
-	if err := s.sessions.GrantReadRoot(filepath.Join(home, "work", "review"), false); err != nil {
+	if err := s.sessions.GrantReadRoot(filepath.Join(home, "work", "review")); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 
@@ -267,6 +297,57 @@ func TestOutOfScopeAssetPromptsThenResumesOnAllow(t *testing.T) {
 	}
 	if _, ok := s.sessions.LookupByPath(asset); ok {
 		t.Error("serving a granted asset must never register it for saving")
+	}
+}
+
+// The dialog must name the folder that is actually granted. With ~/alias a symlink
+// to ~/Private Journal, the prompt used to say "alias" while the capability landed on
+// the target, so the user approved one folder name and a different folder opened. The
+// resolution happens once, after the decision to prompt, so the dialog, the log, the
+// tray, and the installed root all name one directory.
+func TestPromptNamesTheFolderItGrants(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skipf("symlinks require privileges on windows")
+	}
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "site", "index.html")
+	realDir := filepath.Join(home, "Private Journal")
+	writeTestFile(t, page, "<html><body>page</body></html>")
+	writeTestFile(t, filepath.Join(realDir, "notes.js"), "console.log('notes')")
+	alias := filepath.Join(home, "alias")
+	if err := os.Symlink(realDir, alias); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	var msgMu sync.Mutex
+	var shown string
+	a := newTestApp(t, home)
+	a.rt.confirm = func(_ string, message string) (platform.ConfirmChoice, error) {
+		msgMu.Lock()
+		shown = message
+		msgMu.Unlock()
+		return platform.ConfirmAllowOnce, nil
+	}
+	s, _ := a.openForTest(t, page)
+
+	if code, _ := fetch(t, fileURL(s.port, filepath.Join("alias", "notes.js"))); code != 200 {
+		t.Fatalf("the aliased asset should resume with 200 after Allow, got %d", code)
+	}
+
+	grants := a.activeGrants()
+	if len(grants) != 1 {
+		t.Fatalf("expected exactly one grant, got %v", grants)
+	}
+	msgMu.Lock()
+	defer msgMu.Unlock()
+	if grants[0] != realDir {
+		t.Errorf("the grant must land on the resolved folder: got %q, want %q", grants[0], realDir)
+	}
+	if !strings.Contains(shown, grants[0]) {
+		t.Errorf("the dialog must name the folder it grants:\ndialog  = %q\ngranted = %q", shown, grants[0])
+	}
+	if strings.Contains(shown, alias) {
+		t.Errorf("the dialog must not name the alias the page reached through: %q", shown)
 	}
 }
 
@@ -384,7 +465,7 @@ func TestOpenPrefersOpenedRootOverGrantedRoot(t *testing.T) {
 		t.Fatal("sibling trees should start as separate sites")
 	}
 
-	if err := siteF.sessions.GrantReadRoot(filepath.Join(home, "review"), false); err != nil {
+	if err := siteF.sessions.GrantReadRoot(filepath.Join(home, "review")); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 
@@ -448,7 +529,7 @@ func TestGuardRefusesConfigTreeBothDirections(t *testing.T) {
 		filepath.Join(home, "Library"),               // an ancestor that swallows it
 		filepath.Join(home, "Library", "Application Support"),
 	} {
-		if err := s.sessions.GrantReadRoot(dir, false); err == nil {
+		if err := s.sessions.GrantReadRoot(dir); err == nil {
 			t.Errorf("granting %q must be refused", dir)
 		}
 	}
@@ -571,6 +652,67 @@ func TestUntrustFolderLiveRevokesFromOpenSite(t *testing.T) {
 	}
 }
 
+// The permission dialog's "Trust this folder" choice must refuse the main personal
+// folders: there the PAGE chose the folder, so one click could make the likeliest
+// home of HTML the user never wrote permanently trusted. The tray's own picker
+// still trusts the same folder, because that takes a deliberate act.
+func TestPromptCannotTrustDownloads(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	downloads := filepath.Join(home, "Downloads")
+	writeTestFile(t, filepath.Join(downloads, "sketchy", "index.html"), "<html><body>sketchy</body></html>")
+
+	a := newTestApp(t, home)
+	// The refusal notice is sent from its own goroutine (it must never block the
+	// broker), so collect it through a channel rather than a slice read straight
+	// after the call.
+	told := make(chan string, 4)
+	a.rt.notify = func(_, message string) error {
+		told <- message
+		return nil
+	}
+
+	if err := a.trustFromPrompt(downloads); err == nil {
+		t.Error("a permission prompt must not be able to trust the Downloads folder")
+	}
+	if got := a.rt.cfg.TrustedFolderList(); len(got) != 0 {
+		t.Errorf("a refused prompt-trust must leave the trusted list empty: %v", got)
+	}
+	// Refusing silently would be its own bug: the user asked for something durable
+	// and got something that lasts until they quit, so they have to be told.
+	select {
+	case msg := <-told:
+		if !strings.Contains(msg, downloads) {
+			t.Errorf("the notice should name the folder it refused, got %q", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a refused prompt-trust must tell the user")
+	}
+	if extra := len(told); extra != 0 {
+		t.Errorf("a refused prompt-trust must tell the user exactly once, got %d extra messages", extra)
+	}
+
+	// A page asking about a folder INSIDE Downloads is the same problem, since
+	// trusting it would still cover files the user did not write.
+	if err := a.trustFromPrompt(filepath.Join(downloads, "sketchy")); err == nil {
+		t.Error("a permission prompt must not be able to trust a folder inside Downloads")
+	}
+
+	// Desktop and Documents are refused for the same reason: they are where
+	// archives get extracted, and a page can inflate its ask to the whole tree.
+	for _, dir := range []string{filepath.Join(home, "Desktop"), filepath.Join(home, "Documents", "evil")} {
+		if err := a.trustFromPrompt(dir); err == nil {
+			t.Errorf("a permission prompt must not be able to trust %s", dir)
+		}
+	}
+
+	if err := a.trustFolder(downloads); err != nil {
+		t.Fatalf("the tray route must still be able to trust Downloads: %v", err)
+	}
+	if !hasFolder(a.rt.cfg.TrustedFolderList(), downloads) {
+		t.Errorf("the tray route should have trusted Downloads: %v", a.rt.cfg.TrustedFolderList())
+	}
+}
+
 func hasFolder(list []string, want string) bool {
 	for _, f := range list {
 		if f == want {
@@ -578,6 +720,126 @@ func hasFolder(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// waitForTrusted waits for dir to reach the trusted list. The durable half of
+// "Trust this folder" runs after the parked request has already resumed, so a 200
+// does not prove the config write landed.
+func waitForTrusted(t *testing.T, a *app, dir string) {
+	t.Helper()
+	for i := 0; i < 500; i++ {
+		if hasFolder(a.trustedFolders(), dir) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the prompt's Trust this folder choice must record %s: trusted list = %v", dir, a.trustedFolders())
+}
+
+// The production wiring, end to end. The broker's trust hook must be the app's own
+// prompt route: a "Trust this folder" answer over an ordinary folder both resumes
+// the read and records the folder. Without the wiring the read still resumes, so
+// only the recorded folder proves the hook was ever called.
+func TestPromptTrustChoiceRecordsAnOrdinaryFolder(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "work", "review", "fable", "index.html")
+	asset := filepath.Join(home, "work", "review", "shared", "redpen.js")
+	writeTestFile(t, page, "<html><body>fable</body></html>")
+	writeTestFile(t, asset, "console.log('redpen')")
+
+	a := newTestApp(t, home)
+	a.rt.confirm = trustFolderConfirm
+	s, _ := a.openForTest(t, page)
+
+	relAsset := filepath.Join("work", "review", "shared", "redpen.js")
+	code, body := fetch(t, fileURL(s.port, relAsset))
+	if code != 200 || !strings.Contains(body, "redpen") {
+		t.Fatalf("a trusted out-of-scope asset should resume 200: got %d, %q", code, body)
+	}
+	waitForTrusted(t, a, filepath.Join(home, "work", "review", "shared"))
+}
+
+// The same flow aimed at one of the main personal folders. The page picked the
+// folder, by asking for an asset that sits directly in ~/Documents, so the read is
+// allowed for this session and nothing durable is recorded. Wiring the tray's own
+// permissive route here instead would trust the whole of Documents in one click.
+func TestPromptTrustChoiceRefusesAPersonalFolder(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "Documents", "evil", "index.html")
+	asset := filepath.Join(home, "Documents", "lib.js")
+	writeTestFile(t, page, "<html><body>evil</body></html>")
+	writeTestFile(t, asset, "console.log('lib')")
+
+	a := newTestApp(t, home)
+	a.rt.confirm = trustFolderConfirm
+	told := make(chan string, 4)
+	a.rt.notify = func(_, message string) error {
+		told <- message
+		return nil
+	}
+	s, _ := a.openForTest(t, page)
+
+	code, body := fetch(t, fileURL(s.port, filepath.Join("Documents", "lib.js")))
+	if code != 200 || !strings.Contains(body, "lib") {
+		t.Fatalf("the read itself should still resume: got %d, %q", code, body)
+	}
+
+	// The notice is what proves the prompt route ran and refused; the user asked
+	// for something durable and got something that lasts until they quit.
+	documents := filepath.Join(home, "Documents")
+	select {
+	case msg := <-told:
+		if !strings.Contains(msg, documents) {
+			t.Errorf("the notice should name the folder it refused, got %q", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("a page-chosen personal folder must be refused and reported: trusted list = %v", a.trustedFolders())
+	}
+	if got := a.trustedFolders(); len(got) != 0 {
+		t.Errorf("a page-chosen personal folder must never be remembered: %v", got)
+	}
+}
+
+// Removing a folder from Trusted Folders takes back the read access that same
+// click granted. One "Trust this folder" answer sets both provenance flags on a
+// single read root, so clearing trust alone left the folder readable, and the tray
+// offered no second handle: a trusted root is hidden from Temporary Access Granted.
+func TestUntrustingAPromptTrustedFolderEndsTheRead(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "work", "review", "fable", "index.html")
+	asset := filepath.Join(home, "work", "review", "shared", "redpen.js")
+	writeTestFile(t, page, "<html><body>fable</body></html>")
+	writeTestFile(t, asset, "console.log('redpen')")
+
+	// Trust the first prompt and deny afterwards, so the re-request after the
+	// untrust cannot quietly re-grant the folder it just lost.
+	var confirmMu sync.Mutex
+	asked := false
+	a := newTestApp(t, home)
+	a.rt.confirm = func(string, string) (platform.ConfirmChoice, error) {
+		confirmMu.Lock()
+		defer confirmMu.Unlock()
+		if !asked {
+			asked = true
+			return platform.ConfirmTrustFolder, nil
+		}
+		return platform.ConfirmDeny, nil
+	}
+	s, _ := a.openForTest(t, page)
+
+	relAsset := filepath.Join("work", "review", "shared", "redpen.js")
+	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 200 {
+		t.Fatalf("a trusted out-of-scope asset should resume 200, got %d", code)
+	}
+	shared := filepath.Join(home, "work", "review", "shared")
+	waitForTrusted(t, a, shared)
+
+	if err := a.untrustFolder(shared); err != nil {
+		t.Fatalf("untrust: %v", err)
+	}
+	if code, _ := fetch(t, fileURL(s.port, relAsset)); code == 200 {
+		t.Error("removing a folder from Trusted Folders must end the read access that same click granted")
+	}
 }
 
 // A burst of out-of-scope subresource requests under one common dir, arriving
@@ -898,5 +1160,219 @@ func TestUntrustFolderClearsConfigAndRevokesServe(t *testing.T) {
 	}
 	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 403 {
 		t.Errorf("untrust must live-revoke the seeded read (403), got %d", code)
+	}
+}
+
+// The existence-oracle regression. Two out-of-scope requests in the same folder,
+// one for a file that is really there and one for a name that is not, must be
+// indistinguishable: same status, same error header, same body. Before the fix the
+// missing one answered 404 immediately while the present one parked and 403'd, so a
+// page could map every file and folder in the non-hidden home tree with no grant and
+// no user interaction.
+// The two probes sit under DIFFERENT top-level segments below home on purpose.
+// Suppression is per denied tree, so two probes in one tree would have the second
+// short-circuit inside await without ever parking: both would still end at 403, but
+// for different reasons, and an existence check added inside the broker would slip
+// through. Under separate trees each request really parks and really prompts.
+func TestOutOfScopeMissingAndPresentAreIndistinguishable(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "site", "index.html")
+	present := filepath.Join(home, "present-tree", "present.txt")
+	writeTestFile(t, page, "<html><body>page</body></html>")
+	writeTestFile(t, present, "secret")
+
+	var prompts int32
+	a := newTestApp(t, home)
+	a.rt.confirm = countingDenyConfirm(&prompts)
+	s, _ := a.openForTest(t, page)
+
+	codePresent, hdrPresent, bodyPresent := fetchFull(t, fileURL(s.port, filepath.Join("present-tree", "present.txt")))
+	codeMissing, hdrMissing, bodyMissing := fetchFull(t, fileURL(s.port, filepath.Join("missing-tree", "missing.txt")))
+
+	if got := atomic.LoadInt32(&prompts); got != 2 {
+		t.Errorf("both out-of-scope reads must park and prompt, got %d prompts", got)
+	}
+	if codePresent != 403 || codeMissing != 403 {
+		t.Fatalf("both out-of-scope reads must refuse with 403: present=%d missing=%d", codePresent, codeMissing)
+	}
+	if hdrPresent.Get("X-HTMLClay-Error") != "read-access-required" ||
+		hdrMissing.Get("X-HTMLClay-Error") != "read-access-required" {
+		t.Errorf("both refusals must carry the same error header: present=%q missing=%q",
+			hdrPresent.Get("X-HTMLClay-Error"), hdrMissing.Get("X-HTMLClay-Error"))
+	}
+	if bodyPresent != bodyMissing {
+		t.Errorf("the two refusals must be byte-identical:\npresent=%q\nmissing=%q", bodyPresent, bodyMissing)
+	}
+	if strings.Contains(bodyPresent, "secret") || strings.Contains(bodyPresent, home) {
+		t.Error("the refusal body must carry neither content nor a filesystem path")
+	}
+}
+
+// A missing asset INSIDE the opened root is an ordinary 404 and never prompts:
+// the scope check passes on the lexical path, so the broker is never consulted and
+// the user is not asked about a file their own page just mistyped.
+func TestInScopeMissingAssetIs404(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "site", "index.html")
+	writeTestFile(t, page, "<html><body>page</body></html>")
+
+	var prompts int32
+	a := newTestApp(t, home)
+	a.rt.confirm = countingDenyConfirm(&prompts)
+	s, _ := a.openForTest(t, page)
+
+	if code, _ := fetch(t, fileURL(s.port, filepath.Join("site", "missing.css"))); code != 404 {
+		t.Errorf("a missing in-scope asset must 404, got %d", code)
+	}
+	if got := atomic.LoadInt32(&prompts); got != 0 {
+		t.Errorf("an in-scope path must never prompt, got %d prompts", got)
+	}
+}
+
+// htmlclay's own state answers the same way whether or not the named file is there,
+// and never prompts. isInternal runs on the lexical path, so the refusal beats the
+// permission dialog and cannot be used to probe the config or versions tree.
+//
+// The page is anchored well away from the config tree on purpose: with the tree
+// lexically in scope of the opened root the test proved nothing, because a present
+// file was refused by a later resolved-path check and a missing one by a failed
+// resolution, and neither answer needed the lexical test at all. Out of scope, a
+// request that skipped the lexical test would park and 403 instead.
+func TestInternalPathIs404WhetherPresentOrMissing(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	configDir := filepath.Join(home, "Library", "Application Support", "htmlclay")
+	page := filepath.Join(home, "site", "index.html")
+	writeTestFile(t, page, "<html><body>p</body></html>")
+	writeTestFile(t, filepath.Join(configDir, "config.json"), `{"mode":"app"}`)
+
+	var prompts int32
+	a := newTestApp(t, home)
+	a.rt.configDir = configDir
+	a.rt.guard = func(dir string) bool {
+		return session.EqualOrUnder(dir, configDir) || session.EqualOrUnder(configDir, dir)
+	}
+	a.rt.confirm = countingDenyConfirm(&prompts)
+	s, _ := a.openForTest(t, page) // opened root ~/site; the config tree is out of scope
+
+	base := filepath.Join("Library", "Application Support", "htmlclay")
+	for _, name := range []string{"config.json", "nothing-here.json"} {
+		code, body := fetch(t, fileURL(s.port, filepath.Join(base, name)))
+		if code != 404 {
+			t.Errorf("%s must be refused with 404, got %d", name, code)
+		}
+		if strings.Contains(body, "mode") {
+			t.Errorf("%s: config-tree contents must never be served", name)
+		}
+	}
+	if got := atomic.LoadInt32(&prompts); got != 0 {
+		t.Errorf("an internal path must never prompt, got %d prompts", got)
+	}
+}
+
+// serveAsset re-tests internal-ness on the FULL request path, which is not always
+// the path handleServeFile judged. extractFilePath stops at the first ".html" so an
+// asset inside a directory named like a page still resolves, and everything past that
+// point is only ever seen by serveAsset. A percent-encoded traversal after the
+// truncation lands in the config tree while the truncated path looks innocent
+// (ServeMux cleans the escaped path but hands the handler the unescaped one), so
+// serveAsset's own lexical check is what refuses it, before the scope gate and with
+// no prompt. Without that check the request parks instead and 403s.
+func TestEncodedTraversalIntoConfigTreeIs404NotAPrompt(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	configDir := filepath.Join(home, "Library", "Application Support", "htmlclay")
+	page := filepath.Join(home, "site", "index.html")
+	writeTestFile(t, page, "<html><body>p</body></html>")
+	writeTestFile(t, filepath.Join(configDir, "config.json"), `{"mode":"app"}`)
+
+	var prompts int32
+	a := newTestApp(t, home)
+	a.rt.configDir = configDir
+	a.rt.guard = func(dir string) bool {
+		return session.EqualOrUnder(dir, configDir) || session.EqualOrUnder(configDir, dir)
+	}
+	a.rt.confirm = countingDenyConfirm(&prompts)
+	s, _ := a.openForTest(t, page)
+
+	// Built by hand: fileURL runs url.JoinPath, which would collapse the traversal
+	// before it was ever sent.
+	target := fmt.Sprintf(
+		"http://127.0.0.1:%d/site/nothing.html/%%2e%%2e/%%2e%%2e/Library/Application%%20Support/htmlclay/config.json",
+		s.port)
+	code, body := fetch(t, target)
+	if code != 404 {
+		t.Errorf("a traversal into the config tree must be refused with 404, got %d", code)
+	}
+	if strings.Contains(body, "mode") {
+		t.Error("config-tree contents must never be served")
+	}
+	if got := atomic.LoadInt32(&prompts); got != 0 {
+		t.Errorf("an internal path must never prompt, got %d prompts", got)
+	}
+}
+
+// A hidden component answers the same way whether or not the file is there, and
+// never prompts, even out of scope: the dot test is lexical, so it beats the
+// permission dialog and cannot be used to probe for a .env or a .git.
+func TestHiddenPathIs404WhetherPresentOrMissing(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "site", "index.html")
+	writeTestFile(t, page, "<html><body>page</body></html>")
+	writeTestFile(t, filepath.Join(home, "other", ".env"), "SECRET=1")
+	writeTestFile(t, filepath.Join(home, "other", ".git", "config"), "[core]")
+
+	var prompts int32
+	a := newTestApp(t, home)
+	a.rt.confirm = countingDenyConfirm(&prompts)
+	s, _ := a.openForTest(t, page)
+
+	for _, rel := range []string{
+		filepath.Join("other", ".env"),           // present
+		filepath.Join("other", ".git", "config"), // present, hidden directory
+		filepath.Join("other", ".missing"),       // absent
+	} {
+		code, body := fetch(t, fileURL(s.port, rel))
+		if code != 404 {
+			t.Errorf("%s must be refused with 404, got %d", rel, code)
+		}
+		if strings.Contains(body, "SECRET") || strings.Contains(body, "core") {
+			t.Errorf("%s: hidden contents must never be served", rel)
+		}
+	}
+	if got := atomic.LoadInt32(&prompts); got != 0 {
+		t.Errorf("a hidden path must never prompt, got %d prompts", got)
+	}
+}
+
+// A lexically in-scope path that resolves, through a symlink, outside every read
+// root is refused outright rather than turned into a prompt. The scope check decides
+// only whether to ask; authorization still judges the resolved path, so the user is
+// never asked to grant whatever a link inside their folder happens to point at.
+func TestAssetResolvingOutsideItsRootIs404NotAPrompt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skipf("symlinks require privileges on windows")
+	}
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "site", "index.html")
+	target := filepath.Join(home, "other", "secret.txt")
+	writeTestFile(t, page, "<html><body>page</body></html>")
+	writeTestFile(t, target, "OUTSIDE-SECRET")
+	if err := os.Symlink(target, filepath.Join(home, "site", "link.txt")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	var prompts int32
+	a := newTestApp(t, home)
+	a.rt.confirm = countingDenyConfirm(&prompts)
+	s, _ := a.openForTest(t, page)
+
+	code, body := fetch(t, fileURL(s.port, filepath.Join("site", "link.txt")))
+	if code != 404 {
+		t.Errorf("a symlink resolving outside every read root must 404, got %d", code)
+	}
+	if strings.Contains(body, "OUTSIDE-SECRET") {
+		t.Error("the symlink target must never be served")
+	}
+	if got := atomic.LoadInt32(&prompts); got != 0 {
+		t.Errorf("a symlink out of its root must not raise a prompt, got %d prompts", got)
 	}
 }

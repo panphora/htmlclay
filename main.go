@@ -60,6 +60,11 @@ type appRuntime struct {
 	// confirm, when set, overrides the native permission dialog. Production leaves
 	// it nil (the server uses the real dialog); tests inject a decision.
 	confirm func(title, message string) (platform.ConfirmChoice, error)
+	// notify, when set, overrides the native notification. Production leaves it nil
+	// (a real banner); tests capture the message instead of putting one on the
+	// user's screen. Unlike confirm, this is read live from background goroutines
+	// rather than snapshotted at buildSite, so set it before opening any site.
+	notify func(title, message string) error
 	// modeOverride is a one-shot -app/-browser flag. It is kept out of cfg so a
 	// later tray toggle that saves the config cannot accidentally persist it.
 	modeOverride string
@@ -326,6 +331,7 @@ func (a *app) buildSite(root string) (*site, error) {
 	if a.rt.confirm != nil {
 		srv.SetConfirm(a.rt.confirm)
 	}
+	srv.SetTrustFolder(a.trustFromPrompt)
 	return &site{
 		root:     root,
 		ln:       ln,
@@ -453,6 +459,96 @@ func (a *app) trustFolder(dir string) error {
 	return nil
 }
 
+// notifyUser sends a best-effort native message through the runtime seam, so a
+// test asserting that the user was told never puts a real banner on their screen.
+// Mirrors the confirm seam, for the same reason.
+func (a *app) notifyUser(title, message string) error {
+	if a.rt.notify != nil {
+		return a.rt.notify(title, message)
+	}
+	return platform.Notify(title, message)
+}
+
+// trustFromPrompt adds a folder to the trusted list on behalf of a permission
+// dialog the user answered with "Trust this folder". It is deliberately stricter
+// than the tray's own Add Trusted Folder flow: here the PAGE chooses the folder
+// being offered, by picking which out-of-scope assets to request, so it can aim
+// the common ancestor at one of the personal folders where files the user never
+// wrote tend to land, and offer one-click trust for the whole tree. Trusting one
+// of those from the tray is still allowed, because that takes a deliberate act
+// with a folder picker.
+//
+// The caller has already installed the session read root, so refusing here costs
+// only durability: the page keeps working now and asks again next launch. The
+// user is told, because they asked for something permanent and got something
+// temporary.
+func (a *app) trustFromPrompt(dir string) error {
+	if a.isProtectedHomeRoot(dir) {
+		a.reportTrustRefused(dir, "A page picked this folder, and it is one of your main personal folders.")
+		return fmt.Errorf("%s cannot be trusted from a permission prompt", dir)
+	}
+	if err := a.trustFolder(dir); err != nil {
+		a.reportTrustRefused(dir, err.Error())
+		return err
+	}
+	return nil
+}
+
+// isProtectedHomeRoot reports whether dir is one of the top-level personal folders
+// in home, sits inside one, or is an ancestor that would swallow one.
+//
+// These are refused on the prompt route only. The PAGE chooses the folder named in
+// that dialog by picking which out-of-scope assets to request, and it can inflate
+// the choice: two requests under different subfolders make their common ancestor
+// the whole of Documents. One click would then durably trust everything the user
+// owns. A real project folder is essentially never one of these exactly, and a
+// subfolder such as ~/Documents/projects/site is still trustable, so this costs
+// the honest case nothing. Picking one of these from the tray still works, because
+// that takes a deliberate act with a folder picker.
+//
+// dir arrives already symlink-resolved, so each name is compared in both its
+// lexical and its resolved form. A Downloads or Documents folder that is itself a
+// symlink, pointing at an external drive or a synced folder, is an ordinary setup,
+// and it would otherwise reach here under its target's name and sail past a purely
+// lexical match. Folders the user has renamed outright are still not recognized.
+func (a *app) isProtectedHomeRoot(dir string) bool {
+	for _, name := range []string{"Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures", "Public"} {
+		lexical := filepath.Join(a.rt.home, name)
+		forms := []string{lexical}
+		if resolved, err := filepath.EvalSymlinks(lexical); err == nil {
+			if cleaned := filepath.Clean(resolved); cleaned != lexical {
+				forms = append(forms, cleaned)
+			}
+		}
+		for _, d := range forms {
+			if session.EqualOrUnder(dir, d) || session.EqualOrUnder(d, dir) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// reportTrustRefused tells the user why a folder was not remembered. Staying
+// silent is its own bug: they asked for something durable and got something that
+// lasts until they quit, so without this the folder simply starts asking again
+// with no explanation. It covers ordinary failures too, such as a config file
+// that cannot be written, not only the protected-folder policy refusal.
+//
+// The notification is detached because this runs on the broker's prompt goroutine,
+// which must not block: a notification that wedges (on Windows it is a modal that
+// waits to be clicked) would leave the broker marked as prompting, and the site
+// would never raise another permission dialog for the rest of its life.
+func (a *app) reportTrustRefused(dir, reason string) {
+	msg := dir + " was not added to your trusted folders.\n\n" + reason +
+		"\n\nIt stays readable until you quit. You can add it yourself from the HTML Clay menu."
+	go func() {
+		if nErr := a.notifyUser("HTML Clay", msg); nErr != nil {
+			a.rt.logger.Printf("Could not notify about the refused trust of %s: %v", dir, nErr)
+		}
+	}()
+}
+
 // untrustFolder removes dir from the trusted list and live-revokes the seeded
 // trusted root from every open site. dir is the canonical path the tray shows (the
 // value trustFolder stored), so it matches InstallTrustedRoot's key directly.
@@ -467,7 +563,13 @@ func (a *app) untrustFolder(dir string) error {
 		return fmt.Errorf("could not save config: %w", err)
 	}
 	for _, s := range a.sites {
+		// One "Trust this folder" click sets both provenance flags on a single read
+		// root, so clearing trust alone would leave the granted flag holding the root
+		// open and the folder still readable. Removing a folder from the trusted list
+		// takes back everything that click gave. A folder the user explicitly OPENED
+		// survives, because that root is what the page is being served from.
 		s.sessions.RevokeTrustedRoot(dir)
+		s.sessions.RevokeReadRoot(dir)
 	}
 	a.rt.logger.Printf("Trusted folder removed: %s", dir)
 	return nil
@@ -535,7 +637,7 @@ func (a *app) pickAndTrustFolder() []string {
 	if err := a.trustFolder(dir); err != nil {
 		a.rt.logger.Printf("Could not trust folder %s: %v", dir, err)
 		go func() {
-			if nErr := platform.Notify("HTML Clay can't trust this folder", err.Error()); nErr != nil {
+			if nErr := a.notifyUser("HTML Clay can't trust this folder", err.Error()); nErr != nil {
 				a.rt.logger.Printf("Could not show notification: %v", nErr)
 			}
 		}()
@@ -652,7 +754,7 @@ func (a *app) openFile(filePath string) {
 		msg := fmt.Sprintf("%s is outside your home folder. HTML Clay only opens files inside %s.",
 			filepath.Base(absPath), a.rt.home)
 		go func() {
-			if nErr := platform.Notify("HTML Clay can't open this file", msg); nErr != nil {
+			if nErr := a.notifyUser("HTML Clay can't open this file", msg); nErr != nil {
 				a.rt.logger.Printf("Could not show notification: %v", nErr)
 			}
 		}()

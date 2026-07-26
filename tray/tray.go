@@ -73,15 +73,17 @@ type Tray struct {
 	updateItem    *systray.MenuItem
 	updateURL     string
 
-	trusted      *TrustedFolderHooks
-	trustedEmpty *systray.MenuItem
-	trustedSlots []*trustedSlot
-	trustedMu    sync.Mutex
+	trusted         *TrustedFolderHooks
+	trustedEmpty    *systray.MenuItem
+	trustedOverflow *systray.MenuItem
+	trustedSlots    []*trustedSlot
+	trustedMu       sync.Mutex
 
-	grants     *GrantHooks
-	grantEmpty *systray.MenuItem
-	grantSlots []*trustedSlot
-	grantMu    sync.Mutex
+	grants        *GrantHooks
+	grantEmpty    *systray.MenuItem
+	grantOverflow *systray.MenuItem
+	grantSlots    []*trustedSlot
+	grantMu       sync.Mutex
 }
 
 func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, grants *GrantHooks) {
@@ -183,6 +185,9 @@ func (t *Tray) buildTrustedMenu() *systray.MenuItem {
 		item.Hide()
 		t.trustedSlots[i] = &trustedSlot{item: item}
 	}
+	t.trustedOverflow = menu.AddSubMenuItem("", "")
+	t.trustedOverflow.Disable()
+	t.trustedOverflow.Hide()
 	if t.trusted.List != nil {
 		t.renderTrusted(t.trusted.List())
 	}
@@ -264,9 +269,16 @@ func (t *Tray) renderTrusted(list []string) {
 	} else {
 		t.trustedEmpty.Hide()
 	}
+	// The pool is fixed because systray cannot delete rows. Say so in the menu
+	// rather than let the extras disappear silently: they are still trusted and
+	// still granting silent reads.
 	if overflow > 0 {
+		t.trustedOverflow.SetTitle(fmt.Sprintf("…and %d more not shown", overflow))
+		t.trustedOverflow.Show()
 		fmt.Fprintf(os.Stderr, "[htmlclay] %d trusted folders exceed %d tray rows; the extras stay active but are not listed\n",
 			len(list), len(t.trustedSlots))
+	} else {
+		t.trustedOverflow.Hide()
 	}
 }
 
@@ -310,6 +322,9 @@ func (t *Tray) buildGrantMenu() {
 		item.Hide()
 		t.grantSlots[i] = &trustedSlot{item: item}
 	}
+	t.grantOverflow = menu.AddSubMenuItem("", "")
+	t.grantOverflow.Disable()
+	t.grantOverflow.Hide()
 	if t.grants.List != nil {
 		t.renderGrants(t.grants.List())
 	}
@@ -398,9 +413,16 @@ func (t *Tray) renderGrants(list []string) {
 	} else {
 		t.grantEmpty.Hide()
 	}
+	// The pool is fixed because systray cannot delete rows. Say so in the menu
+	// rather than let the extras disappear silently: they are still granted and
+	// still readable.
 	if overflow > 0 {
+		t.grantOverflow.SetTitle(fmt.Sprintf("…and %d more not shown", overflow))
+		t.grantOverflow.Show()
 		fmt.Fprintf(os.Stderr, "[htmlclay] %d runtime grants exceed %d tray rows; the extras stay active but are not listed\n",
 			len(list), len(t.grantSlots))
+	} else {
+		t.grantOverflow.Hide()
 	}
 }
 

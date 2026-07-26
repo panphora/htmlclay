@@ -8,15 +8,19 @@ const (
 	// unsupported platform resolves to Deny so access is never granted by accident.
 	ConfirmDeny ConfirmChoice = iota
 	ConfirmAllowOnce
-	ConfirmAllowAlways
+	// ConfirmTrustFolder is the durable choice: allow this read AND remember the
+	// folder as trusted, so files opened from inside it stop asking. Platforms with
+	// no clean third button degrade it to ConfirmAllowOnce, which errs toward less
+	// permission rather than more.
+	ConfirmTrustFolder
 )
 
 func (c ConfirmChoice) String() string {
 	switch c {
 	case ConfirmAllowOnce:
 		return "allow-once"
-	case ConfirmAllowAlways:
-		return "allow-always"
+	case ConfirmTrustFolder:
+		return "trust-folder"
 	default:
 		return "deny"
 	}

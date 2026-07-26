@@ -265,7 +265,7 @@ func TestGrantReadRoot(t *testing.T) {
 	if _, _, ok := m.AssetRoot(asset); ok {
 		t.Fatal("nothing granted yet")
 	}
-	if err := m.GrantReadRoot(filepath.Join(home, "review"), false); err != nil {
+	if err := m.GrantReadRoot(filepath.Join(home, "review")); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	root, rel, ok := m.AssetRoot(asset)
@@ -287,16 +287,16 @@ func TestGrantReadRootRejects(t *testing.T) {
 	m := NewManagerWithHome(home)
 	m.SetGuard(func(dir string) bool { return dir == filepath.Join(home, "config", "versions") })
 
-	if err := m.GrantReadRoot(home, false); err == nil {
+	if err := m.GrantReadRoot(home); err == nil {
 		t.Error("granting the home directory must be refused")
 	}
-	if err := m.GrantReadRoot(filepath.Join(home, ".ssh"), false); err == nil {
+	if err := m.GrantReadRoot(filepath.Join(home, ".ssh")); err == nil {
 		t.Error("granting a hidden directory must be refused")
 	}
-	if err := m.GrantReadRoot(filepath.Join(home, "config", "versions"), false); err == nil {
+	if err := m.GrantReadRoot(filepath.Join(home, "config", "versions")); err == nil {
 		t.Error("guard-vetoed directory must be refused")
 	}
-	if err := m.GrantReadRoot(filepath.Dir(home), false); err == nil {
+	if err := m.GrantReadRoot(filepath.Dir(home)); err == nil {
 		t.Error("granting outside home must be refused")
 	}
 }
@@ -318,7 +318,7 @@ func TestRevokeGrantKeepsOpenedCapability(t *testing.T) {
 	}
 	dir := filepath.Join(home, "site")
 
-	if err := m.GrantReadRoot(dir, false); err != nil {
+	if err := m.GrantReadRoot(dir); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	m.RevokeReadRoot(dir)
@@ -330,7 +330,7 @@ func TestRevokeGrantKeepsOpenedCapability(t *testing.T) {
 	// A root that exists only because of a grant does disappear on revoke.
 	other := filepath.Join(home, "other")
 	os.MkdirAll(other, 0755)
-	if err := m.GrantReadRoot(other, false); err != nil {
+	if err := m.GrantReadRoot(other); err != nil {
 		t.Fatalf("grant other: %v", err)
 	}
 	m.RevokeReadRoot(other)
@@ -404,7 +404,7 @@ func TestRevokeGrantKeepsTrustedCapability(t *testing.T) {
 	if err := m.InstallTrustedRoot(dir); err != nil {
 		t.Fatalf("trust: %v", err)
 	}
-	if err := m.GrantReadRoot(dir, false); err != nil {
+	if err := m.GrantReadRoot(dir); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	m.RevokeReadRoot(dir)
@@ -424,7 +424,7 @@ func TestAssetRootOpenedReportsProvenance(t *testing.T) {
 	if _, err := m.Register(page); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if err := m.GrantReadRoot(filepath.Join(home, "granted"), false); err != nil {
+	if err := m.GrantReadRoot(filepath.Join(home, "granted")); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 
@@ -450,7 +450,7 @@ func TestReadRootsReportsProvenance(t *testing.T) {
 	if _, err := m.Register(page); err != nil { // opened root = home/opened
 		t.Fatalf("register: %v", err)
 	}
-	if err := m.GrantReadRoot(filepath.Join(home, "granted"), false); err != nil {
+	if err := m.GrantReadRoot(filepath.Join(home, "granted")); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	if err := m.InstallTrustedRoot(filepath.Join(home, "trusted")); err != nil {
@@ -510,7 +510,7 @@ func TestReadThroughPinnedRootContainsComponentSwap(t *testing.T) {
 	}
 
 	m := NewManagerWithHome(home)
-	if err := m.GrantReadRoot(root, false); err != nil {
+	if err := m.GrantReadRoot(root); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 
@@ -570,7 +570,7 @@ func TestReadThroughPinnedRootSurvivesRootReplacedBySymlink(t *testing.T) {
 	}
 
 	m := NewManagerWithHome(home)
-	if err := m.GrantReadRoot(root, false); err != nil {
+	if err := m.GrantReadRoot(root); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 
@@ -632,7 +632,7 @@ func TestAssetRootMostSpecific(t *testing.T) {
 	if _, err := m.Register(page); err != nil { // opened root = home/site
 		t.Fatalf("register: %v", err)
 	}
-	if err := m.GrantReadRoot(filepath.Join(home, "site", "img"), false); err != nil {
+	if err := m.GrantReadRoot(filepath.Join(home, "site", "img")); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	root, rel, ok := m.AssetRoot(asset)

@@ -88,8 +88,11 @@ func TestServeFileNotRegistered(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleServeFile(w, req)
 
-	if w.Code != 404 {
-		t.Errorf("expected 404, got %d", w.Code)
+	// The old expectation (404) was the oracle: this path is out of scope, and an
+	// out-of-scope path that exists answers 403, so a 404 here told a page the file
+	// was missing. Both cases now end in the same fixed 403.
+	if w.Code != 403 {
+		t.Errorf("expected 403, got %d", w.Code)
 	}
 }
 
@@ -436,17 +439,22 @@ func TestServeAssetSymlinkEscape(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleServeFile(w, req)
 
-	// The symlink resolves to an out-of-scope in-home file, so it is treated as
-	// any other out-of-scope read: parked, prompted, and (test-denied) refused
-	// with 403. The escape target is never served without an explicit grant.
-	if w.Code != 403 {
-		t.Errorf("expected 403, got %d", w.Code)
+	// The requested path is lexically in scope, so it never parks; the symlink is
+	// only discovered on resolution, and a resolved path no root covers is refused
+	// outright. The old expectation (403) encoded a park that happened after
+	// resolution, which is what made a missing path answer faster than a present
+	// one. The escape target is never served without an explicit grant.
+	if w.Code != 404 {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "secret") {
+		t.Error("the out-of-scope target must never be served")
 	}
 }
 
 // An asset inside an opened folder that does not exist returns 404 promptly. The
-// missing path fails resolution before the broker is ever consulted, so a missing
-// in-scope file is never parked and never answered with the out-of-scope 403.
+// path is in scope, so the broker is never consulted and resolution then fails,
+// leaving a missing in-scope file never parked and never given the out-of-scope 403.
 func TestMissingInScopeAssetReturns404(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 	registerSubdirPage(t, srv, "site")

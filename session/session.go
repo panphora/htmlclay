@@ -142,11 +142,10 @@ const (
 // revoking a grant deleted the whole entry and took away the capability the open
 // (or trust) had created, silently 404ing the opened page's own siblings.
 type readRoot struct {
-	path      string
-	opened    bool
-	granted   bool
-	trusted   bool // seeded from a TrustedFolders entry this anchor lives inside
-	persisted bool // AllowAlways: this grant is written to config and restored on next open
+	path    string
+	opened  bool
+	granted bool
+	trusted bool // seeded from a TrustedFolders entry this anchor lives inside
 	// root is the held capability, opened when the root is installed and closed
 	// when it is revoked. Reads go through it rather than re-opening the directory
 	// per request, so a component swapped for a symlink between authorization and
@@ -328,7 +327,7 @@ func (m *Manager) Register(absPath string) (*File, error) {
 	// saves (that path reads f.AbsPath directly); only its sibling assets, which
 	// go through the handle, would 404, and the directory we just resolved a file
 	// in cannot realistically fail to open.
-	_ = m.installReadRoot(filepath.Dir(cleaned), rootOpened, false)
+	_ = m.installReadRoot(filepath.Dir(cleaned), rootOpened)
 	return f, nil
 }
 
@@ -336,9 +335,9 @@ func (m *Manager) Register(absPath string) (*File, error) {
 // for a new root, opens its capability handle. Caller must hold m.mu. The home
 // directory is never installed: a page must not be able to read the entire home
 // tree. Provenance accumulates rather than replaces, so a dir that is both opened
-// and granted carries both, and AllowAlways is sticky once set. Returns an error
-// only when a new root's handle cannot be opened; an existing root never fails.
-func (m *Manager) installReadRoot(dir string, kind rootKind, persisted bool) error {
+// and granted carries both. Returns an error only when a new root's handle cannot
+// be opened; an existing root never fails.
+func (m *Manager) installReadRoot(dir string, kind rootKind) error {
 	if dir == m.homeDir {
 		return nil
 	}
@@ -356,9 +355,6 @@ func (m *Manager) installReadRoot(dir string, kind rootKind, persisted bool) err
 		rr.opened = true
 	case rootGranted:
 		rr.granted = true
-		if persisted {
-			rr.persisted = true
-		}
 	case rootTrusted:
 		rr.trusted = true
 	}
@@ -366,10 +362,9 @@ func (m *Manager) installReadRoot(dir string, kind rootKind, persisted bool) err
 }
 
 // GrantReadRoot widens a session's reads to dir (read-only), the operation a
-// granted permission performs. persisted marks an AllowAlways grant for the
-// config writer to pick up.
-func (m *Manager) GrantReadRoot(dir string, persisted bool) error {
-	return m.installValidatedRoot(dir, rootGranted, persisted)
+// granted permission performs.
+func (m *Manager) GrantReadRoot(dir string) error {
+	return m.installValidatedRoot(dir, rootGranted)
 }
 
 // InstallTrustedRoot installs an ALREADY-canonical trusted folder (resolved and
@@ -384,18 +379,28 @@ func (m *Manager) GrantReadRoot(dir string, persisted bool) error {
 // re-validated (inside home, no hidden component, not guard-vetoed) so a stale or
 // tampered config entry can never install a forbidden root.
 func (m *Manager) InstallTrustedRoot(canonical string) error {
-	return m.installCanonicalRoot(canonical, rootTrusted, false)
+	return m.installCanonicalRoot(canonical, rootTrusted)
+}
+
+// GrantCanonicalRoot installs an already symlink-resolved directory as a granted
+// read root, keyed by exactly the path given. The broker resolves the folder once
+// and passes the result here, so the dialog it showed, the log line, the tray
+// entry, and the installed capability all name the same directory. Resolving
+// again here would let a swap between the prompt and the install bind the
+// capability to a directory the user never saw.
+func (m *Manager) GrantCanonicalRoot(canonical string) error {
+	return m.installCanonicalRoot(canonical, rootGranted)
 }
 
 // installValidatedRoot resolves symlinks in dir, then installs the resolved path.
 // Used by GrantReadRoot, whose dir arrives fresh from a live request rather than
 // from persisted state.
-func (m *Manager) installValidatedRoot(dir string, kind rootKind, persisted bool) error {
+func (m *Manager) installValidatedRoot(dir string, kind rootKind) error {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return fmt.Errorf("cannot resolve read root %q: %w", dir, err)
 	}
-	return m.installCanonicalRoot(filepath.Clean(resolved), kind, persisted)
+	return m.installCanonicalRoot(filepath.Clean(resolved), kind)
 }
 
 // installCanonicalRoot installs an already symlink-resolved path without touching
@@ -406,7 +411,7 @@ func (m *Manager) installValidatedRoot(dir string, kind rootKind, persisted bool
 // an already-canonical input, so a caller that stored the same canonical string
 // can always revoke the root by that string. Shared by GrantReadRoot (via
 // installValidatedRoot) and InstallTrustedRoot so every gate stays identical.
-func (m *Manager) installCanonicalRoot(canonical string, kind rootKind, persisted bool) error {
+func (m *Manager) installCanonicalRoot(canonical string, kind rootKind) error {
 	c, ok := ContainWithinHome(m.homeDir, canonical)
 	if !ok {
 		return fmt.Errorf("read root %q is outside home directory: %w", canonical, ErrOutsideHome)
@@ -420,7 +425,7 @@ func (m *Manager) installCanonicalRoot(canonical string, kind rootKind, persiste
 	if m.guard != nil && m.guard(c) {
 		return fmt.Errorf("read root %q is a forbidden root", c)
 	}
-	if err := m.installReadRoot(c, kind, persisted); err != nil {
+	if err := m.installReadRoot(c, kind); err != nil {
 		return fmt.Errorf("cannot open read root %q: %w", c, err)
 	}
 	return nil
@@ -438,7 +443,6 @@ func (m *Manager) RevokeReadRoot(dir string) {
 		return
 	}
 	rr.granted = false
-	rr.persisted = false
 	if !rr.opened && !rr.trusted {
 		if rr.root != nil {
 			rr.root.Close()
@@ -491,8 +495,11 @@ func (m *Manager) hasHiddenComponent(path string) bool {
 // home, no hidden component, and not vetoed by the guard (config/versions tree). The
 // broker calls this before prompting so it never raises a dialog for a folder that
 // GrantReadRoot would then refuse (e.g. macOS ~/Library, which swallows the config
-// dir). It does not resolve symlinks; the broker's dir is an already-resolved LCA,
-// and GrantReadRoot re-validates on the actual grant.
+// dir). It does not resolve symlinks, and the broker deliberately calls it with the
+// LEXICAL least-common-ancestor: resolving before this gate would let a folder
+// that fails to resolve answer differently from one that succeeds, which is the
+// existence oracle. Resolution happens afterwards, in decide, where it can only
+// change which folder is named and granted, never whether the user is asked.
 func (m *Manager) CanGrant(dir string) bool {
 	if _, ok := ContainWithinHome(m.homeDir, dir); !ok {
 		return false

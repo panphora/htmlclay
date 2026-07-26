@@ -25,10 +25,10 @@ const (
 )
 
 // confirmDialog shows a WinForms message box via PowerShell. A true three-button
-// prompt is fiddly, so Always-Allow degrades to Allow-Once on Windows v1; Trusted
-// Folders is the real persistent-grant path, so this is acceptable. Yes maps to
-// ConfirmAllowOnce; No, Cancel, timeout, and any error all fail closed to
-// ConfirmDeny.
+// prompt is fiddly, so ConfirmTrustFolder degrades to ConfirmAllowOnce on Windows
+// v1; the tray's own Add Trusted Folder flow is still the full persistent-grant
+// path, so this is acceptable. Yes maps to ConfirmAllowOnce; No, Cancel, timeout,
+// and any error all fail closed to ConfirmDeny.
 //
 // The title and message are passed as environment variables and referenced with
 // $env:VAR inside the script, never spliced into the script text. PowerShell's

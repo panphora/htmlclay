@@ -19,15 +19,23 @@ const (
 	// waiter is held while later ones keep resetting the idle timer.
 	brokerDebounce = 250 * time.Millisecond
 	brokerMaxBatch = 750 * time.Millisecond
-	// A parked request is held at most this long, matched to the dialog's own
-	// "giving up after 120", so an ignored prompt self-resolves to deny.
-	brokerParkMax = 120 * time.Second
+	// A parked request is held this long before it self-resolves to deny. It covers
+	// the batch window plus one full 120s dialog, so a waiter whose prompt is raised
+	// promptly always outlives it. It does NOT cover a waiter queued behind another
+	// tree's dialog: prompts are serialized, so that waiter can still expire partway
+	// through its own prompt, and a late Allow then installs a grant with no request
+	// left to resume. That grant is harmless and revocable from the tray. Fixing it
+	// properly means starting the deadline when the waiter's prompt is raised rather
+	// than when it parks, which is deferred.
+	brokerParkMax = 130 * time.Second
 	// Above this many simultaneously parked requests, deny rather than grow
 	// unbounded. A hostile page cannot pin memory by firing thousands of misses.
 	brokerParkCap = 64
 )
 
 type brokerConfirm func(title, message string) (platform.ConfirmChoice, error)
+
+type trustFunc func(dir string) error
 
 // defaultConfirm is the confirm every new broker starts with. Production leaves
 // it as the real native dialog; the server test binary overrides it in an init()
@@ -48,6 +56,7 @@ type broker struct {
 	sessions *session.Manager
 	logger   *logging.Logger
 	confirm  brokerConfirm
+	trust    trustFunc
 	home     string
 	label    string
 
@@ -194,10 +203,11 @@ func (b *broker) flush() {
 	b.prompting = true
 	b.waiters = rest
 	confirm := b.confirm
+	trust := b.trust
 	b.mu.Unlock()
 
 	denyAll(denied)
-	b.decide(group, lca, confirm)
+	b.decide(group, lca, confirm, trust)
 
 	b.mu.Lock()
 	b.prompting = false
@@ -207,11 +217,27 @@ func (b *broker) flush() {
 
 // decide runs the native prompt (outside the lock) and resolves the group, plus
 // any waiter parked during the prompt that the grant now covers.
-func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm) {
-	title, msg := b.dialogText(lca)
+func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm, trust trustFunc) {
+	// Resolve the folder we are about to name and to grant, so the dialog, the log,
+	// the tray, and the installed capability all agree on one directory. Before
+	// this, a symlinked folder was named by the alias the page used and granted by
+	// its real target, so the user approved one name and a different folder opened.
+	//
+	// This runs AFTER the decision to prompt, which was made on the lexical path
+	// and must stay that way: resolving before it would let a path that fails to
+	// resolve answer differently from one that succeeds, which is exactly the
+	// existence oracle this design closes. Resolving here changes only WHAT we name
+	// and grant, never WHETHER we ask. A folder that does not resolve keeps its
+	// lexical name in the dialog and fails closed on Allow.
+	grantPath := lca
+	if resolved, rErr := filepath.EvalSymlinks(lca); rErr == nil {
+		grantPath = filepath.Clean(resolved)
+	}
+
+	title, msg := b.dialogText(grantPath)
 	choice, err := confirm(title, msg)
 	if err != nil {
-		b.logger.Printf("broker: confirm error for %s: %v", lca, err)
+		b.logger.Printf("broker: confirm error for %s: %v", grantPath, err)
 		choice = platform.ConfirmDeny
 	}
 
@@ -221,23 +247,54 @@ func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm) 
 		return
 	}
 
-	persisted := choice == platform.ConfirmAllowAlways
-	if gErr := b.sessions.GrantReadRoot(lca, persisted); gErr != nil {
-		b.logger.Printf("broker: grant %s failed: %v", lca, gErr)
+	// GrantCanonicalRoot still re-validates home containment, hidden components,
+	// and the guard against the resolved path, so a symlink pointing into the
+	// config tree or outside home is refused here even though it was named in a
+	// prompt the user answered.
+	if gErr := b.sessions.GrantCanonicalRoot(grantPath); gErr != nil {
+		b.logger.Printf("broker: grant %s failed: %v", grantPath, gErr)
 		b.suppress(lca)
 		denyAll(group)
 		return
 	}
-	b.logger.Printf("broker: granted read access to %s (persisted=%v)", lca, persisted)
+	b.logger.Printf("broker: granted read access to %s", grantPath)
 
+	// Wake the group before any durable-trust work. The read root is installed, so
+	// the requests can proceed now; making them wait on a config write or a
+	// notification only burns their remaining park deadline and can 403 a request
+	// that was already allowed.
 	for _, w := range group {
 		w.ch <- true
 	}
-	// Wake anything parked during the prompt that the new root now authorizes.
+
+	// The durable half of "Trust this folder". The read root above is installed
+	// either way, so the page works even when this is refused: the folder simply
+	// asks again next launch. Trust is deliberately the second step, never a
+	// replacement for the grant, because a trusted folder only seeds sites whose
+	// opened file lives inside it, and the folder in this dialog is often a cousin
+	// of the opened page rather than an ancestor of it.
+	if choice == platform.ConfirmTrustFolder {
+		switch {
+		case trust == nil:
+			b.logger.Printf("broker: no trust hook wired, %s is granted for this session only", grantPath)
+		default:
+			if tErr := trust(grantPath); tErr != nil {
+				b.logger.Printf("broker: could not trust %s: %v", grantPath, tErr)
+			} else {
+				b.logger.Printf("broker: trusted folder added from prompt: %s", grantPath)
+			}
+		}
+	}
+
+	// Wake anything parked during the prompt that the new root now authorizes. The
+	// resolving form of that check is only needed when the grant landed somewhere
+	// other than the name the waiters used, so the ordinary unsymlinked case keeps
+	// a filesystem call off the broker lock.
+	aliased := grantPath != lca
 	b.mu.Lock()
 	var remaining, freed []*parkWaiter
 	for _, w := range b.waiters {
-		if _, _, ok := b.sessions.AssetRoot(w.path); ok {
+		if b.authorizedNow(w.path, aliased) {
 			freed = append(freed, w)
 		} else {
 			remaining = append(remaining, w)
@@ -255,7 +312,7 @@ func (b *broker) dialogText(lca string) (string, string) {
 	if who == "" {
 		who = "A page you opened in HTML Clay"
 	}
-	msg := fmt.Sprintf("%s is trying to read files in:\n\n%s\n\nAllow this page read-only access to that folder and everything inside it?", who, lca)
+	msg := fmt.Sprintf("%s is trying to read files in:\n\n%s\n\nAllow read-only access to that folder and everything inside it?", who, lca)
 	return "HTML Clay", msg
 }
 
@@ -272,6 +329,28 @@ func (b *broker) isSuppressedLocked(candidate string) bool {
 		}
 	}
 	return false
+}
+
+// authorizedNow reports whether candidate is now covered by some read root. With
+// resolve set it also tests the resolved path, so a grant installed under a
+// symlink's real name still frees waiters that asked for it under the alias. The
+// caller sets it only when the grant landed on a different path than the waiters
+// named, which keeps EvalSymlinks off the broker lock the rest of the time. Only
+// ever called after the user has already answered a prompt, so the filesystem
+// access here cannot influence whether anything is asked.
+func (b *broker) authorizedNow(candidate string, resolve bool) bool {
+	if _, _, ok := b.sessions.AssetRoot(candidate); ok {
+		return true
+	}
+	if !resolve {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return false
+	}
+	_, _, ok := b.sessions.AssetRoot(filepath.Clean(resolved))
+	return ok
 }
 
 func (b *broker) removeWaiter(w *parkWaiter) {

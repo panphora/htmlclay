@@ -47,7 +47,11 @@ func TestHostValidationAccepts(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(w, req)
 
-	if w.Code == http.StatusForbidden {
+	// A valid host reaches the handler, where this out-of-scope path draws the read
+	// gate's own fixed 403 (tagged with X-HTMLClay-Error). Only an untagged 403 is
+	// the middleware's rejection. The old expectation of any non-403 relied on a
+	// missing path short-circuiting to 404, which was the existence oracle.
+	if w.Code == http.StatusForbidden && w.Header().Get("X-HTMLClay-Error") == "" {
 		t.Error("should not be forbidden for valid host")
 	}
 }

@@ -115,7 +115,7 @@ func TestBrokerSuppressesAfterDeny(t *testing.T) {
 func TestBrokerNeverPromptsForHome(t *testing.T) {
 	mgr, home := brokerManager(t)
 	var prompts int32
-	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmAllowAlways, &prompts))
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
 
 	if b.await(context.Background(), filepath.Join(home, "loose.txt")) {
 		t.Error("a home-root sibling must be denied")
@@ -189,7 +189,7 @@ func TestBrokerGuardVetoNeverPrompts(t *testing.T) {
 		return session.EqualOrUnder(dir, forbidden) || session.EqualOrUnder(forbidden, dir)
 	})
 	var prompts int32
-	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmAllowAlways, &prompts))
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
 
 	// The asset's own folder is the guarded config dir, so the LCA is guard-vetoed and
 	// the broker must deny without ever prompting.
@@ -353,6 +353,86 @@ func TestBrokerWakesWaiterParkedDuringPrompt(t *testing.T) {
 	}
 	if !<-second {
 		t.Error("a waiter parked during the prompt, covered by the grant, should be woken")
+	}
+}
+
+// The trust-folder choice must do both halves: install the session read root so the
+// current request resumes, and hand the granted folder to the trust hook so future
+// opens from inside it stop asking.
+func TestTrustFolderChoiceGrantsAndTrusts(t *testing.T) {
+	mgr, home := brokerManager(t)
+	asset := filepath.Join(home, "proj", "app", "x.js")
+	mustWrite(t, asset)
+
+	var prompts int32
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
+	// The waiter is woken before the trust hook runs, so the trusted folder arrives
+	// on its own goroutine and is collected through a channel.
+	trusted := make(chan string, 4)
+	b.trust = func(dir string) error {
+		trusted <- dir
+		return nil
+	}
+
+	if !b.await(context.Background(), asset) {
+		t.Fatal("the trust-folder choice must allow the read")
+	}
+	root, _, ok := mgr.AssetRoot(asset)
+	if !ok {
+		t.Fatal("the trust-folder choice must install the read root")
+	}
+	select {
+	case dir := <-trusted:
+		if dir != root {
+			t.Errorf("trust must be handed the granted folder: got %q, want %q", dir, root)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the trust-folder choice must hand the folder to the trust hook")
+	}
+	if extra := len(trusted); extra != 0 {
+		t.Errorf("expected exactly one trust call, got %d extra", extra)
+	}
+}
+
+// Trust is the second step, never a replacement for the grant: a trust hook that
+// fails still leaves the waiter resumed and the read root installed, so the page
+// works and the folder simply asks again next launch.
+func TestTrustFolderChoiceStillGrantsWhenTrustFails(t *testing.T) {
+	mgr, home := brokerManager(t)
+	asset := filepath.Join(home, "proj", "app", "x.js")
+	mustWrite(t, asset)
+
+	var prompts int32
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
+	b.trust = func(string) error { return fmt.Errorf("refused") }
+
+	if !b.await(context.Background(), asset) {
+		t.Fatal("a failed trust must not deny the waiter")
+	}
+	if _, _, ok := mgr.AssetRoot(asset); !ok {
+		t.Error("a failed trust must not undo the read root")
+	}
+}
+
+// Allow Once is the session-only choice: it grants without touching the trusted list.
+func TestAllowOnceDoesNotTrust(t *testing.T) {
+	mgr, home := brokerManager(t)
+	asset := filepath.Join(home, "proj", "app", "x.js")
+	mustWrite(t, asset)
+
+	var prompts int32
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmAllowOnce, &prompts))
+	var trustCalls int32
+	b.trust = func(string) error {
+		atomic.AddInt32(&trustCalls, 1)
+		return nil
+	}
+
+	if !b.await(context.Background(), asset) {
+		t.Fatal("allow-once must allow the read")
+	}
+	if got := atomic.LoadInt32(&trustCalls); got != 0 {
+		t.Errorf("allow-once must never trust the folder: got %d trust calls", got)
 	}
 }
 

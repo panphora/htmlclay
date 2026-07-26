@@ -16,15 +16,15 @@ import (
 func confirmDialog(title, message string) (ConfirmChoice, error) {
 	dialog := "display dialog " + appleScriptString(message) +
 		" with title " + appleScriptString(title) +
-		` buttons {"Deny", "Allow Once", "Always Allow"} default button "Deny" with icon caution giving up after 120`
+		` buttons {"Deny", "Allow Once", "Trust this folder"} default button "Deny" with icon caution giving up after 120`
 	out, err := exec.Command("osascript", "-e", "activate me", "-e", dialog).CombinedOutput()
 	if err != nil {
 		return ConfirmDeny, err
 	}
 	s := string(out)
 	switch {
-	case strings.Contains(s, "Always Allow"):
-		return ConfirmAllowAlways, nil
+	case strings.Contains(s, "Trust this folder"):
+		return ConfirmTrustFolder, nil
 	case strings.Contains(s, "Allow Once"):
 		return ConfirmAllowOnce, nil
 	default:

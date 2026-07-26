@@ -106,21 +106,38 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolved, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		http.Error(w, "Not Found", http.StatusNotFound)
-		return
-	}
-	absPath = filepath.Clean(resolved)
-
-	// Backups are internal state and are never served on the app's own origin.
-	// The config directory sits under the user's home on every platform, so this
-	// path would otherwise be reachable from a page opened next to it.
+	// Backups are internal state and are never served on the app's own origin, and
+	// the config directory sits under the user's home on every platform. This is a
+	// cheap pre-filter rather than the load-bearing check: the path it judges is an
+	// ancestor of the one serveAsset judges and isInternal is downward-closed, so
+	// everything caught here is caught again below, by serveAsset's own lexical
+	// check for an unregistered path or by readRegisteredFile's descriptor guard
+	// for a registered one. Keep it lexical: isInternal is pure string work, so the
+	// refusal reads the same whether or not anything is at that path.
 	if s.isInternal(absPath) {
 		s.logger.Printf("Denying request for internal path %s", absPath)
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
+
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		// Unresolvable, which normally means it is not there. Answering 404 here
+		// would answer BEFORE the scope check and make this an existence oracle: a
+		// missing out-of-scope path would 404 instantly while a present one parked
+		// and 403'd, which enumerates the home tree. Hand it to serveAsset, which
+		// classifies scope on the lexical path and parks either way.
+		s.serveAsset(w, r, r.PathValue("path"))
+		return
+	}
+	absPath = filepath.Clean(resolved)
+
+	// Internal-ness is deliberately NOT answered here. Deciding it after resolving
+	// but before serveAsset's scope gate made a path that resolves into the config
+	// or versions tree answer 404 instantly while a nonexistent path parked and
+	// 403'd, which is the existence oracle again. A registered file is protected by
+	// readRegisteredFile's descriptor guard below; anything else falls through to
+	// serveAsset, which re-checks internal-ness AFTER the scope gate.
 
 	f, ok := s.sessions.LookupByPath(absPath)
 	if !ok {
@@ -244,6 +261,48 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 		return
 	}
 
+	// Everything from here down to the scope check is decided on the LEXICAL path,
+	// with no filesystem call, so none of it can reveal whether the requested file
+	// exists. Internal and hidden paths are refused outright; both tests are pure
+	// string work and name locations a page can already infer.
+	if s.isInternal(absPath) {
+		s.logger.Printf("Denying request for internal path %s", absPath)
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	// Hidden files and directories are never served as assets and never prompt, so
+	// a granted folder cannot expose its .git, .env, or .ssh. A file the user
+	// explicitly opened is served by handleServeFile above, never here.
+	if session.HasHiddenComponent(s.sessions.HomeDir(), absPath) {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	// Scope is classified before any existence check, so an out-of-scope read ends
+	// in the same fixed 403 whether or not anything is at that path. Resolving
+	// first made a missing file a fast 404 and a present one a 403, which let a
+	// page enumerate the whole non-hidden home tree without being granted anything.
+	//
+	// This decides only whether to ASK. It never authorizes a read: that stays with
+	// OpenAsset's held os.Root capability and the RealPath guard below, both of
+	// which judge the path the descriptor actually landed on, so a lexical path
+	// that looks in scope but resolves elsewhere is still refused.
+	//
+	// Do NOT add an existence check before the prompt, here or in the broker.
+	// Prompting only for paths that exist rebuilds this oracle at directory
+	// granularity: a missing folder would 403 instantly while a present one held
+	// until the user answered.
+	if _, _, inScope := s.sessions.AssetRoot(absPath); !inScope {
+		// Hold the request open and ask the user to widen reads; on Allow the same
+		// request resumes with no reload, on Deny a fixed 403.
+		rc := http.NewResponseController(w)
+		_ = rc.SetWriteDeadline(time.Time{})
+		if !s.broker.await(r.Context(), absPath) {
+			write403(w)
+			return
+		}
+	}
+
 	resolved, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
@@ -251,17 +310,13 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	}
 	absPath = filepath.Clean(resolved)
 
-	// serveAsset resolves the untruncated request path, so the internal-directory
-	// denial is rechecked here rather than inherited from the caller.
+	// Re-checked on the resolved path: the lexical tests above cannot see a symlink
+	// pointing into the versions/config tree or into a hidden directory.
 	if s.isInternal(absPath) {
 		s.logger.Printf("Denying request for internal path %s", absPath)
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-
-	// Hidden files and directories are never served as assets and never prompt,
-	// so a granted folder cannot expose its .git, .env, or .ssh. A file the user
-	// explicitly opened is served by handleServeFile above, never here.
 	if session.HasHiddenComponent(s.sessions.HomeDir(), absPath) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
@@ -269,19 +324,12 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 
 	file, authorized, err := s.sessions.OpenAsset(absPath)
 	if !authorized {
-		// Out of scope. Hold the request open and ask the user to widen reads;
-		// on Allow the same request resumes with no reload, on Deny a fixed 403.
-		rc := http.NewResponseController(w)
-		_ = rc.SetWriteDeadline(time.Time{})
-		if !s.broker.await(r.Context(), absPath) {
-			write403(w)
-			return
-		}
-		file, authorized, err = s.sessions.OpenAsset(absPath)
-		if !authorized {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
+		// The lexical path was in scope, or was just granted, but the resolved one
+		// is covered by no root: a symlink leaving its root, or a root revoked
+		// mid-request. Refuse rather than prompt to grant whatever the link pointed
+		// at.
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
 	}
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
@@ -342,7 +390,8 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 // write403 is the fixed response for a denied out-of-scope read. It carries no
 // path and no proposed root: those appear only in the native dialog and the
 // tray, never in a body a page can read. Classified before any existence check,
-// so it is not an oracle for which out-of-scope files exist.
+// so it is not an oracle for which out-of-scope files exist. The classification
+// above it is lexical, so a denial cannot be used to test whether a file exists.
 func write403(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.Header().Set("Cache-Control", "no-store")
