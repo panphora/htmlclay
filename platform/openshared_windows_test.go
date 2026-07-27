@@ -38,9 +38,32 @@ func TestPlainOpenBlocksRename(t *testing.T) {
 	}
 }
 
-// The fix: the same handle from OpenShared must let the replace through, because
-// htmlclay holds one of these on every file it serves while saving to it.
-func TestOpenSharedAllowsRename(t *testing.T) {
+// What OpenShared actually buys: the file can still be deleted while we hold it.
+func TestOpenSharedAllowsDelete(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.html")
+	if err := os.WriteFile(target, []byte("one"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	held, err := platform.OpenShared(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+
+	if err := os.Remove(target); err != nil {
+		t.Fatalf("a shared handle must not block deletion: %v", err)
+	}
+}
+
+// And what it does NOT buy, which is the part that cost a release run to learn:
+// sharing mode does not make a rename-over-open succeed. MoveFileEx with
+// MOVEFILE_REPLACE_EXISTING is refused while any handle is open, however
+// permissive. Anything that must survive an atomic replace has to not hold a
+// handle at all. Kept as a failing-if-it-ever-changes pin: if Windows starts
+// allowing this, the live-sync anchor can go back to holding its descriptor.
+func TestOpenSharedStillBlocksRenameOver(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.html")
 	tmp := filepath.Join(dir, "tmp.html")
@@ -57,14 +80,7 @@ func TestOpenSharedAllowsRename(t *testing.T) {
 	}
 	defer held.Close()
 
-	if err := os.Rename(tmp, target); err != nil {
-		t.Fatalf("a shared handle must not block the replace: %v", err)
-	}
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "two" {
-		t.Fatalf("target holds %q, want the replacement", got)
+	if err := os.Rename(tmp, target); err == nil {
+		t.Fatal("Windows now allows rename over an open shared handle; the anchor may hold a descriptor again")
 	}
 }
