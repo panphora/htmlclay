@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/panphora/htmlclay/htmlutil"
+	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/session"
 )
 
@@ -425,7 +426,7 @@ func (h *hub) ensureIncarnationLocked(path string) *incarnation {
 // Replacement re-anchors first, so the next observe sees the same file.
 func (h *hub) observeIdentityLocked(path string) *incarnation {
 	inc := h.ensureIncarnationLocked(path)
-	cur, err := os.Open(path)
+	cur, err := platform.OpenShared(path)
 	if err != nil {
 		return inc
 	}
@@ -467,7 +468,7 @@ func (h *hub) acceptServerReplacement(path string) {
 	if !ok {
 		return
 	}
-	cur, err := os.Open(path)
+	cur, err := platform.OpenShared(path)
 	if err != nil {
 		return
 	}
