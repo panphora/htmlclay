@@ -19,6 +19,25 @@ type watchHarness struct {
 	saved *subscriber
 }
 
+// removeWatched deletes a file the watcher is actively polling.
+//
+// These tests deliberately run the watcher at a 10ms poll, and Windows refuses to
+// delete a file another handle has open. The watcher's read lasts microseconds, so
+// retrying clears it. Unix deletes on the first try and never sleeps.
+func removeWatched(t *testing.T, path string) {
+	t.Helper()
+	var err error
+	for _, backoff := range []time.Duration{0, 5, 15, 40, 100} {
+		if backoff > 0 {
+			time.Sleep(backoff * time.Millisecond)
+		}
+		if err = os.Remove(path); err == nil {
+			return
+		}
+	}
+	t.Fatal(err)
+}
+
 func setupWatchTest(t *testing.T, initial string) *watchHarness {
 	t.Helper()
 	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
@@ -140,9 +159,7 @@ func TestWatcherDeletionIsNotAChangeEvent(t *testing.T) {
 	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
 	h.file.Unlock()
 
-	if err := os.Remove(h.file.AbsPath); err != nil {
-		t.Fatal(err)
-	}
+	removeWatched(t, h.file.AbsPath)
 
 	expectNoFrame(t, h.live, 500*time.Millisecond)
 	expectNoFrame(t, h.saved, 10*time.Millisecond)
@@ -170,7 +187,7 @@ func TestWatcherAtomicReplacementWithSameContentIsSilent(t *testing.T) {
 	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
 	h.file.Unlock()
 
-	os.Remove(h.file.AbsPath)
+	removeWatched(t, h.file.AbsPath)
 	if err := os.WriteFile(h.file.AbsPath, []byte(initial), 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -683,6 +683,29 @@ func isJSONContentType(ct string) bool {
 	return mediaType == "application/json"
 }
 
+// replaceFile renames tmp over target, retrying briefly before giving up.
+//
+// Windows will not replace a file that another handle currently has open, and Go
+// opens files without FILE_SHARE_DELETE, so any concurrent reader blocks the
+// rename. htmlclay supplies its own reader: the watcher re-reads the served file
+// every 250ms to notice outside edits, so a save that lands during that read
+// fails with "Access is denied" and the user is told their save did not work.
+// The read itself lasts microseconds, so the first backoff clears it in practice.
+//
+// On POSIX the first attempt always succeeds and this never sleeps.
+func replaceFile(tmpPath, targetPath string) error {
+	var err error
+	for _, backoff := range []time.Duration{0, 5, 15, 40, 100} {
+		if backoff > 0 {
+			time.Sleep(backoff * time.Millisecond)
+		}
+		if err = os.Rename(tmpPath, targetPath); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
 func atomicWriteFile(targetPath string, data []byte) error {
 	dir := filepath.Dir(targetPath)
 	tmp, err := os.CreateTemp(dir, ".htmlclay-save-*")
@@ -713,7 +736,7 @@ func atomicWriteFile(targetPath string, data []byte) error {
 		os.Chmod(tmpPath, info.Mode())
 	}
 
-	if err := os.Rename(tmpPath, targetPath); err != nil {
+	if err := replaceFile(tmpPath, targetPath); err != nil {
 		return fmt.Errorf("rename to target: %w", err)
 	}
 
