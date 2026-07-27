@@ -24,7 +24,7 @@ func setupHandlerTest(t *testing.T) (*Server, *session.File, string) {
 	content := "<!DOCTYPE html>\n<html lang=\"en\">\n<head><title>Test</title></head>\n<body><p>Hello</p></body>\n</html>"
 	os.WriteFile(filePath, []byte(content), 0644)
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, err := mgr.Register(filePath)
 	if err != nil {
 		t.Fatalf("register error: %v", err)
@@ -152,7 +152,7 @@ func TestReadRouteRefusesSymlinkIntoInternal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, err := mgr.Register(page)
 	if err != nil {
 		t.Fatalf("register: %v", err)
@@ -344,7 +344,7 @@ func TestServeAssetOutsideOpenedDirs(t *testing.T) {
 	os.WriteFile(pagePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 	os.WriteFile(filepath.Join(homeDir, "other", "secret.txt"), []byte("secret"), 0644)
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	if _, err := mgr.Register(pagePath); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestServeAssetSymlinkEscape(t *testing.T) {
 	os.WriteFile(secret, []byte("secret"), 0644)
 	os.Symlink(secret, filepath.Join(homeDir, "site", "link.txt"))
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	if _, err := mgr.Register(pagePath); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestServeAssetSymlinkEscapeOutsideHomeRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	if _, err := mgr.Register(pagePath); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestVersionsTreeRefusedOnServePath(t *testing.T) {
 	}
 	store := versions.New(storeDir)
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	if _, err := mgr.Register(pagePath); err != nil { // opened root = home/site
 		t.Fatalf("register: %v", err)
 	}
@@ -609,7 +609,7 @@ func TestServeOpenedHTMLFileNotMutated(t *testing.T) {
 	content := "<!DOCTYPE html>\n<html><body>hi</body></html>"
 	os.WriteFile(pagePath, []byte(content), 0644)
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, err := mgr.Register(pagePath)
 	if err != nil {
 		t.Fatalf("register: %v", err)

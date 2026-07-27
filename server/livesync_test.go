@@ -214,7 +214,7 @@ func setupLiveSyncTest(t *testing.T) (*Server, *session.File) {
 	filePath := filepath.Join(homeDir, "page.htmlclay")
 	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, err := mgr.Register(filePath)
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func TestSSEStreamFlushesOverARealConnection(t *testing.T) {
 	filePath := filepath.Join(homeDir, "page.htmlclay")
 	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, err := mgr.Register(filePath)
 	if err != nil {
 		t.Fatal(err)
@@ -472,7 +472,7 @@ func TestShutdownClosesActiveStreamsPromptly(t *testing.T) {
 	filePath := filepath.Join(homeDir, "page.htmlclay")
 	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, _ := mgr.Register(filePath)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -526,7 +526,7 @@ func TestLiveSyncRejectsSymlinkEscape(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	if _, err := mgr.Register(pagePath); err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +573,7 @@ func TestClosedStreamStopsTheWatcher(t *testing.T) {
 	filePath := filepath.Join(homeDir, "page.htmlclay")
 	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, _ := mgr.Register(filePath)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

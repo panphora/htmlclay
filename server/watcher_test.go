@@ -27,7 +27,7 @@ func setupWatchTest(t *testing.T, initial string) *watchHarness {
 		t.Fatal(err)
 	}
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, err := mgr.Register(filePath)
 	if err != nil {
 		t.Fatal(err)

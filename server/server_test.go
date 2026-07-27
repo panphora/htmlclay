@@ -12,8 +12,22 @@ import (
 	"github.com/panphora/htmlclay/versions"
 )
 
+// newTestManager builds a Manager whose held read-root handles are closed when the
+// test ends. Windows refuses to remove a directory while a handle to it is open, so
+// a Manager left holding its os.Root fails the t.TempDir cleanup and marks the test
+// failed even though every assertion passed. POSIX unlink hides this everywhere else,
+// which is why it only ever surfaced on the Windows CI runner.
+//
+// Construct managers in tests through this, not session.NewManagerWithHome.
+func newTestManager(t *testing.T, home string) *session.Manager {
+	t.Helper()
+	m := session.NewManagerWithHome(home)
+	t.Cleanup(m.RevokeAll)
+	return m
+}
+
 func TestHostValidationMiddleware(t *testing.T) {
-	mgr := session.NewManagerWithHome(t.TempDir())
+	mgr := newTestManager(t, t.TempDir())
 	logger := logging.NewStdout()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -33,7 +47,7 @@ func TestHostValidationMiddleware(t *testing.T) {
 }
 
 func TestHostValidationAccepts(t *testing.T) {
-	mgr := session.NewManagerWithHome(t.TempDir())
+	mgr := newTestManager(t, t.TempDir())
 	logger := logging.NewStdout()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

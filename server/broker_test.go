@@ -44,7 +44,7 @@ func countingConfirm(choice platform.ConfirmChoice, n *int32) brokerConfirm {
 func brokerManager(t *testing.T) (*session.Manager, string) {
 	t.Helper()
 	home, _ := filepath.EvalSymlinks(t.TempDir())
-	return session.NewManagerWithHome(home), home
+	return newTestManager(t, home), home
 }
 
 // Many out-of-scope requests under one parent, arriving together, must produce a

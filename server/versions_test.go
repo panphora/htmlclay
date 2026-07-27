@@ -40,7 +40,7 @@ func setupFileTest(t *testing.T, name, content string) *fileFixture {
 		t.Fatal(err)
 	}
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	f, err := mgr.Register(filePath)
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func (fx *fileFixture) reopen(t *testing.T, relPath string) *fileFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := session.NewManagerWithHome(fx.home)
+	mgr := newTestManager(t, fx.home)
 	f, err := mgr.Register(filepath.Join(fx.home, relPath))
 	if err != nil {
 		t.Fatal(err)
@@ -666,7 +666,7 @@ func TestInternalVersionsDirectoryIsDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr := session.NewManagerWithHome(homeDir)
+	mgr := newTestManager(t, homeDir)
 	if _, err := mgr.Register(pagePath); err != nil {
 		t.Fatal(err)
 	}

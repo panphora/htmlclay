@@ -251,7 +251,7 @@ func TestConcurrentFirstOpensOfOneIDForkDistinctIdentities(t *testing.T) {
 			}
 		}
 
-		mgr := session.NewManagerWithHome(homeDir)
+		mgr := newTestManager(t, homeDir)
 		files := make([]*session.File, 0, len(paths))
 		for _, p := range paths {
 			f, err := mgr.Register(p)

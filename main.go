@@ -94,9 +94,18 @@ func (s *site) start(logger *logging.Logger) {
 	}()
 }
 
+// close releases everything the site holds, including the read-root capability
+// handles. Same order as the graceful path below: the server goes first, so no
+// request can still be reading through a handle when RevokeAll closes it.
+//
+// Revoking matters even though the discard paths that call this have registered
+// nothing, because Windows refuses to remove a directory while a handle to it is
+// open. A site that closed its listener but kept its os.Root would pin the served
+// folder against rename and delete. POSIX unlink hides this on macOS and Linux.
 func (s *site) close() {
 	s.srv.Close()
 	s.ln.Close()
+	s.sessions.RevokeAll()
 }
 
 type app struct {

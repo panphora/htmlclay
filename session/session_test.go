@@ -10,6 +10,20 @@ import (
 	"testing"
 )
 
+// newTestManager builds a Manager whose held read-root handles are closed when the
+// test ends. Windows refuses to remove a directory while a handle to it is open, so
+// a Manager left holding its os.Root fails the t.TempDir cleanup and marks the test
+// failed even though every assertion passed. POSIX unlink hides this everywhere else,
+// which is why it only ever surfaced on the Windows CI runner.
+//
+// Construct managers in tests through this, not NewManagerWithHome.
+func newTestManager(t *testing.T, home string) *Manager {
+	t.Helper()
+	m := NewManagerWithHome(home)
+	t.Cleanup(m.RevokeAll)
+	return m
+}
+
 func setupManager(t *testing.T) (*Manager, string) {
 	t.Helper()
 	homeDir := t.TempDir()
@@ -19,7 +33,7 @@ func setupManager(t *testing.T) (*Manager, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManagerWithHome(resolved)
+	mgr := newTestManager(t, resolved)
 	return mgr, resolved
 }
 
@@ -215,7 +229,7 @@ func TestAssetRoot(t *testing.T) {
 	outsidePath := filepath.Join(home, "other", "secret.txt")
 	os.WriteFile(outsidePath, []byte("x"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if _, _, ok := m.AssetRoot(assetPath); ok {
 		t.Fatal("no files opened, nothing should be allowed")
 	}
@@ -246,7 +260,7 @@ func TestHomeDirNeverBecomesAssetRoot(t *testing.T) {
 	sibling := filepath.Join(home, "secret.txt")
 	os.WriteFile(sibling, []byte("secret"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if _, err := m.Register(pagePath); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -261,7 +275,7 @@ func TestGrantReadRoot(t *testing.T) {
 	asset := filepath.Join(home, "review", "redpen.js")
 	os.WriteFile(asset, []byte("//"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if _, _, ok := m.AssetRoot(asset); ok {
 		t.Fatal("nothing granted yet")
 	}
@@ -284,7 +298,7 @@ func TestGrantReadRootRejects(t *testing.T) {
 	os.MkdirAll(filepath.Join(home, ".ssh"), 0755)
 	os.MkdirAll(filepath.Join(home, "config", "versions"), 0755)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	m.SetGuard(func(dir string) bool { return dir == filepath.Join(home, "config", "versions") })
 
 	if err := m.GrantReadRoot(home); err == nil {
@@ -312,7 +326,7 @@ func TestRevokeGrantKeepsOpenedCapability(t *testing.T) {
 	asset := filepath.Join(home, "site", "style.css")
 	os.WriteFile(asset, []byte("body{}"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if _, err := m.Register(page); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -347,7 +361,7 @@ func TestInstallTrustedRoot(t *testing.T) {
 	asset := filepath.Join(home, "sites", "shared", "lib.js")
 	os.WriteFile(asset, []byte("//"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	dir := filepath.Join(home, "sites")
 	if err := m.InstallTrustedRoot(dir); err != nil {
 		t.Fatalf("trust: %v", err)
@@ -374,7 +388,7 @@ func TestInstallTrustedRootRejects(t *testing.T) {
 	os.MkdirAll(filepath.Join(home, ".hidden"), 0755)
 	os.MkdirAll(filepath.Join(home, "config", "versions"), 0755)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	m.SetGuard(func(dir string) bool { return dir == filepath.Join(home, "config", "versions") })
 
 	if err := m.InstallTrustedRoot(home); err == nil {
@@ -400,7 +414,7 @@ func TestRevokeGrantKeepsTrustedCapability(t *testing.T) {
 	asset := filepath.Join(dir, "x.js")
 	os.WriteFile(asset, []byte("//"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if err := m.InstallTrustedRoot(dir); err != nil {
 		t.Fatalf("trust: %v", err)
 	}
@@ -420,7 +434,7 @@ func TestAssetRootOpenedReportsProvenance(t *testing.T) {
 	page := filepath.Join(home, "opened", "page.html")
 	os.WriteFile(page, []byte("<html></html>"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if _, err := m.Register(page); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -446,7 +460,7 @@ func TestReadRootsReportsProvenance(t *testing.T) {
 	page := filepath.Join(home, "opened", "page.html")
 	os.WriteFile(page, []byte("<html></html>"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if _, err := m.Register(page); err != nil { // opened root = home/opened
 		t.Fatalf("register: %v", err)
 	}
@@ -509,7 +523,7 @@ func TestReadThroughPinnedRootContainsComponentSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if err := m.GrantReadRoot(root); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
@@ -569,7 +583,7 @@ func TestReadThroughPinnedRootSurvivesRootReplacedBySymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if err := m.GrantReadRoot(root); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
@@ -628,7 +642,7 @@ func TestAssetRootMostSpecific(t *testing.T) {
 	asset := filepath.Join(home, "site", "img", "logo.png")
 	os.WriteFile(asset, []byte("png"), 0644)
 
-	m := NewManagerWithHome(home)
+	m := newTestManager(t, home)
 	if _, err := m.Register(page); err != nil { // opened root = home/site
 		t.Fatalf("register: %v", err)
 	}
