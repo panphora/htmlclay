@@ -125,20 +125,14 @@ type laneBucket struct {
 // incarnation is one generation of the file at a path. A new file at the same
 // path is a new incarnation and never inherits the old one's retained frames.
 //
-// anchorInfo is a value, and nothing here holds a descriptor. It used to: the
-// handle stayed open so a freed Unix inode could not be recycled into a
-// look-alike before the next comparison. That is illegal on Windows, which
-// refuses to rename over a file while any handle to it is open, whatever sharing
-// mode that handle asked for (platform/openshared_windows_test.go pins it). A
-// parked handle here therefore meant htmlclay could not save at all on Windows,
-// and neither could any other program the whole time we held it.
-//
-// Dropping the handle costs nothing on Windows, where os.SameFile compares a file
-// reference number already captured in the FileInfo. It does drop the Unix
-// anti-recycling guarantee, which platform.Anchor restores in the next commit.
+// The anchor answers "is this still the same file", and how it does that differs
+// by operating system in a way the hub deliberately knows nothing about: see
+// platform.Anchor. What matters here is that an anchor is owned. Whoever replaces
+// one closes the one it displaced, and the reaper closes the anchors of the
+// incarnations it drops.
 type incarnation struct {
 	generation int64
-	anchorInfo os.FileInfo
+	anchor     *platform.Anchor
 	lastTouch  time.Time
 	live       *laneBucket
 	saved      *laneBucket
@@ -329,10 +323,13 @@ func (h *hub) expire() {
 // seq the cursor frame should carry) plus the frames to replay. It never pushes
 // replay into the bounded live queue; the writer sends the returned slice first.
 func (h *hub) add(sub *subscriber) (baseline int64, replay [][]byte) {
+	probe := probeIdentity(sub.key)
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.expireLocked()
 	if h.closed {
+		probe.Close()
 		sub.stop()
 		return h.seq, nil
 	}
@@ -345,7 +342,7 @@ func (h *hub) add(sub *subscriber) (baseline int64, replay [][]byte) {
 
 	// Observe identity BEFORE selecting replay: a same-path B is recognized and
 	// rolls the generation before any A frame can be returned.
-	inc := h.observeIdentityLocked(sub.key)
+	inc := h.observeIdentityLocked(sub.key, probe)
 	from := h.resumePointLocked(inc, sub)
 
 	bucket := inc.bucket(sub.lane)
@@ -428,67 +425,106 @@ func (h *hub) ensureIncarnationLocked(path string) *incarnation {
 	return inc
 }
 
-// observeIdentityLocked compares the live file against the anchor and rolls the
-// generation on an external identity change, clearing the old buckets and
-// cursors. A server-authorized atomic write does not reach here: acceptServer
-// Replacement re-anchors first, so the next observe sees the same file.
-func (h *hub) observeIdentityLocked(path string) *incarnation {
-	inc := h.ensureIncarnationLocked(path)
-	cur, err := platform.OpenShared(path)
+// probeIdentity reads a file's identity off the disk, returning nil when the path
+// cannot be identified at all right now.
+//
+// Every caller does this BEFORE taking h.mu, because a stalled disk must not hold
+// up every subscriber on every other path. That is safe only because all four
+// probing entry points run under the per-file session.File lock, and exactly one
+// session.File exists per absolute path, so probe and install cannot be split by
+// another observation of the same file. Anything new that probes a path must hold
+// that lock too: without it a stale probe can be installed over a fresher anchor,
+// leaving the hub's idea of the file behind the disk's.
+func probeIdentity(path string) *platform.Anchor {
+	a, err := platform.NewAnchor(path)
 	if err != nil {
+		return nil
+	}
+	return a
+}
+
+// observeIdentityLocked compares probe against the incarnation's anchor and rolls
+// the generation when the file is no longer provably the one we retained frames
+// for, clearing the old buckets and cursors. It takes ownership of probe: it
+// either installs it or closes it.
+//
+// A failed probe against an incarnation we HAD identified rolls, because "I could
+// not read it" is not evidence that it did not change. That direction is chosen
+// deliberately: a needless roll costs a tab its replay buffer, while a missed one
+// paints a dead document's bytes into a page showing a live one. A failed probe
+// against a path we never identified changes nothing, since there is no
+// established identity for the retained frames to be wrong about, and rolling
+// forever on a filesystem that cannot answer would break resume outright.
+//
+// A server-authorized atomic write does not reach here as a change:
+// acceptServerReplacement re-anchors first, so the next observation either
+// matches or adopts.
+func (h *hub) observeIdentityLocked(path string, probe *platform.Anchor) *incarnation {
+	inc := h.ensureIncarnationLocked(path)
+	if inc.anchor.Same(probe) {
+		probe.Close()
 		return inc
 	}
-	info, serr := cur.Stat()
-	// Close before deciding anything. The identity we need is already in info, and
-	// holding the descriptor a moment longer than the read is what broke Windows.
-	cur.Close()
-	if serr != nil || !info.Mode().IsRegular() {
+	if inc.anchor == nil {
+		if probe != nil {
+			inc.anchor = probe
+			inc.lastTouch = h.clock()
+		}
 		return inc
 	}
-	if inc.anchorInfo == nil {
-		inc.anchorInfo = info
-		inc.lastTouch = h.clock()
-		return inc
-	}
-	if os.SameFile(inc.anchorInfo, info) {
-		return inc
-	}
-	// External replacement: roll to a new generation.
 	h.clearBucketsLocked(inc)
 	h.clearCursorsForPathLocked(path)
-	inc.anchorInfo = info
+	inc.anchor.Close()
+	inc.anchor = probe
 	inc.generation++
 	inc.lastTouch = h.clock()
 	return inc
 }
 
-// acceptServerReplacement re-anchors an existing incarnation to the file's
-// current inode without rolling the generation: save, id injection, clone fork
-// and restore are all changes to the same logical file. It never creates an
-// incarnation for a path with no live-sync interest, so it opens no descriptor
-// for a file nobody is streaming. Caller holds f.Lock.
+// acceptServerReplacement re-anchors an existing incarnation to the file that now
+// sits at the path, without rolling the generation: save, id injection, clone
+// fork and restore are all changes to the same logical file.
+//
+// A failed probe installs nil rather than keeping the old anchor. Keeping it
+// would leave the incarnation naming the file we just replaced, so the next
+// observation would find a mismatch and roll the generation on the tab's own
+// save, throwing away the replay buffer of the tab that made it. Nil means the
+// next observation adopts whatever is there, which is right: under f.Lock,
+// immediately after our own successful write, "could not read it" is a Windows
+// delete-pending window or a transient, not somebody else's replacement.
+//
+// The interest check runs first and on its own so a path nobody is streaming
+// costs one uncontended mutex and no disk access at all. The incarnation can
+// still be reaped between the two locks, which the second lookup handles.
+// Caller holds f.Lock.
 func (h *hub) acceptServerReplacement(path string) {
+	h.mu.Lock()
+	_, interested := h.incs[path]
+	h.mu.Unlock()
+	if !interested {
+		return
+	}
+	probe := probeIdentity(path)
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	inc, ok := h.incs[path]
 	if !ok {
+		probe.Close()
 		return
 	}
-	cur, err := platform.OpenShared(path)
-	if err != nil {
-		return
-	}
-	info, serr := cur.Stat()
-	cur.Close()
-	if serr != nil || !info.Mode().IsRegular() {
-		return
-	}
-	inc.anchorInfo = info
+	inc.anchor.Close()
+	inc.anchor = probe
 	inc.lastTouch = h.clock()
 }
 
 // markAbsent clears an incarnation's buffers when the watcher sees the file gone,
 // without emitting a deletion event.
+//
+// The anchor deliberately survives, which on Unix means the deleted file's blocks
+// are not reclaimed until the last tab disconnects. That is the price of the
+// anti-recycling guarantee: dropping the anchor here would free the inode for the
+// next file created, which is exactly the confusion it exists to prevent.
 func (h *hub) markAbsent(path string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -625,6 +661,7 @@ func (h *hub) reapIncarnationsLocked() {
 		if h.hasCursorLocked(path) {
 			continue
 		}
+		inc.anchor.Close()
 		delete(h.incs, path)
 	}
 
@@ -648,6 +685,7 @@ func (h *hub) reapIncarnationsLocked() {
 		victim := inactive[oldest]
 		h.clearBucketsLocked(victim.inc)
 		h.clearCursorsForPathLocked(victim.path)
+		victim.inc.anchor.Close()
 		delete(h.incs, victim.path)
 		inactive[oldest] = inactive[len(inactive)-1]
 		inactive = inactive[:len(inactive)-1]
@@ -842,10 +880,21 @@ func (h *hub) broadcastSaved(key, html, sender string) []*subscriber {
 // Sequence allocation and enqueue happen together under one lock so the watcher
 // and the relay leg share a single ordering.
 func (h *hub) publishExternalChange(key, msg, html string) []*subscriber {
+	probe := probeIdentity(key)
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.observeIdentityLocked(key)
+	// Shutdown closes the hub before it stops the watcher, so a poll already inside
+	// publish can arrive here afterwards. Without this it would recreate an
+	// incarnation in a hub nobody will ever reap again, and the anchor it installed
+	// would keep a descriptor open for the life of the process.
+	if h.closed {
+		probe.Close()
+		return nil
+	}
+
+	h.observeIdentityLocked(key, probe)
 
 	var evicted []*subscriber
 	nSeq := h.nextSeq()
@@ -889,7 +938,8 @@ func (h *hub) shutdown() {
 		}
 		delete(h.subs, key)
 	}
-	for path := range h.incs {
+	for path, inc := range h.incs {
+		inc.anchor.Close()
 		delete(h.incs, path)
 	}
 	h.cursors = make(map[string]*resumeCursor)

@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -605,16 +604,200 @@ func TestSaveSucceedsAfterAServerWriteWithNoSubscriber(t *testing.T) {
 	}
 }
 
-// Pin the shape, not just the behaviour. A reintroduced descriptor would sail
-// through a macOS run and break saves for every Windows user again, so assert
-// here that no field of an incarnation can hold one, wherever the suite runs.
-func TestIncarnationHoldsNoDescriptor(t *testing.T) {
-	typ := reflect.TypeOf(incarnation{})
-	handle := reflect.TypeOf((*os.File)(nil))
-	for i := 0; i < typ.NumField(); i++ {
-		if typ.Field(i).Type == handle {
-			t.Fatalf("incarnation.%s holds an open file: Windows cannot rename over a file while any handle to it is open, so a parked descriptor makes the file unsaveable", typ.Field(i).Name)
-		}
+// Retained frames belong to a document, not to a pathname. When something outside
+// htmlclay puts a different file at the path, a tab reconnecting with a
+// Last-Event-ID from the old one must be told nothing about it: replaying those
+// frames would paint a dead document's bytes into a page showing the new one.
+func TestExternalReplacementDropsTheOldDocumentsReplay(t *testing.T) {
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	path := filepath.Join(dir, "page.html")
+	if err := os.WriteFile(path, []byte("<html>one</html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHub("")
+	t.Cleanup(h.shutdown)
+
+	sub := newSubscriber(path, laneSaved)
+	sub.resumeID = "r1"
+	h.add(sub)
+	mark := h.seq
+	h.broadcastSaved(path, "<html>one</html>", "file-system")
+	h.remove(sub)
+
+	// Reconnecting while the file is untouched replays that frame. This half is
+	// here so the assertion below cannot pass for the boring reason.
+	same := newSubscriber(path, laneSaved)
+	same.resumeID = "r1"
+	same.lastEventID = mark
+	if _, replay := h.add(same); len(replay) != 1 {
+		t.Fatalf("an ordinary reconnect should replay the retained frame, got %d", len(replay))
+	}
+	h.remove(same)
+	generation := h.incs[path].generation
+
+	tmp := filepath.Join(dir, "page.html.tmp")
+	if err := os.WriteFile(tmp, []byte("<html>two</html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+
+	after := newSubscriber(path, laneSaved)
+	after.resumeID = "r1"
+	after.lastEventID = mark
+	_, replay := h.add(after)
+
+	if h.incs[path].generation == generation {
+		t.Fatal("a file replaced from outside did not roll the generation")
+	}
+	if len(replay) != 0 {
+		t.Fatalf("replayed %d frame(s) from the document that was replaced", len(replay))
+	}
+}
+
+// anchoredHub returns a hub watching one real file, with a subscriber connected
+// and one frame retained, which is the state every identity question is asked
+// from. mark is a Last-Event-ID that sits just below the retained frame.
+func anchoredHub(t *testing.T) (h *hub, path string, mark int64) {
+	t.Helper()
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	path = filepath.Join(dir, "page.html")
+	if err := os.WriteFile(path, []byte("<html>one</html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	h = newHub("")
+	t.Cleanup(h.shutdown)
+
+	sub := newSubscriber(path, laneSaved)
+	sub.resumeID = "r1"
+	h.add(sub)
+	mark = h.seq
+	h.broadcastSaved(path, "<html>one</html>", "file-system")
+	h.remove(sub)
+	return h, path, mark
+}
+
+func resume(t *testing.T, h *hub, path string, mark int64) (generation int64, replayed int) {
+	t.Helper()
+	sub := newSubscriber(path, laneSaved)
+	sub.resumeID = "r1"
+	sub.lastEventID = mark
+	_, replay := h.add(sub)
+	h.remove(sub)
+	return h.incs[path].generation, len(replay)
+}
+
+// The other side of the roll, and the one with teeth: htmlclay replacing the file
+// itself is the same document, so the tab that saved it must still be able to
+// resume. Without this, a regression that stopped re-anchoring would nuke every
+// connected tab's replay on every single save and no test would notice.
+func TestServerReplacementKeepsTheGenerationAndTheReplay(t *testing.T) {
+	h, path, mark := anchoredHub(t)
+	before := h.incs[path].generation
+
+	writeThroughATempFile(t, path, "<html>two</html>")
+	h.acceptServerReplacement(path)
+
+	generation, replayed := resume(t, h, path, mark)
+	if generation != before {
+		t.Fatalf("our own save rolled the generation from %d to %d", before, generation)
+	}
+	if replayed != 1 {
+		t.Fatalf("our own save cost the tab its replay buffer: %d frames", replayed)
+	}
+}
+
+// Reading identity back can fail on a file we just wrote, which on Windows is an
+// indexer or sync client holding a delete-pending window open. That must not be
+// mistaken for somebody else replacing the file: the anchor is dropped so the
+// next observation adopts, rather than kept so the next observation rolls.
+func TestServerReplacementSurvivesAFailedIdentityRead(t *testing.T) {
+	h, path, mark := anchoredHub(t)
+	before := h.incs[path].generation
+
+	writeThroughATempFile(t, path, "<html>two</html>")
+	moved := path + ".moved"
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatal(err)
+	}
+	h.acceptServerReplacement(path)
+	if err := os.Rename(moved, path); err != nil {
+		t.Fatal(err)
+	}
+
+	generation, replayed := resume(t, h, path, mark)
+	if generation != before {
+		t.Fatalf("an unreadable file rolled the generation from %d to %d on our own save", before, generation)
+	}
+	if replayed != 1 {
+		t.Fatalf("an unreadable file cost the tab its replay buffer: %d frames", replayed)
+	}
+}
+
+// Fail closed. Once a file has been identified, being unable to read it back is
+// not evidence that it is still the same file, and the retained frames are only
+// worth anything if it is.
+func TestAnUnreadableFileRollsRatherThanReplays(t *testing.T) {
+	h, path, mark := anchoredHub(t)
+	before := h.incs[path].generation
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	generation, replayed := resume(t, h, path, mark)
+	if generation == before {
+		t.Fatal("a file that could no longer be identified kept its generation")
+	}
+	if replayed != 0 {
+		t.Fatalf("replayed %d frame(s) for a file we can no longer identify", replayed)
+	}
+}
+
+// A path that has never been identified has nothing to protect, so observing it
+// must not roll on every look. Rolling there would break resume outright on any
+// filesystem that cannot answer an identity query.
+func TestAnUnidentifiablePathDoesNotRollOnEveryLook(t *testing.T) {
+	h := newHub("")
+	t.Cleanup(h.shutdown)
+	path := filepath.Join(t.TempDir(), "never-created.html")
+
+	first := newSubscriber(path, laneSaved)
+	h.add(first)
+	before := h.incs[path].generation
+	for i := 0; i < 3; i++ {
+		h.add(newSubscriber(path, laneSaved))
+	}
+
+	if got := h.incs[path].generation; got != before {
+		t.Fatalf("generation walked from %d to %d for a path with no identity", before, got)
+	}
+}
+
+// The watcher is stopped after the hub is closed, so a poll already in flight can
+// land here. It must not rebuild an incarnation nothing will ever reap, which on
+// Unix would strand the anchor's descriptor for the life of the process.
+func TestPublishAfterShutdownDoesNotRebuildAnIncarnation(t *testing.T) {
+	h, path, _ := anchoredHub(t)
+	h.shutdown()
+
+	h.publishExternalChange(path, "changed on disk", "<html>two</html>")
+
+	if len(h.incs) != 0 {
+		t.Fatalf("a publish after shutdown left %d incarnation(s) behind", len(h.incs))
+	}
+}
+
+func writeThroughATempFile(t *testing.T, path, body string) {
+	t.Helper()
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
 	}
 }
 

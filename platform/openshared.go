@@ -17,6 +17,12 @@ import "os"
 // held handle still breaks htmlclay's atomic save. openshared_windows_test.go pins
 // both halves of that. The only fix for the save path is to stop holding a handle
 // on a file we intend to replace; sharing mode cannot rescue it.
+//
+// Because of that limit nothing calls this any more: live-sync's identity anchor
+// was the one caller and now goes through platform.Anchor, which holds no handle
+// on Windows at all. It stays because its tests are the measurement the Anchor
+// comments cite, and because the warning above is worth having written down
+// somewhere before the next person reaches for a long-lived handle.
 func OpenShared(path string) (*os.File, error) {
 	return openShared(path)
 }
