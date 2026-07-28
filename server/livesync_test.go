@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -561,6 +562,58 @@ func TestLiveSyncRoutesRejectForeignHost(t *testing.T) {
 		srv.httpServer.Handler.ServeHTTP(w, req)
 		if w.Code != http.StatusForbidden {
 			t.Errorf("%s from a foreign host returned %d, want 403", target, w.Code)
+		}
+	}
+}
+
+// A tab watching a file must never make that file unsaveable. Windows refuses to
+// rename over a file while any handle to it is open, whatever sharing mode that
+// handle asked for (platform/openshared_windows_test.go pins the OS behaviour),
+// so a descriptor parked on the incarnation turned every save into a write error
+// for as long as the tab stayed connected. Both entrances are covered here: the
+// subscriber one, and the server-write one, which needs no subscriber at all.
+//
+// On macOS and Linux this passes either way. Only the Windows leg of CI can fail
+// it, which is exactly why the shape is also pinned below.
+func TestSaveSucceedsWhileSubscribed(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+
+	for _, lane := range []string{laneLive, laneSaved} {
+		srv.hub.add(newSubscriber(f.AbsPath, lane))
+	}
+	if err := atomicWriteFile(f.AbsPath, []byte("<html>saved</html>")); err != nil {
+		t.Fatalf("save while a tab is subscribed: %v", err)
+	}
+
+	srv.coord.acceptServerReplacement(f)
+	if err := atomicWriteFile(f.AbsPath, []byte("<html>saved again</html>")); err != nil {
+		t.Fatalf("save after re-anchoring: %v", err)
+	}
+}
+
+// The server-write path reaches acceptServerReplacement through the incarnation
+// broadcastDiskHTML creates, so save then restore then save breaks on Windows
+// with no tab ever connected.
+func TestSaveSucceedsAfterAServerWriteWithNoSubscriber(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+
+	srv.broadcastDiskHTML(f, []byte("<html>one</html>"))
+	srv.coord.acceptServerReplacement(f)
+
+	if err := atomicWriteFile(f.AbsPath, []byte("<html>two</html>")); err != nil {
+		t.Fatalf("save after a server write with no subscriber: %v", err)
+	}
+}
+
+// Pin the shape, not just the behaviour. A reintroduced descriptor would sail
+// through a macOS run and break saves for every Windows user again, so assert
+// here that no field of an incarnation can hold one, wherever the suite runs.
+func TestIncarnationHoldsNoDescriptor(t *testing.T) {
+	typ := reflect.TypeOf(incarnation{})
+	handle := reflect.TypeOf((*os.File)(nil))
+	for i := 0; i < typ.NumField(); i++ {
+		if typ.Field(i).Type == handle {
+			t.Fatalf("incarnation.%s holds an open file: Windows cannot rename over a file while any handle to it is open, so a parked descriptor makes the file unsaveable", typ.Field(i).Name)
 		}
 	}
 }

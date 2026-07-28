@@ -124,12 +124,20 @@ type laneBucket struct {
 
 // incarnation is one generation of the file at a path. A new file at the same
 // path is a new incarnation and never inherits the old one's retained frames.
-// The anchor is an open read-only handle whose identity is compared with
-// os.SameFile; keeping it open until comparison prevents Unix inode reuse from
-// making a distinct new file look like the same one.
+//
+// anchorInfo is a value, and nothing here holds a descriptor. It used to: the
+// handle stayed open so a freed Unix inode could not be recycled into a
+// look-alike before the next comparison. That is illegal on Windows, which
+// refuses to rename over a file while any handle to it is open, whatever sharing
+// mode that handle asked for (platform/openshared_windows_test.go pins it). A
+// parked handle here therefore meant htmlclay could not save at all on Windows,
+// and neither could any other program the whole time we held it.
+//
+// Dropping the handle costs nothing on Windows, where os.SameFile compares a file
+// reference number already captured in the FileInfo. It does drop the Unix
+// anti-recycling guarantee, which platform.Anchor restores in the next commit.
 type incarnation struct {
 	generation int64
-	anchor     *os.File
 	anchorInfo os.FileInfo
 	lastTouch  time.Time
 	live       *laneBucket
@@ -431,25 +439,23 @@ func (h *hub) observeIdentityLocked(path string) *incarnation {
 		return inc
 	}
 	info, serr := cur.Stat()
+	// Close before deciding anything. The identity we need is already in info, and
+	// holding the descriptor a moment longer than the read is what broke Windows.
+	cur.Close()
 	if serr != nil || !info.Mode().IsRegular() {
-		cur.Close()
 		return inc
 	}
-	if inc.anchor == nil {
-		inc.anchor = cur
+	if inc.anchorInfo == nil {
 		inc.anchorInfo = info
 		inc.lastTouch = h.clock()
 		return inc
 	}
 	if os.SameFile(inc.anchorInfo, info) {
-		cur.Close()
 		return inc
 	}
 	// External replacement: roll to a new generation.
 	h.clearBucketsLocked(inc)
 	h.clearCursorsForPathLocked(path)
-	inc.anchor.Close()
-	inc.anchor = cur
 	inc.anchorInfo = info
 	inc.generation++
 	inc.lastTouch = h.clock()
@@ -473,14 +479,10 @@ func (h *hub) acceptServerReplacement(path string) {
 		return
 	}
 	info, serr := cur.Stat()
+	cur.Close()
 	if serr != nil || !info.Mode().IsRegular() {
-		cur.Close()
 		return
 	}
-	if inc.anchor != nil {
-		inc.anchor.Close()
-	}
-	inc.anchor = cur
 	inc.anchorInfo = info
 	inc.lastTouch = h.clock()
 }
@@ -623,9 +625,6 @@ func (h *hub) reapIncarnationsLocked() {
 		if h.hasCursorLocked(path) {
 			continue
 		}
-		if inc.anchor != nil {
-			inc.anchor.Close()
-		}
 		delete(h.incs, path)
 	}
 
@@ -649,9 +648,6 @@ func (h *hub) reapIncarnationsLocked() {
 		victim := inactive[oldest]
 		h.clearBucketsLocked(victim.inc)
 		h.clearCursorsForPathLocked(victim.path)
-		if victim.inc.anchor != nil {
-			victim.inc.anchor.Close()
-		}
 		delete(h.incs, victim.path)
 		inactive[oldest] = inactive[len(inactive)-1]
 		inactive = inactive[:len(inactive)-1]
@@ -893,10 +889,7 @@ func (h *hub) shutdown() {
 		}
 		delete(h.subs, key)
 	}
-	for path, inc := range h.incs {
-		if inc.anchor != nil {
-			inc.anchor.Close()
-		}
+	for path := range h.incs {
 		delete(h.incs, path)
 	}
 	h.cursors = make(map[string]*resumeCursor)
