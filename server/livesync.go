@@ -525,6 +525,14 @@ func (h *hub) acceptServerReplacement(path string) {
 // are not reclaimed until the last tab disconnects. That is the price of the
 // anti-recycling guarantee: dropping the anchor here would free the inode for the
 // next file created, which is exactly the confusion it exists to prevent.
+//
+// A disappearance also rolls the generation, but only for a path nothing has ever
+// been able to identify. That is the one case where identity cannot defend
+// against delete-then-recreate, so vanishing is the only evidence we will ever
+// get that a document ended. Everywhere else the anchor already covers it, and
+// rolling here would be actively wrong: the watcher records absence during the
+// brief gap of an atomic replacement, our own saves included, so an unconditional
+// roll would throw away the replay buffer of the tab that just saved.
 func (h *hub) markAbsent(path string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -533,6 +541,10 @@ func (h *hub) markAbsent(path string) {
 		return
 	}
 	h.clearBucketsLocked(inc)
+	if inc.anchor == nil {
+		h.clearCursorsForPathLocked(path)
+		inc.generation++
+	}
 }
 
 func (h *hub) clearBucketsLocked(inc *incarnation) {

@@ -790,6 +790,36 @@ func TestPublishAfterShutdownDoesNotRebuildAnIncarnation(t *testing.T) {
 	}
 }
 
+// Where identity can prove nothing, a file vanishing is the only evidence that a
+// document ended, so it has to count.
+func TestVanishingRollsWhenNothingCanIdentifyTheFile(t *testing.T) {
+	h := newHub("")
+	t.Cleanup(h.shutdown)
+	path := filepath.Join(t.TempDir(), "unidentifiable.html")
+
+	h.broadcastSaved(path, "<html>one</html>", "file-system")
+	before := h.incs[path].generation
+
+	h.markAbsent(path)
+
+	if h.incs[path].generation == before {
+		t.Fatal("a file that vanished kept its generation, and nothing else can notice it ended")
+	}
+}
+
+// The same signal must not fire on a healthy file, because the watcher records
+// absence during the brief gap of an atomic replacement, our own saves included.
+func TestVanishingDoesNotRollAnIdentifiedFile(t *testing.T) {
+	h, path, _ := anchoredHub(t)
+	before := h.incs[path].generation
+
+	h.markAbsent(path)
+
+	if h.incs[path].generation != before {
+		t.Fatal("an atomic replacement window rolled the generation of a file we can identify")
+	}
+}
+
 func writeThroughATempFile(t *testing.T, path, body string) {
 	t.Helper()
 	tmp := path + ".tmp"
