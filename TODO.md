@@ -25,32 +25,34 @@ GitHub secrets to add to `panphora/htmlclay` (same values as hyperclay-local unl
 
 # Icon & Image Assets
 
-## Existing Assets
-- [x] `tray/icon.png` — System tray icon (126 bytes, embedded via `//go:embed`)
-- [x] `dist/macos/htmlclay.icns` — macOS app icon (bundled into HTMLClay.app)
-
-## Assets to Generate
+**Re-verified against the filesystem 2026-07-29.** Every item below except the two favicons is done.
+The unchecked boxes and the "likely a placeholder" notes were stale: the placeholders they describe
+(an 8-byte `.icns`, a 126-byte tray PNG) were replaced some time ago and every file is now real.
 
 ### Source Master Icon
-- [ ] **Master app icon** (1024x1024 SVG or PNG) — Single source design to derive all other formats from
+- [x] **Master app icon** — `dist/icons/` holds the source set (`blob.svg`, `clay-app.svg`, a `source/`
+      folder) plus `generate.sh` to derive the rest
 
 ### macOS
-- [ ] `dist/macos/htmlclay.icns` — Regenerate from master icon at proper resolution (current file is only 8 bytes, likely a placeholder). Must contain 16x16, 32x32, 128x128, 256x256, 512x512, 1024x1024 variants.
-- [ ] `dist/macos/doc.icns` — Document icon for `.htmlclay` files. Referenced in `Info.plist` (`CFBundleTypeIconFile`) and conditionally copied in `dist/macos/build.sh`. Should visually represent a Clay HTML document (e.g., the app icon on a document shape).
+- [x] `dist/macos/htmlclay.icns` — real Mac OS X icon resource, 144 KB (was an 8-byte placeholder)
+- [x] `dist/macos/doc.icns` — document icon for `.htmlclay` files, 116 KB. Referenced by
+      `Info.plist` (`CFBundleTypeIconFile`) and copied in `dist/macos/build.sh`
 
 ### Linux
-- [ ] `dist/linux/htmlclay.png` — 256x256 PNG app icon. Referenced in `dist/linux/install-icon.sh` and `dist/linux/htmlclay.desktop` (`Icon=htmlclay`). Installed to `~/.local/share/icons/hicolor/256x256/apps/`.
-- [ ] `dist/linux/htmlclay.svg` — SVG version for scalable icon support. Optional but recommended for HiDPI Linux desktops.
+- [x] `dist/linux/htmlclay.png` — verified 256x256
+- [x] `dist/linux/htmlclay.svg` — 13 KB scalable version
 
 ### Windows
-- [ ] `dist/windows/htmlclay.ico` — Multi-resolution `.ico` file for taskbar/explorer. Should contain 16x16, 32x32, 48x48, 256x256. Used for embedding into the Windows binary via `goversioninfo`.
+- [x] `dist/windows/htmlclay.ico` — verified multi-resolution: 6 icons up to 256x256
 
 ### System Tray
-- [ ] `tray/icon.png` — Regenerate at proper resolution if the current 126-byte file is a placeholder. Used on all platforms via `fyne.io/systray`. Recommended: 22x22 or 32x32 PNG with transparency.
+- [x] `tray/icon.png` — real 128x128 PNG (was the 126-byte placeholder). Larger than the 22-32px this
+      file originally recommended; systray downscales it, so this is a nitpick, not a bug
 
 ### Web / Misc
-- [ ] `dist/favicon.ico` — Favicon for the local web UI served by the HTML Clay server
-- [ ] `dist/favicon.svg` — SVG favicon for modern browsers
+- [ ] `dist/favicon.ico` — Favicon for the local web UI served by the HTML Clay server. **Confirmed
+      still missing:** nothing matches `dist/favicon.*`
+- [ ] `dist/favicon.svg` — SVG favicon for modern browsers. **Confirmed still missing**
 
 ## Icon Notes
 - Generate all raster formats from a single master SVG to keep everything consistent.
