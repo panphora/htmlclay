@@ -119,6 +119,7 @@
 
     footer { padding: 40px 0 64px; text-align: center; color: var(--muted); font-size: 14px; }
     footer p { margin: 0 0 8px; }
+    footer[data-hyper-footer] { padding: 0 0 64px; }
 
     @media (max-width: 480px) {
       .hero h1 { font-size: 31px; }
@@ -634,6 +635,8 @@
       <p>Building your own <span class="filechip">.htmlclay</span> files? Check out <a href="https://hyperclay.com">Hyperclay</a></p>
       <p>Open source: <a href="https://github.com/panphora/htmlclay">github.com/panphora/htmlclay</a></p>
     </footer>
+
+    <footer data-hyper-footer="htmlclay"></footer>
 
   </main>
 
@@ -1340,5 +1343,6 @@
   if (isVisible() && !document.hidden) start();
 })();
   </script>
+  <script src="https://hyperclay.com/public/js/hyper-footer.js" defer></script>
 </body>
 </html>
