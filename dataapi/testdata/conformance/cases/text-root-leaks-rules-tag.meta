@@ -1,0 +1,7 @@
+tier: 1
+face: query
+expect: ok
+note: The rules-tag filter lives in find(), not in text(). So `.` on the root concatenates the
+note: rules tag's own source into the extracted text, while the sibling key, a plain `script`
+note: selector, goes through find() and matches nothing. A document's whole-page text read
+note: leaks its own rule definitions.

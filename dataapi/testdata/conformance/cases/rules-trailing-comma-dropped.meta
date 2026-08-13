@@ -1,0 +1,5 @@
+tier: 1
+face: query
+expect: ok
+note: A COMMA whose next token is } or ] is dropped, so a trailing comma parses where strict
+note: JSON.parse would reject it. This is the whole reason the tokenizer runs at all here.

@@ -1,0 +1,5 @@
+{
+  "type": "Error",
+  "message": "Attribute selector didn't terminate",
+  "status": 400
+}

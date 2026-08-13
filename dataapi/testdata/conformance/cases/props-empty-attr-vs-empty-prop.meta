@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: ok
+note: Empty reads split by route. An ordinary attribute goes through `return v ? v : null`, so
+note: an empty attribute is indistinguishable from a missing one and reads null. A whitelisted
+note: property goes through `v == null ? null : String(v)`, so class="" survives as "".

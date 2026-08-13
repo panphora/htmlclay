@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: ok
+note: One element, three reads, two answers. A plain selector rule goes through adapter.text(),
+note: which trims; @textContent and @innerText bypass that and return the raw concatenation,
+note: leading newline and interior run of spaces intact. Nested markup is flattened either way.

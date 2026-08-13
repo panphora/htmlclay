@@ -1,0 +1,4 @@
+{
+  "set": "#t@readOnly",
+  "unset": "#u@readOnly"
+}

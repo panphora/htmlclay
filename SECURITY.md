@@ -21,6 +21,7 @@ Everything else below is detail on those rules, plus an honest list of what they
 - **Permission prompts are never drawn by a page.** Only HTML Clay itself can raise the Allow or Deny dialog, so a page cannot fake, restyle, or auto-click one.
 - **Reads are judged by the file actually opened**, using the real path the operating system reports for the open handle, not the name in the request. Swapping a symlink halfway through a request cannot redirect a read into HTML Clay's own state.
 - **A refused read tells a page nothing.** Denials are a single fixed response that names no path, and the answer does not depend on whether the file is there, so a page cannot use refusals to work out which files you have.
+- **Reading a file as JSON is the same read, in a different shape.** The `?data=` and `/_/api/` routes run every check above, in the same order, and answer exactly what a normal request for that file would answer, refusals included. They cannot reach a file an ordinary request could not, they never hand out a save token or turn on edit mode, and they are not readable by other websites, since HTML Clay sends no header that would permit that. A save token that somehow ended up written into a file on disk is stripped before any of this runs, so it cannot be read back out.
 
 ## Workspace folders
 

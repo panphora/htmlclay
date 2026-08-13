@@ -1,0 +1,6 @@
+tier: 1
+face: tag
+token: api
+expect: error
+note: UnknownRulesVersion. The tag face maps it to 400 by name; the query face has no version
+note: arm at all, which is why face is part of the contract.

@@ -156,8 +156,62 @@ User double-clicks .htmlclay file
 | `GET` | `/_/read/{token}` | Return raw file contents |
 | `POST` | `/_/save/{token}` | Write updated HTML back to disk (atomic write) |
 | `GET` | `/_/meta/{token}` | Return file metadata (path, size, modification time) |
+| `GET` | `/{path}?data={…}` | Extract JSON from the file using rules you supply |
+| `GET` | `/_/api/{path}` | Extract JSON using rules the file publishes itself |
 
 Content is served at the top level; actions live under the `/_/` marker, matching the [Hyperclay](https://hyperclay.com) platform convention. The save endpoint accepts either a plain-text HTML body or a JSON `{content, snapshotHtml}` body (it persists `content`), so the same [hyperclayjs](https://www.npmjs.com/package/hyperclayjs) save client works against both htmlclay and the platform.
+
+### Reading a file as JSON
+
+Any `.html` or `.htmlclay` file HTML Clay will serve can also be read as JSON, using the same
+extraction rules as the [Hyperclay](https://hyperclay.com) platform. Two ways in:
+
+```bash
+# You supply the rules
+curl 'http://localhost:PORT/notes.htmlclay?data={title:"h1",items:".todo[]"}'
+
+# The file supplies its own, from a tag inside it
+curl 'http://localhost:PORT/_/api/notes.htmlclay'
+```
+
+The second reads a tag the page publishes:
+
+```html
+<script data-rules-name="api" data-rules-version="1">
+  {title: "h1", items: [".todo", {text: ".", done: "@data-done"}]}
+</script>
+```
+
+Rules are relaxed JSON: unquoted keys and bare selectors are fine. A rule is a CSS selector, with
+`sel[]` for every match's text, `sel@attr` for an attribute, and `[sel, {…}]` for one object per
+match.
+
+**A data request reads exactly what a normal request reads, and nothing more.** It runs the same
+permission checks in the same order, asks the same folder-access question, and returns the same
+refusal. It never creates an editing session: no save token, no edit-mode cookie, and no version
+snapshot. There is no CORS header on either route, so only a program you run yourself, such as
+`curl`, or a page on this same site can read it.
+
+#### Where this differs from the platform
+
+Deliberate, and each one measured against the platform's own engine rather than assumed.
+
+| Behavior | HTML Clay | Platform |
+|---|---|---|
+| A selector the two engines read differently | refused with a reason, e.g. `:is`, `:empty`, `:gt`, `:matches`, CSS comments, the `[a=b s]` flag | answered, sometimes differently |
+| A positional that is not last, e.g. `li:first span` | refused | answered |
+| Any broken selector | `400` | `400` or `500`, depending on the wording of the parser's message |
+| `@type` on an element | the `type` attribute | `"tag"`, the internal node type |
+| `@readOnly` | the real value | always `false` |
+| `sel@href[]` | refused, naming the array form that works | silently `[]` |
+| A repeated `?data=` parameter | the first one wins | `500` |
+| Caching | none | five minutes |
+| CORS | none | enabled |
+
+The full ledger, with the measurement behind every row, is in
+`dataapi/testdata/selector-parity.json`: one list of constructs that must match the platform exactly,
+and one of constructs HTML Clay refuses, each recorded with the answer the platform gives so the cost
+of the refusal is written down rather than guessed at.
 
 ### Package structure
 

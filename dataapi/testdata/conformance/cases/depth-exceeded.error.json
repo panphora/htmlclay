@@ -1,0 +1,5 @@
+{
+  "type": "MaxRuleDepthExceeded",
+  "message": "rule depth exceeded 20 at path: a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a",
+  "status": 500
+}

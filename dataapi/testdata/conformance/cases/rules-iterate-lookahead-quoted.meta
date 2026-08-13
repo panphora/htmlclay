@@ -1,0 +1,7 @@
+tier: 1
+face: query
+expect: error
+note: Same `[`-lookahead bug as rules-iterate-lookahead-unquoted, different exit. The swallowed
+note: run contains double quotes, and the SELECTOR branch re-emits a token value unescaped, so
+note: the generated JSON is malformed and this dies at PARSE instead of at extract. Message
+note: contains "JSON", so 400.

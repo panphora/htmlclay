@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: error
+note: 21 nested objects put the leaf at depth 21 and MaxRuleDepthExceeded throws, one level past
+note: depth-at-limit-ok. The message carries the full key path. It contains neither "JSON" nor
+note: "selector", so the reference host answers 500 for what is really a malformed request.

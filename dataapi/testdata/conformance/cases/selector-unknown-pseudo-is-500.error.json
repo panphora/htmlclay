@@ -1,0 +1,5 @@
+{
+  "type": "Error",
+  "message": "Unknown pseudo-class :nth-childx",
+  "status": 500
+}

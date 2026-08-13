@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: ok
+note: The contrast case for the two rules-iterate-lookahead-* bugs. `.` is not in /[a-zA-Z_]/,
+note: so the lookahead pushes a real BRACKET_OPEN and the iterate form parses as the pair it
+note: looks like. Whether iteration works at all depends on the first character of its selector.

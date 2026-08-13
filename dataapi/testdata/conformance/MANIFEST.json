@@ -1,0 +1,6 @@
+{
+  "engine": "0.5.2",
+  "cheerio": "1.2.0",
+  "cases": 33,
+  "note": "Versions the expectations were generated against. Parity means parity with THIS pair; regenerate deliberately, never as a side effect of an install."
+}

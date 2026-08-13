@@ -1,0 +1,7 @@
+tier: 3
+face: query
+expect: error
+note: DIVERGENCE. The pseudo whitelist prefix-matches, so this TOKENIZES fine and then throws
+note: from css-select at find time. The message contains neither "JSON" nor "selector", so the
+note: JS hosts answer 500. htmlclay answers 400 by mapping on error type. Upstream fix moves
+note: all four hosts to 400; until then Go is expected to differ here, in this direction.

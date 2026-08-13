@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: ok
+note: Numbers, booleans and null tokenize and parse as real JSON primitives, but extractAt has
+note: no arm for them: not a string, not an array, and null fails the object guard, so all
+note: three fall through to the trailing `return null`. A typo'd rule reads as an empty field.

@@ -1,0 +1,11 @@
+tier: 3
+face: query
+expect: error
+note: The property split is lastIndexOf('@') over the whole rule, with no awareness of quoting, so
+note: an @ inside an attribute value splits the selector there: 'a[href*="' plus the property name
+note: '"]'. The quoted string parsed perfectly; only extraction sees the damage.
+note: DIVERGENCE, same class as selector-unknown-pseudo-is-500. css-what says "Attribute value
+note: didn't end", which contains neither "JSON" nor "selector", so the JS hosts answer 500.
+note: Compare rules-iterate-lookahead-unquoted: also a css-select failure, but its message happens
+note: to contain the word "selector", so it answers 400. Two sibling failures, two statuses,
+note: decided entirely by upstream prose. htmlclay maps by TYPE and answers 400 for both.

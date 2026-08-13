@@ -1,0 +1,5 @@
+tier: 1
+face: query
+expect: error
+note: The tokenizer re-emits the inner quote unescaped, so a quoted attribute value inside an
+note: unquoted selector cannot parse. Message contains "JSON", so every host answers 400.

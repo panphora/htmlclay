@@ -1,0 +1,8 @@
+tier: 3
+face: query
+expect: ok
+skip: htmlclay=deliberately matches the browser, not cheerio. The selector shadow tree is phase 4; until it lands, htmlclay TestTemplateContentIsCurrentlyVisible pins the current pre-shadow-tree counts and states what they become
+note: DIVERGENCE. cheerio finds template content with a simple selector but not through a
+note: combinator, disagreeing with itself AND with the browser. In cheerio template content is
+note: a detached forest: reachable by descendant traversal, but with no parent links. htmlclay
+note: detaches it into a selector shadow tree, so BOTH keys are [] there, matching the browser.

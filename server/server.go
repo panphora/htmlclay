@@ -107,6 +107,8 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	// single segment and cannot smuggle into this route.
 	//
 	// This shadows any real user file at ~/_/api/…, which is the one behavior change.
+	mux.HandleFunc("GET /_/api", s.handleDataAPI)
+	mux.HandleFunc("GET /_/api/{path...}", s.handleDataAPI)
 
 	mux.HandleFunc("GET /{path...}", s.handleServeFile)
 

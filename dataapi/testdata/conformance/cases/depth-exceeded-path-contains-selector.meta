@@ -1,0 +1,9 @@
+tier: 3
+face: query
+expect: error
+note: DIVERGENCE. Byte-for-byte the same MaxRuleDepthExceeded as depth-exceeded, at the same
+note: depth, differing only in that the rule key is named `selector`, which puts the word into
+note: the message path. The JS hosts classify by sniffing the message, so this answers 400 while
+note: depth-exceeded answers 500. A host that maps by error TYPE gives both cases one status,
+note: so it must differ from the JS reference on one of the pair: 500 here, or 400 there.
+note: Direction: the data in the rule keys is steering the HTTP status.

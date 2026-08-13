@@ -1,0 +1,7 @@
+tier: 1
+face: tag
+token: api
+expect: ok
+note: A script body takes the same relaxed syntax as the ?data= parameter: unquoted keys,
+note: single-quoted strings and a trailing comma. It parses to exactly the tree tag-basic gets
+note: from strict JSON, so the two faces share one parser and the quoting is authorial taste.

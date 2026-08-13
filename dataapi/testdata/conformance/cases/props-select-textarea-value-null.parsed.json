@@ -1,0 +1,5 @@
+{
+  "select": "#s@value",
+  "textarea": "#ta@value",
+  "input": "#in@value"
+}

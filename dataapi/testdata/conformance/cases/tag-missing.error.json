@@ -1,0 +1,5 @@
+{
+  "type": "NoRulesTag",
+  "message": "no script[data-rules-name~=\"api\"]",
+  "status": 400
+}

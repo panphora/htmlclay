@@ -1,0 +1,8 @@
+tier: 1
+face: tag
+token: api
+expect: error
+note: No script[data-rules-name~="api"], so findRulesIn returns null rather than throwing: the
+note: absence is not an engine error, and the host is what turns it into a 400. The document
+note: does carry a rules tag under a different name, so this pins the TOKEN match, not the
+note: mere presence of a tag.

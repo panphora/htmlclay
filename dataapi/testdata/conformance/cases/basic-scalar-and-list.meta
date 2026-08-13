@@ -1,0 +1,4 @@
+tier: 1
+face: query
+expect: ok
+note: The happy path. Scalar selector, [] list form, relaxed unquoted keys.

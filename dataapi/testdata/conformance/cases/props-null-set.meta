@@ -1,0 +1,7 @@
+tier: 1
+face: query
+expect: ok
+note: Seven whitelisted names that cheerio cannot answer. They are on the DOM property list, so
+note: the read never falls back to attr(); cheerio's prop() has no value for them and returns
+note: undefined, which readPropOrAttr turns into null. Layout and document metadata are all in
+note: this set, so they read null on any server host, never 0 and never "".

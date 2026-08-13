@@ -1,0 +1,7 @@
+tier: 1
+face: query
+expect: ok
+note: [cms-template] is excluded from find() BY DEFAULT, no opt-in, because a seed row is not
+note: data for any consumer. The test is closest(), so it is ancestor-or-self: the marked li
+note: drops out and so does a plain span nested inside a marked li. That is wider than the
+note: rules-tag filter, which only ever tests the matched node itself.

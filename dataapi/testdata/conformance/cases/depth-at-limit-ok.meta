@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: ok
+note: The limit is exact. MAX_RULE_DEPTH is 20 and the guard is `depth > 20`, and the root rule
+note: is visited at depth 0, so 20 nested objects put the leaf string at depth 20 and it still
+note: extracts. One more object throws; see depth-exceeded.

@@ -1,0 +1,7 @@
+tier: 1
+face: query
+expect: ok
+note: The boolean-attribute names answer "false" on ANY element, not null. cheerio's prop()
+note: recognizes checked/selected/disabled by name alone, with no check that the element could
+note: carry them, so a plain div reports a definite "false" where every other absent property
+note: reports null. The absent-vs-false distinction is lost.

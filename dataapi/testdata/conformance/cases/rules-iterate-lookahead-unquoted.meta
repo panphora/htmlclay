@@ -1,0 +1,8 @@
+tier: 1
+face: query
+expect: error
+note: BUG, pinned as-is. The `[` lookahead only asks whether the next char matches /[a-zA-Z_]/
+note: to decide "attribute selector", so an iterate form whose selector starts with a tag name
+note: is swallowed whole: the value parses as the STRING "[form,{a:@action}]", not a pair.
+note: Extraction then splits it at the last @ and hands css-select a truncated selector. The
+note: message contains "selector", so the reference host answers 400 here.

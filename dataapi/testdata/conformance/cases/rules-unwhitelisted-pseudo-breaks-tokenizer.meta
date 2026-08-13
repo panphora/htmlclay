@@ -1,0 +1,7 @@
+tier: 1
+face: query
+expect: error
+note: An unwhitelisted pseudo breaks TOKENIZING, not just matching. :is is not in the hardcoded
+note: list, so the identifier run stops at the colon, which is then emitted as a bare COLON and
+note: yields "h1":"is(.a)" inside an object. Parse error, message contains "JSON", so 400.
+note: Contrast selector-unknown-pseudo-is-500, where a whitelist PREFIX match lets it tokenize.

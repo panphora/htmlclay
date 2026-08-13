@@ -1,0 +1,5 @@
+{
+  "type": "RulesParseError",
+  "message": "Invalid extraction rules syntax: Expected ',' or '}' after property value in JSON at position 9 (line 1 column 10)",
+  "status": 400
+}

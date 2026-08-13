@@ -1,0 +1,5 @@
+{
+  "type": "MaxRuleDepthExceeded",
+  "message": "rule depth exceeded 20 at path: selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector.selector",
+  "status": 400
+}

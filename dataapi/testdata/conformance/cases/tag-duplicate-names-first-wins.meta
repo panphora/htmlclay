@@ -1,0 +1,7 @@
+tier: 1
+face: tag
+token: api
+expect: ok
+note: Two tags claim the same token. findRulesIn warns and uses the FIRST in document order,
+note: it does not merge them and does not error, so the second tag's rules never run. The two
+note: bodies use different keys so the output says unambiguously which one won.

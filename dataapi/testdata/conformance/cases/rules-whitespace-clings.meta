@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: ok
+note: Whitespace clings asymmetrically. The tokenizer skips leading whitespace before a token
+note: but never trims the token it then reads to the next {},: so the second key is "y " with
+note: a trailing space and its value is ".i " with one too. Both survive into the output shape.

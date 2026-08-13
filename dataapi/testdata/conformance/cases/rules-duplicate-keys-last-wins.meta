@@ -1,0 +1,5 @@
+tier: 1
+face: query
+expect: ok
+note: Duplicate keys are not rejected. The tokenizer re-emits both, and JSON.parse keeps the
+note: LAST one, so the "h1" rule is silently discarded and the output holds the .i text.

@@ -1,0 +1,6 @@
+tier: 1
+face: tag
+token: api
+expect: ok
+note: Rules come from the document, never from a .rules file. The tag itself must not appear
+note: in its own output: find() filters script[data-rules-name] nodes.

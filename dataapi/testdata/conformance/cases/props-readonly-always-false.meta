@@ -1,0 +1,11 @@
+tier: 3
+face: query
+expect: ok
+skip: htmlclay=ships @readOnly fixed; fixed behavior asserted in htmlclay dataapi/props_test.go
+note: @readOnly is always the string "false". The name is whitelisted, so the read goes through
+note: prop(), which looks the name up in the attribs map, where the parser has already lowercased
+note: it to `readonly`. The whitelist spelling can never match, so the boolean-attribute fallback
+note: reports absent. Set and unset inputs are indistinguishable.
+note: DIVERGENCE, direction JS-only. This case pins the WART so an upstream fix gets noticed.
+note: htmlclay deliberately does not reproduce it and folds the name for the presence test, so a
+note: readonly input reports "true".

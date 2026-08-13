@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: ok
+note: @tagName and @nodeName both uppercase, matching the DOM. @nodeType is the string "1", not
+note: the number 1: readPropOrAttr String()s every property read, so the numeric node type
+note: arrives as text and a consumer comparing it to 1 fails.

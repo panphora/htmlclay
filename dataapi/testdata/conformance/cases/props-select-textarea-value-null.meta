@@ -1,0 +1,8 @@
+tier: 3
+face: query
+expect: ok
+note: DIVERGENCE. cheerio reads @value out of the attribs map, and neither a select nor a
+note: textarea has a value ATTRIBUTE, so both read null on this host. In a browser the DOM
+note: adapter reads live properties: select@value is the selected option's value ("b") and
+note: textarea@value is its text ("hello"). Direction: server null, browser a real string.
+note: An input, whose value IS an attribute, agrees on both sides and is included as the control.

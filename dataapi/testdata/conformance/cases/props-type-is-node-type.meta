@@ -1,0 +1,11 @@
+tier: 3
+face: query
+expect: ok
+skip: htmlclay=ships @type fixed; fixed behavior asserted in htmlclay dataapi/props_test.go
+note: @type is NOT the type attribute. `type` is on the DOM property whitelist, and domhandler
+note: nodes already carry a `type` field naming the node kind, so cheerio's prop() returns that
+note: instead: "tag" for a normal element, "script" for a script, "style" for a style. Three
+note: values, none of them the author's type="text".
+note: DIVERGENCE, direction JS-only. This case pins the WART so an upstream fix gets noticed.
+note: htmlclay deliberately does not reproduce it and returns the type attribute, because that API
+note: has no existing htmlclay users and preserving the bug would buy nothing.

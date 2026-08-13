@@ -97,12 +97,21 @@ func extractFilePath(rawPath string) string {
 }
 
 func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
-	s.serveFile(w, r, r.PathValue("path"))
+	rawPath := r.PathValue("path")
+
+	// Classified from the query string alone, before any path work, because a malformed data
+	// parameter is a property of what the caller sent and reveals nothing about what is on disk.
+	// Anything that is not a data request falls through and is served exactly as it is today.
+	mode, answered := s.dataModeForQuery(w, r, extractFilePath(rawPath))
+	if answered {
+		return
+	}
+	s.serveFile(w, r, rawPath, mode)
 }
 
-// serveFile serves a GET for a path. rawPath is the request path before
-// extractFilePath truncation, because serveAsset needs it intact.
-func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, rawPath string) {
+// serveFile is the shared entry point for a plain GET and for both data faces. rawPath is the
+// request path before extractFilePath truncation, because serveAsset needs it intact.
+func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, rawPath string, mode dataMode) {
 	relPath := extractFilePath(rawPath)
 
 	absPath, err := ValidatePath(relPath, s.sessions.HomeDir())
@@ -133,7 +142,7 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, rawPath strin
 		// missing out-of-scope path would 404 instantly while a present one parked
 		// and 403'd, which enumerates the home tree. Hand it to serveAsset, which
 		// classifies scope on the lexical path and parks either way.
-		s.serveAsset(w, r, rawPath)
+		s.serveAsset(w, r, rawPath, mode)
 		return
 	}
 	absPath = filepath.Clean(resolved)
@@ -153,24 +162,30 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, rawPath strin
 		// the decision up to the seam call is lock- and string-work only
 		// (workspace scope first, then hidden/internal), preserving the
 		// oracle-avoidance ordering serveAsset relies on.
-		if s.shouldAutoRegister(r, absPath) {
+		//
+		// A data request never registers. Registration is per-file state created on
+		// a caller's say-so, and it can redirect to another site's origin, neither of
+		// which belongs in a JSON read. The request falls through to serveAsset, which
+		// is the stricter path, so a data face can only ever read less than a
+		// navigation would.
+		if !mode.active() && s.shouldAutoRegister(r, absPath) {
 			if regFile, handled := s.autoRegister(w, r, absPath); handled {
 				return
 			} else if regFile != nil {
-				s.serveRegistered(w, r, regFile)
+				s.serveRegistered(w, r, regFile, mode)
 				return
 			}
 		}
-		s.serveAsset(w, r, rawPath)
+		s.serveAsset(w, r, rawPath, mode)
 		return
 	}
 
-	s.serveRegistered(w, r, f)
+	s.serveRegistered(w, r, f, mode)
 }
 
 // serveRegistered serves a registered file with its identity and, on a real
 // document load, its save token.
-func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *session.File) {
+func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *session.File, mode dataMode) {
 	f.Lock()
 	data, err := s.readRegisteredFile(f.AbsPath)
 	if err != nil {
@@ -182,6 +197,26 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 		}
 		s.logger.Printf("Error reading %s: %v", f.AbsPath, err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// A data request touches no per-file state: no identity resolution, no history key, no
+	// first-open snapshot, no NoteFirstObservation, no cookie and no token. A JSON read is not an
+	// editing session. The lock is released before parsing, so a 17 ms extraction never sits on the
+	// save path.
+	//
+	// What actually guarantees the bytes are a WHOLE pre-save or post-save document is that both
+	// writers (save and restore) publish through atomicWriteFile's rename, not this mutex —
+	// MEASURED, by replacing this branch with an unlocked re-read and finding the concurrency test
+	// still green over three runs. The lock is kept anyway: it costs nothing on a loopback server,
+	// it matches how every other reader here behaves, and it is what would still hold if a future
+	// write path stopped being a rename.
+	//
+	// Observable consequence, tested: ?data={id:"html@htmlclayid"} is null before the first save,
+	// while the page's own clay.extractData() sees the injected id.
+	if mode.active() {
+		f.Unlock()
+		s.writeExtracted(w, data, mode)
 		return
 	}
 
@@ -295,7 +330,7 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 // folder tree of an opened file, and served without token injection, so linked
 // pages cannot save. rawPath is the request path before extractFilePath
 // truncation, so asset paths containing ".html" in a directory name stay intact.
-func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath string) {
+func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath string, mode dataMode) {
 	absPath, err := ValidatePath(rawPath, s.sessions.HomeDir())
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
@@ -403,6 +438,22 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	if s.isInternal(real) || session.HasHiddenComponent(s.sessions.HomeDir(), real) {
 		s.logger.Printf("Denying asset resolving to internal/hidden path: %s", absPath)
 		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	// The data projection attaches HERE, after the whole ladder: lexical validation, the internal
+	// and hidden filters, the scope gate and its prompt, the capability open, the regular-file test
+	// and the descriptor-bound RealPath re-check. Nothing above this line knows a data face exists,
+	// which is what makes "can never read a file the plain GET could not" structural rather than
+	// something to keep verifying.
+	if mode.active() {
+		raw, rErr := io.ReadAll(file)
+		if rErr != nil {
+			s.logger.Printf("Error reading asset %s for extraction: %v", absPath, rErr)
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		s.writeExtracted(w, raw, mode)
 		return
 	}
 

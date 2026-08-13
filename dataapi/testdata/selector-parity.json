@@ -1,0 +1,1392 @@
+{
+  "fixture": "<!doctype html><html><head><title id=\"ti\">t</title></head><body>\n<ul id=\"list\">\n<li id=\"l1\" class=\"row\">alpha</li>\n<li id=\"l2\" class=\"row\">Beta</li>\n<li id=\"l3\" class=\"row\">gamma beta</li>\n</ul>\n<ol id=\"mixed\"><li id=\"m1\">one</li><p id=\"mp\">p</p><li id=\"m2\">two</li></ol>\n<select id=\"sel\"><option id=\"o1\">a</option><option id=\"o2\">b</option></select>\n<select id=\"sel2\"><option id=\"o3\">a</option><option id=\"o4\" selected>b</option></select>\n<select id=\"sel3\" multiple><option id=\"o5\">a</option></select>\n<select id=\"sel4\"><optgroup id=\"og\"><option id=\"o6\">a</option></optgroup></select>\n<input id=\"i1\" checked><input id=\"i2\" type=\"CHECKBOX\" checked><input id=\"i3\" type=\"radio\">\n<a id=\"a1\" href=\"/Docs\" rel=\"NOFOLLOW\" hreflang=\"EN\">doc</a>\n<a id=\"a2\" href=\"/docs\" rel=\"nofollow\" hreflang=\"en\">doc</a>\n<div id=\"d1\" dir=\"LTR\" data-x=\"ABC\"><b id=\"b1\">deep</b></div>\n<p id=\"p1\" class=\"note\">has <em id=\"e1\">emphasis</em> inside</p>\n<div id=\"solo\"><span id=\"s1\">only</span></div>\n</body></html>",
+  "parity": {
+    "li span": {
+      "ok": true,
+      "ids": []
+    },
+    "li﻿span": {
+      "ok": true,
+      "ids": []
+    },
+    "li　span": {
+      "ok": true,
+      "ids": []
+    },
+    "li span": {
+      "ok": true,
+      "ids": []
+    },
+    "li​span": {
+      "ok": true,
+      "ids": []
+    },
+    ".row:first": {
+      "ok": true,
+      "ids": [
+        "l1"
+      ]
+    },
+    ".row:last": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    ".row:eq(1)": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    ".row:eq(-1)": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    ".row:eq(9)": {
+      "ok": true,
+      "ids": []
+    },
+    ".row:eq(0)": {
+      "ok": true,
+      "ids": [
+        "l1"
+      ]
+    },
+    "li:first": {
+      "ok": true,
+      "ids": [
+        "l1"
+      ]
+    },
+    "#list li:last": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    "li :first": {
+      "ok": true,
+      "ids": []
+    },
+    "#solo :first": {
+      "ok": true,
+      "ids": [
+        "s1"
+      ]
+    },
+    "#mixed li:last": {
+      "ok": true,
+      "ids": [
+        "m2"
+      ]
+    },
+    "li:contains(beta)": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    "li:contains(Beta)": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    "li:contains(\"beta\")": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    "li:contains(a)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3"
+      ]
+    },
+    "p:contains(emphasis)": {
+      "ok": true,
+      "ids": [
+        "p1"
+      ]
+    },
+    "li:CONTAINS(beta)": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    "li:\\63 ontains(beta)": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    ":checked": {
+      "ok": true,
+      "ids": [
+        "o1",
+        "o4",
+        "i2"
+      ]
+    },
+    "option:checked": {
+      "ok": true,
+      "ids": [
+        "o1",
+        "o4"
+      ]
+    },
+    "input:checked": {
+      "ok": true,
+      "ids": [
+        "i2"
+      ]
+    },
+    "#sel option:checked": {
+      "ok": true,
+      "ids": [
+        "o1"
+      ]
+    },
+    "#sel2 option:checked": {
+      "ok": true,
+      "ids": [
+        "o4"
+      ]
+    },
+    "#sel3 option:checked": {
+      "ok": true,
+      "ids": []
+    },
+    "#sel4 option:checked": {
+      "ok": true,
+      "ids": []
+    },
+    "select:checked": {
+      "ok": true,
+      "ids": []
+    },
+    "[rel=nofollow]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel=NOFOLLOW]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[dir=ltr]": {
+      "ok": true,
+      "ids": [
+        "d1"
+      ]
+    },
+    "[dir=LTR]": {
+      "ok": true,
+      "ids": [
+        "d1"
+      ]
+    },
+    "[hreflang=en]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[type=checkbox]": {
+      "ok": true,
+      "ids": [
+        "i2"
+      ]
+    },
+    "[type=CHECKBOX]": {
+      "ok": true,
+      "ids": [
+        "i2"
+      ]
+    },
+    "[href='/docs']": {
+      "ok": true,
+      "ids": [
+        "a2"
+      ]
+    },
+    "[href='/DOCS']": {
+      "ok": true,
+      "ids": []
+    },
+    "[data-x=abc]": {
+      "ok": true,
+      "ids": []
+    },
+    "[data-x=ABC]": {
+      "ok": true,
+      "ids": [
+        "d1"
+      ]
+    },
+    "[data-x=abc i]": {
+      "ok": true,
+      "ids": [
+        "d1"
+      ]
+    },
+    "[href='/docs' i]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel^=NOFOL]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel$=LLOW]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel*=OFOL]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel~=NOFOLLOW]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[hreflang|=EN]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel^=nofol]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel$=llow]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel*=ofol]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel~=nofollow]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[hreflang|=en]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[data-x]": {
+      "ok": true,
+      "ids": [
+        "d1"
+      ]
+    },
+    "[href='']": {
+      "ok": true,
+      "ids": []
+    },
+    "li:nth-child(2)": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    "li:nth-child(odd)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l3",
+        "m1",
+        "m2"
+      ]
+    },
+    "li:nth-child(2n+1)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l3",
+        "m1",
+        "m2"
+      ]
+    },
+    "li:nth-last-child(1)": {
+      "ok": true,
+      "ids": [
+        "l3",
+        "m2"
+      ]
+    },
+    "li:first-child": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "m1"
+      ]
+    },
+    "li:last-child": {
+      "ok": true,
+      "ids": [
+        "l3",
+        "m2"
+      ]
+    },
+    "li:first-of-type": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "m1"
+      ]
+    },
+    "li:last-of-type": {
+      "ok": true,
+      "ids": [
+        "l3",
+        "m2"
+      ]
+    },
+    "li:only-child": {
+      "ok": true,
+      "ids": []
+    },
+    "li:only-of-type": {
+      "ok": true,
+      "ids": []
+    },
+    "li:nth-of-type(1)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "m1"
+      ]
+    },
+    "li:nth-last-of-type(1)": {
+      "ok": true,
+      "ids": [
+        "l3",
+        "m2"
+      ]
+    },
+    "#mixed li:first-of-type": {
+      "ok": true,
+      "ids": [
+        "m1"
+      ]
+    },
+    "#mixed li:last-of-type": {
+      "ok": true,
+      "ids": [
+        "m2"
+      ]
+    },
+    "#mixed p:only-of-type": {
+      "ok": true,
+      "ids": [
+        "mp"
+      ]
+    },
+    "#solo span:only-child": {
+      "ok": true,
+      "ids": [
+        "s1"
+      ]
+    },
+    ":root": {
+      "ok": true,
+      "ids": [
+        "<html>"
+      ]
+    },
+    "#list:has(li)": {
+      "ok": true,
+      "ids": [
+        "list"
+      ]
+    },
+    "li:not(.row)": {
+      "ok": true,
+      "ids": [
+        "m1",
+        "m2"
+      ]
+    },
+    "div:has(b)": {
+      "ok": true,
+      "ids": [
+        "d1"
+      ]
+    },
+    "ul li": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3"
+      ]
+    },
+    "ul > li": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3"
+      ]
+    },
+    "#l1 + li": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    "#l1 ~ li": {
+      "ok": true,
+      "ids": [
+        "l2",
+        "l3"
+      ]
+    },
+    "*": {
+      "ok": true,
+      "ids": [
+        "<html>",
+        "<head>",
+        "ti",
+        "<body>",
+        "list",
+        "l1",
+        "l2",
+        "l3",
+        "mixed",
+        "m1",
+        "mp",
+        "m2",
+        "sel",
+        "o1",
+        "o2",
+        "sel2",
+        "o3",
+        "o4",
+        "sel3",
+        "o5",
+        "sel4",
+        "og",
+        "o6",
+        "i1",
+        "i2",
+        "i3",
+        "a1",
+        "a2",
+        "d1",
+        "b1",
+        "p1",
+        "e1",
+        "solo",
+        "s1"
+      ]
+    },
+    "li.row": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3"
+      ]
+    },
+    "li#l1": {
+      "ok": true,
+      "ids": [
+        "l1"
+      ]
+    },
+    "li:first, a:first": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "a1"
+      ]
+    },
+    ".row:first, .note": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "p1"
+      ]
+    },
+    "#l1, #l2": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2"
+      ]
+    },
+    "#l2, #l1": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2"
+      ]
+    },
+    "li:contains(beta), li:contains(alpha)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l3"
+      ]
+    },
+    "[rel!=nofollow]": {
+      "ok": true,
+      "ids": [
+        "<html>",
+        "<head>",
+        "ti",
+        "<body>",
+        "list",
+        "l1",
+        "l2",
+        "l3",
+        "mixed",
+        "m1",
+        "mp",
+        "m2",
+        "sel",
+        "o1",
+        "o2",
+        "sel2",
+        "o3",
+        "o4",
+        "sel3",
+        "o5",
+        "sel4",
+        "og",
+        "o6",
+        "i1",
+        "i2",
+        "i3",
+        "d1",
+        "b1",
+        "p1",
+        "e1",
+        "solo",
+        "s1"
+      ]
+    },
+    "[rel!=NOFOLLOW]": {
+      "ok": true,
+      "ids": [
+        "<html>",
+        "<head>",
+        "ti",
+        "<body>",
+        "list",
+        "l1",
+        "l2",
+        "l3",
+        "mixed",
+        "m1",
+        "mp",
+        "m2",
+        "sel",
+        "o1",
+        "o2",
+        "sel2",
+        "o3",
+        "o4",
+        "sel3",
+        "o5",
+        "sel4",
+        "og",
+        "o6",
+        "i1",
+        "i2",
+        "i3",
+        "d1",
+        "b1",
+        "p1",
+        "e1",
+        "solo",
+        "s1"
+      ]
+    },
+    "[type!=checkbox]": {
+      "ok": true,
+      "ids": [
+        "<html>",
+        "<head>",
+        "ti",
+        "<body>",
+        "list",
+        "l1",
+        "l2",
+        "l3",
+        "mixed",
+        "m1",
+        "mp",
+        "m2",
+        "sel",
+        "o1",
+        "o2",
+        "sel2",
+        "o3",
+        "o4",
+        "sel3",
+        "o5",
+        "sel4",
+        "og",
+        "o6",
+        "i1",
+        "i3",
+        "a1",
+        "a2",
+        "d1",
+        "b1",
+        "p1",
+        "e1",
+        "solo",
+        "s1"
+      ]
+    },
+    "[type!=CHECKBOX]": {
+      "ok": true,
+      "ids": [
+        "<html>",
+        "<head>",
+        "ti",
+        "<body>",
+        "list",
+        "l1",
+        "l2",
+        "l3",
+        "mixed",
+        "m1",
+        "mp",
+        "m2",
+        "sel",
+        "o1",
+        "o2",
+        "sel2",
+        "o3",
+        "o4",
+        "sel3",
+        "o5",
+        "sel4",
+        "og",
+        "o6",
+        "i1",
+        "i3",
+        "a1",
+        "a2",
+        "d1",
+        "b1",
+        "p1",
+        "e1",
+        "solo",
+        "s1"
+      ]
+    },
+    "[data-x!=abc]": {
+      "ok": true,
+      "ids": [
+        "<html>",
+        "<head>",
+        "ti",
+        "<body>",
+        "list",
+        "l1",
+        "l2",
+        "l3",
+        "mixed",
+        "m1",
+        "mp",
+        "m2",
+        "sel",
+        "o1",
+        "o2",
+        "sel2",
+        "o3",
+        "o4",
+        "sel3",
+        "o5",
+        "sel4",
+        "og",
+        "o6",
+        "i1",
+        "i2",
+        "i3",
+        "a1",
+        "a2",
+        "d1",
+        "b1",
+        "p1",
+        "e1",
+        "solo",
+        "s1"
+      ]
+    },
+    "[data-x!=ABC]": {
+      "ok": true,
+      "ids": [
+        "<html>",
+        "<head>",
+        "ti",
+        "<body>",
+        "list",
+        "l1",
+        "l2",
+        "l3",
+        "mixed",
+        "m1",
+        "mp",
+        "m2",
+        "sel",
+        "o1",
+        "o2",
+        "sel2",
+        "o3",
+        "o4",
+        "sel3",
+        "o5",
+        "sel4",
+        "og",
+        "o6",
+        "i1",
+        "i2",
+        "i3",
+        "a1",
+        "a2",
+        "b1",
+        "p1",
+        "e1",
+        "solo",
+        "s1"
+      ]
+    },
+    "input[type!=text]": {
+      "ok": true,
+      "ids": [
+        "i1",
+        "i2",
+        "i3"
+      ]
+    },
+    "[href!='/docs']": {
+      "ok": true,
+      "ids": [
+        "<html>",
+        "<head>",
+        "ti",
+        "<body>",
+        "list",
+        "l1",
+        "l2",
+        "l3",
+        "mixed",
+        "m1",
+        "mp",
+        "m2",
+        "sel",
+        "o1",
+        "o2",
+        "sel2",
+        "o3",
+        "o4",
+        "sel3",
+        "o5",
+        "sel4",
+        "og",
+        "o6",
+        "i1",
+        "i2",
+        "i3",
+        "a1",
+        "d1",
+        "b1",
+        "p1",
+        "e1",
+        "solo",
+        "s1"
+      ]
+    },
+    "li:eq(-1)": {
+      "ok": true,
+      "ids": [
+        "m2"
+      ]
+    },
+    "li:eq(-2)": {
+      "ok": true,
+      "ids": [
+        "m1"
+      ]
+    },
+    "li:eq(-3)": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    "li:eq(-4)": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    "#solo span:eq(-1)": {
+      "ok": true,
+      "ids": []
+    },
+    "#solo span:eq(0)": {
+      "ok": true,
+      "ids": [
+        "s1"
+      ]
+    },
+    "li:eq(1.9)": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    "li:eq(1abc)": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    "li:eq()": {
+      "ok": true,
+      "ids": []
+    },
+    "li:eq(+1)": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    "li:nth(0)": {
+      "ok": true,
+      "ids": [
+        "l1"
+      ]
+    },
+    "li:nth(1)": {
+      "ok": true,
+      "ids": [
+        "l2"
+      ]
+    },
+    "li:nth(-1)": {
+      "ok": true,
+      "ids": [
+        "m2"
+      ]
+    },
+    "li:contains( beta )": {
+      "ok": true,
+      "ids": []
+    },
+    "li:contains( beta)": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    "li:contains(beta )": {
+      "ok": true,
+      "ids": []
+    },
+    "li:contains(\" beta\")": {
+      "ok": true,
+      "ids": [
+        "l3"
+      ]
+    },
+    "p:contains( )": {
+      "ok": true,
+      "ids": [
+        "p1"
+      ]
+    },
+    "h1:contains()": {
+      "ok": true,
+      "ids": []
+    }
+  },
+  "rejected": {
+    "li:empty": {
+      "ok": true,
+      "ids": []
+    },
+    ":is(li)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3",
+        "m1",
+        "m2"
+      ]
+    },
+    ":where(li)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3",
+        "m1",
+        "m2"
+      ]
+    },
+    "li:gt(0)": {
+      "ok": true,
+      "ids": [
+        "l2",
+        "l3",
+        "m1",
+        "m2"
+      ]
+    },
+    "li:lt(2)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2"
+      ]
+    },
+    "li:even": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l3",
+        "m2"
+      ]
+    },
+    "li:odd": {
+      "ok": true,
+      "ids": [
+        "l2",
+        "m1"
+      ]
+    },
+    "input:enabled": {
+      "ok": true,
+      "ids": [
+        "i1",
+        "i2",
+        "i3"
+      ]
+    },
+    "input:disabled": {
+      "ok": true,
+      "ids": []
+    },
+    "option:selected": {
+      "ok": true,
+      "ids": [
+        "o1",
+        "o4"
+      ]
+    },
+    "li:parent": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3",
+        "m1",
+        "m2"
+      ]
+    },
+    ":header": {
+      "ok": true,
+      "ids": []
+    },
+    "li:matches(.row)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3"
+      ]
+    },
+    "li:containsOwn(alpha)": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unknown pseudo-class :containsown"
+    },
+    "div:haschild(b)": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unknown pseudo-class :haschild"
+    },
+    "p:lang(en)": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unknown pseudo-class :lang"
+    },
+    ":scope li": {
+      "ok": true,
+      "ids": []
+    },
+    "li::before": {
+      "ok": false,
+      "error": "Error",
+      "message": "Pseudo-elements are not supported by css-select"
+    },
+    "li:focus": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unknown pseudo-class :focus"
+    },
+    "li:target": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unknown pseudo-class :target"
+    },
+    ":input": {
+      "ok": true,
+      "ids": [
+        "sel",
+        "sel2",
+        "sel3",
+        "sel4",
+        "i1",
+        "i2",
+        "i3"
+      ]
+    },
+    "a:link": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "a:visited": {
+      "ok": true,
+      "ids": []
+    },
+    "a:hover": {
+      "ok": true,
+      "ids": []
+    },
+    "a:active": {
+      "ok": true,
+      "ids": []
+    },
+    "li:nth-childx(2)": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unknown pseudo-class :nth-childx"
+    },
+    "li:\\6d atches(.row)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3"
+      ]
+    },
+    "div:\\6D ATCHES(b)": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unmatched selector: )"
+    },
+    ".row:first:first": {
+      "ok": true,
+      "ids": [
+        "l1"
+      ]
+    },
+    "li:first span": {
+      "ok": true,
+      "ids": []
+    },
+    ".row:eq(0) b": {
+      "ok": true,
+      "ids": []
+    },
+    "li:contains(a) b": {
+      "ok": true,
+      "ids": []
+    },
+    ":checked + b": {
+      "ok": true,
+      "ids": []
+    },
+    "[href*='']": {
+      "ok": true,
+      "ids": []
+    },
+    "[href^='']": {
+      "ok": true,
+      "ids": []
+    },
+    "[href$='']": {
+      "ok": true,
+      "ids": []
+    },
+    "li:has(> b)": {
+      "ok": true,
+      "ids": []
+    },
+    "div:has(> b)": {
+      "ok": true,
+      "ids": [
+        "d1"
+      ]
+    },
+    "li:not(:contains(a))": {
+      "ok": true,
+      "ids": [
+        "m1",
+        "m2"
+      ]
+    },
+    "li:has(:contains(a))": {
+      "ok": true,
+      "ids": []
+    },
+    "li:not(:first)": {
+      "ok": true,
+      "ids": [
+        "l2",
+        "l3",
+        "m1",
+        "m2"
+      ]
+    },
+    "li:not(:checked)": {
+      "ok": true,
+      "ids": [
+        "l1",
+        "l2",
+        "l3",
+        "m1",
+        "m2"
+      ]
+    },
+    "li,": {
+      "ok": false,
+      "error": "Error",
+      "message": "Empty sub-selector"
+    },
+    ",li": {
+      "ok": false,
+      "error": "Error",
+      "message": "Empty sub-selector"
+    },
+    "li,,li": {
+      "ok": false,
+      "error": "Error",
+      "message": "Empty sub-selector"
+    },
+    "li, ": {
+      "ok": false,
+      "error": "Error",
+      "message": "Empty sub-selector"
+    },
+    " ,li": {
+      "ok": false,
+      "error": "Error",
+      "message": "Empty sub-selector"
+    },
+    "li/*x*/span": {
+      "ok": true,
+      "ids": []
+    },
+    "li /*x*/ span": {
+      "ok": false,
+      "error": "Error",
+      "message": "Did not expect successive traversals."
+    },
+    "li/*[*/:matches(x)": {
+      "ok": true,
+      "ids": []
+    },
+    "#list[id=list/*]*/]": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unmatched selector: /]"
+    },
+    "li/*'*/span": {
+      "ok": true,
+      "ids": []
+    },
+    "[rel!=\"\"]": {
+      "ok": true,
+      "ids": [
+        "a1",
+        "a2"
+      ]
+    },
+    "[rel~=\"\"]": {
+      "ok": true,
+      "ids": []
+    },
+    "[rel^=\"\"]": {
+      "ok": true,
+      "ids": []
+    },
+    "[rel$=\"\"]": {
+      "ok": true,
+      "ids": []
+    },
+    "[rel*=\"\"]": {
+      "ok": true,
+      "ids": []
+    },
+    "li:first :contains(a)": {
+      "ok": true,
+      "ids": []
+    },
+    "li:contains(a) :first": {
+      "ok": true,
+      "ids": []
+    },
+    "li:first > span": {
+      "ok": true,
+      "ids": []
+    },
+    "li:first:last": {
+      "ok": true,
+      "ids": [
+        "l1"
+      ]
+    },
+    "li:nth(0):first": {
+      "ok": true,
+      "ids": [
+        "l1"
+      ]
+    },
+    "[data-x=ABC s]": {
+      "ok": true,
+      "ids": [
+        "d1"
+      ]
+    },
+    "[type=checkbox s]": {
+      "ok": true,
+      "ids": []
+    },
+    "[id%b]": {
+      "ok": false,
+      "error": "Error",
+      "message": "Attribute selector didn't terminate"
+    },
+    "[id?b]": {
+      "ok": false,
+      "error": "Error",
+      "message": "Attribute selector didn't terminate"
+    },
+    "[id@b]": {
+      "ok": false,
+      "error": "Error",
+      "message": "Attribute selector didn't terminate"
+    },
+    "[id%=b]": {
+      "ok": false,
+      "error": "Error",
+      "message": "Attribute selector didn't terminate"
+    },
+    "[id$b]": {
+      "ok": false,
+      "error": "Error",
+      "message": "Expected `=`"
+    },
+    "\u000b": {
+      "ok": false,
+      "error": "Error",
+      "message": "Empty sub-selector"
+    },
+    "li\u000b": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unmatched selector: \u000b"
+    },
+    "li\u000bspan": {
+      "ok": true,
+      "ids": []
+    },
+    "": {
+      "ok": false,
+      "error": "Error",
+      "message": "Empty sub-selector"
+    },
+    "li": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unmatched selector: "
+    },
+    "lispan": {
+      "ok": true,
+      "ids": []
+    },
+    " ": {
+      "ok": false,
+      "error": "Error",
+      "message": "Empty sub-selector"
+    },
+    "li ": {
+      "ok": false,
+      "error": "Error",
+      "message": "Unmatched selector:  "
+    },
+    "li span": {
+      "ok": true,
+      "ids": []
+    }
+  },
+  "cheerio": "1.2.0"
+}

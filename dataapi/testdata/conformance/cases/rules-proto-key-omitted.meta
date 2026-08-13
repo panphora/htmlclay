@@ -1,0 +1,7 @@
+tier: 1
+face: query
+expect: ok
+note: A "__proto__" rule key parses (JSON.parse defines it as an OWN property, so it is in the
+note: parsed tree) but cannot be written: extractAt does `result[key] =`, which on a plain object
+note: hits the legacy Object.prototype __proto__ setter and re-parents `result` instead of adding
+note: a key. The key is silently absent from the output; sibling keys are unaffected.

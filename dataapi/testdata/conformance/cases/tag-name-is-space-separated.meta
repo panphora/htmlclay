@@ -1,0 +1,6 @@
+tier: 1
+face: tag
+token: api
+expect: ok
+note: data-rules-name is a space-separated token LIST, matched with ~=, so "api other" answers
+note: to the token api. One tag can serve several named consumers.
