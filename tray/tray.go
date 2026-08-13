@@ -84,9 +84,19 @@ type Tray struct {
 	grantOverflow *systray.MenuItem
 	grantSlots    []*trustedSlot
 	grantMu       sync.Mutex
+
+	workspaces     *TrustedFolderHooks
+	opened         *GrantHooks
+	workspacesMenu *listMenu
+	openedMenu     *listMenu
 }
 
-func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, grants *GrantHooks) {
+// Run starts the tray. workspaces drives the Workspace Folders submenu
+// (TrustedFolderHooks shape: it has an Add flow) and opened drives the Opened
+// for Editing submenu (GrantHooks shape: entries are created elsewhere, the
+// tray only lists and revokes). Both are polled, because their page-request
+// routes create entries with no handle to the tray.
+func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, grants *GrantHooks, workspaces *TrustedFolderHooks, opened *GrantHooks) {
 	t := &Tray{
 		cfg:           cfg,
 		onOpenExample: onOpenExample,
@@ -95,8 +105,127 @@ func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit 
 		updateCh:      updateCh,
 		trusted:       trusted,
 		grants:        grants,
+		workspaces:    workspaces,
+		opened:        opened,
 	}
 	systray.Run(t.onReady, t.onExit)
+}
+
+// listMenu generalizes the trusted/grant submenu pattern for the newer menus:
+// an authoritative-list render into a fixed slot pool (systray cannot delete
+// rows), an optional add row, per-row click actions, and polling for lists
+// that change outside the tray. The slot-stability contract matches
+// renderTrusted: a queued click stays bound to the row it aimed at.
+type listMenu struct {
+	mu         sync.Mutex
+	empty      *systray.MenuItem
+	overflow   *systray.MenuItem
+	slots      []*trustedSlot
+	rowTooltip string
+}
+
+func newListMenu(title, tooltip, emptyText, addTitle, addTooltip string) (*listMenu, *systray.MenuItem) {
+	menu := systray.AddMenuItem(title, tooltip)
+	var addItem *systray.MenuItem
+	if addTitle != "" {
+		addItem = menu.AddSubMenuItem(addTitle, addTooltip)
+	}
+	lm := &listMenu{}
+	lm.empty = menu.AddSubMenuItem(emptyText, "")
+	lm.empty.Disable()
+	lm.slots = make([]*trustedSlot, trustedSlotCount)
+	for i := range lm.slots {
+		item := menu.AddSubMenuItem("", "")
+		item.Hide()
+		lm.slots[i] = &trustedSlot{item: item}
+	}
+	lm.overflow = menu.AddSubMenuItem("", "")
+	lm.overflow.Disable()
+	lm.overflow.Hide()
+	return lm, addItem
+}
+
+func (lm *listMenu) render(list []string) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	want := make(map[string]bool, len(list))
+	for _, p := range list {
+		want[p] = true
+	}
+	assigned := make(map[string]bool, len(list))
+	for _, slot := range lm.slots {
+		switch {
+		case slot.path == "":
+		case want[slot.path]:
+			assigned[slot.path] = true
+		default:
+			slot.path = ""
+			slot.item.Hide()
+		}
+	}
+	overflow := 0
+	for _, p := range list {
+		if assigned[p] {
+			continue
+		}
+		placed := false
+		for _, slot := range lm.slots {
+			if slot.path == "" {
+				slot.path = p
+				slot.item.SetTitle(p)
+				slot.item.SetTooltip(lm.rowTooltip)
+				slot.item.Show()
+				assigned[p] = true
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			overflow++
+		}
+	}
+	if len(assigned) == 0 {
+		lm.empty.Show()
+	} else {
+		lm.empty.Hide()
+	}
+	if overflow > 0 {
+		lm.overflow.SetTitle(fmt.Sprintf("…and %d more not shown", overflow))
+		lm.overflow.Show()
+	} else {
+		lm.overflow.Hide()
+	}
+}
+
+// watch spawns the per-row click goroutines and, when poll is set, the poller
+// that keeps the menu in step with entries created outside the tray.
+func (lm *listMenu) watch(onRow func(string) []string, poll func() []string) {
+	for i := range lm.slots {
+		i := i
+		go func() {
+			for range lm.slots[i].item.ClickedCh {
+				lm.mu.Lock()
+				p := lm.slots[i].path
+				lm.mu.Unlock()
+				if p == "" || onRow == nil {
+					continue
+				}
+				if list := onRow(p); list != nil {
+					lm.render(list)
+				}
+			}
+		}()
+	}
+	if poll != nil {
+		go func() {
+			ticker := time.NewTicker(grantPollInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				lm.render(poll())
+			}
+		}()
+	}
 }
 
 func (t *Tray) onReady() {
@@ -121,9 +250,11 @@ func (t *Tray) onReady() {
 	systray.AddSeparator()
 
 	addTrustedItem := t.buildTrustedMenu()
+	addWorkspaceItem := t.buildWorkspaceMenu()
 	systray.AddSeparator()
 
 	t.buildGrantMenu()
+	t.buildOpenedMenu()
 	systray.AddSeparator()
 
 	mode := t.cfg.CurrentMode()
@@ -165,6 +296,72 @@ func (t *Tray) onReady() {
 
 	t.watchTrustedMenu(addTrustedItem)
 	t.watchGrantMenu()
+	t.watchWorkspaceMenu(addWorkspaceItem)
+	if t.openedMenu != nil && t.opened != nil {
+		t.openedMenu.watch(t.opened.Revoke, t.opened.List)
+	}
+}
+
+// buildWorkspaceMenu adds the Workspace Folders submenu: an add row, and rows
+// that remove their workspace on click. Polled, because the page-request route
+// declares workspaces with no handle to the tray.
+func (t *Tray) buildWorkspaceMenu() *systray.MenuItem {
+	if t.workspaces == nil {
+		return nil
+	}
+	lm, addItem := newListMenu(
+		"Workspace Folders",
+		"Folders whose HTML Clay files open editable with no prompts — and can change each other",
+		"No workspace folders yet",
+		"Add Workspace Folder…",
+		"Pick a folder to declare a workspace",
+	)
+	lm.rowTooltip = "Click to remove this workspace"
+	t.workspacesMenu = lm
+	if t.workspaces.List != nil {
+		lm.render(t.workspaces.List())
+	}
+	return addItem
+}
+
+// watchWorkspaceMenu wires the add flow (in its own goroutine — the folder
+// picker blocks) and the row/poll machinery.
+func (t *Tray) watchWorkspaceMenu(addItem *systray.MenuItem) {
+	if t.workspaces == nil || t.workspacesMenu == nil {
+		return
+	}
+	if addItem != nil && t.workspaces.Add != nil {
+		go func() {
+			for range addItem.ClickedCh {
+				go func() {
+					if list := t.workspaces.Add(); list != nil {
+						t.workspacesMenu.render(list)
+					}
+				}()
+			}
+		}()
+	}
+	t.workspacesMenu.watch(t.workspaces.Remove, t.workspaces.List)
+}
+
+// buildOpenedMenu adds the Opened for Editing submenu: files a page opened
+// with the user's approval, revocable per row. Polled, because open-request
+// approvals happen on request goroutines with no handle to the tray.
+func (t *Tray) buildOpenedMenu() {
+	if t.opened == nil {
+		return
+	}
+	lm, _ := newListMenu(
+		"Opened for Editing",
+		"Files a page opened with your approval this session",
+		"Nothing opened from a page",
+		"", "",
+	)
+	lm.rowTooltip = "Click to revoke this file's editing session"
+	t.openedMenu = lm
+	if t.opened.List != nil {
+		lm.render(t.opened.List())
+	}
 }
 
 // buildTrustedMenu adds the "Trusted Folders" submenu: an "Add" row, a disabled

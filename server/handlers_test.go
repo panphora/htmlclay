@@ -25,7 +25,7 @@ func setupHandlerTest(t *testing.T) (*Server, *session.File, string) {
 	os.WriteFile(filePath, []byte(content), 0644)
 
 	mgr := newTestManager(t, homeDir)
-	f, err := mgr.Register(filePath)
+	f, err := mgr.Register(filePath, session.ViaOsOpen)
 	if err != nil {
 		t.Fatalf("register error: %v", err)
 	}
@@ -49,7 +49,7 @@ func registerSubdirPage(t *testing.T, srv *Server, dirName string) string {
 	os.MkdirAll(dir, 0755)
 	page := filepath.Join(dir, "page.htmlclay")
 	os.WriteFile(page, []byte("<!DOCTYPE html>\n<html><body>sub</body></html>"), 0644)
-	if _, err := srv.sessions.Register(page); err != nil {
+	if _, err := srv.sessions.Register(page, session.ViaOsOpen); err != nil {
 		t.Fatalf("register subdir page: %v", err)
 	}
 	return dir
@@ -153,7 +153,7 @@ func TestReadRouteRefusesSymlinkIntoInternal(t *testing.T) {
 	}
 
 	mgr := newTestManager(t, homeDir)
-	f, err := mgr.Register(page)
+	f, err := mgr.Register(page, session.ViaOsOpen)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestServeAssetOutsideOpenedDirs(t *testing.T) {
 	os.WriteFile(filepath.Join(homeDir, "other", "secret.txt"), []byte("secret"), 0644)
 
 	mgr := newTestManager(t, homeDir)
-	if _, err := mgr.Register(pagePath); err != nil {
+	if _, err := mgr.Register(pagePath, session.ViaOsOpen); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -423,7 +423,7 @@ func TestServeAssetSymlinkEscape(t *testing.T) {
 	os.Symlink(secret, filepath.Join(homeDir, "site", "link.txt"))
 
 	mgr := newTestManager(t, homeDir)
-	if _, err := mgr.Register(pagePath); err != nil {
+	if _, err := mgr.Register(pagePath, session.ViaOsOpen); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -494,7 +494,7 @@ func TestServeAssetSymlinkEscapeOutsideHomeRefused(t *testing.T) {
 	}
 
 	mgr := newTestManager(t, homeDir)
-	if _, err := mgr.Register(pagePath); err != nil {
+	if _, err := mgr.Register(pagePath, session.ViaOsOpen); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -569,7 +569,7 @@ func TestVersionsTreeRefusedOnServePath(t *testing.T) {
 	store := versions.New(storeDir)
 
 	mgr := newTestManager(t, homeDir)
-	if _, err := mgr.Register(pagePath); err != nil { // opened root = home/site
+	if _, err := mgr.Register(pagePath, session.ViaOsOpen); err != nil { // opened root = home/site
 		t.Fatalf("register: %v", err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -610,7 +610,7 @@ func TestServeOpenedHTMLFileNotMutated(t *testing.T) {
 	os.WriteFile(pagePath, []byte(content), 0644)
 
 	mgr := newTestManager(t, homeDir)
-	f, err := mgr.Register(pagePath)
+	f, err := mgr.Register(pagePath, session.ViaOsOpen)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}

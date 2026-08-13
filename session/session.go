@@ -17,11 +17,39 @@ import (
 // the user's home directory. Callers use it to surface a clear user-facing error.
 var ErrOutsideHome = errors.New("path is outside home directory")
 
+// Provenance records how a file's registration came to exist, as independent
+// accumulating flags rather than one value. A file can be more than one thing
+// at once — OS-opened AND covered by a workspace — and collapsing that into a
+// single enum repeats the bug root provenance already fixed (see readRoot):
+// revoking one origin of the capability silently destroyed the other's.
+type Provenance uint8
+
+const (
+	// ViaOsOpen: the user opened the file itself (double-click, drag, CLI, or
+	// the open-file event). The most deliberate act, and the only provenance
+	// that may request workspace promotion for its folder.
+	ViaOsOpen Provenance = 1 << iota
+	// ViaOpenRequest: the user approved the served page's open-for-editing
+	// dialog for this exact file.
+	ViaOpenRequest
+	// ViaWorkspace: the file auto-registered because it sits under a declared
+	// workspace folder. Grants no opened read root of its own; reads and the
+	// save capability ride the workspace root and end with it.
+	ViaWorkspace
+)
+
+func (p Provenance) Has(flag Provenance) bool { return p&flag != 0 }
+
 type File struct {
 	Token   string
 	AbsPath string
 	RelPath string
 	Name    string
+
+	// via accumulates how this registration came to exist. Guarded by the
+	// owning Manager's mu, not the file lock: it is registration state, written
+	// by Register and read through Manager.Via.
+	via Provenance
 
 	writeMu sync.Mutex
 
@@ -126,9 +154,10 @@ func (f *File) NoteFirstObservation(hash string) bool {
 type rootKind int
 
 const (
-	rootOpened  rootKind = iota // dir of a file the user explicitly opened
-	rootGranted                 // dir the user approved via the permission dialog
-	rootTrusted                 // dir the user marked trusted; seeded for anchors inside it
+	rootOpened    rootKind = iota // dir of a file the user explicitly opened
+	rootGranted                   // dir the user approved via the permission dialog
+	rootTrusted                   // dir the user marked trusted; seeded for anchors inside it
+	rootWorkspace                 // dir the user declared a workspace; seeded for anchors inside it
 )
 
 // readRoot is a directory a session's page is allowed to read. Reads are
@@ -142,10 +171,11 @@ const (
 // revoking a grant deleted the whole entry and took away the capability the open
 // (or trust) had created, silently 404ing the opened page's own siblings.
 type readRoot struct {
-	path    string
-	opened  bool
-	granted bool
-	trusted bool // seeded from a TrustedFolders entry this anchor lives inside
+	path      string
+	opened    bool
+	granted   bool
+	trusted   bool // seeded from a TrustedFolders entry this anchor lives inside
+	workspace bool // seeded from a WorkspaceFolders entry this anchor lives inside
 	// root is the held capability, opened when the root is installed and closed
 	// when it is revoked. Reads go through it rather than re-opening the directory
 	// per request, so a component swapped for a symlink between authorization and
@@ -349,17 +379,37 @@ func generateToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(tokenBytes), nil
 }
 
-func (m *Manager) Register(absPath string) (*File, error) {
+func (m *Manager) Register(absPath string, via Provenance) (*File, error) {
 	cleaned, err := resolveAndValidate(absPath, m.homeDir)
 	if err != nil {
 		return nil, err
 	}
 
+	// The hidden and guard refusals live here, in the one place every
+	// registration passes through, so no caller — the OS open, the page's
+	// open-request, or a workspace auto-register — can forget them. The serve
+	// path already refuses to read hidden and internal files against the open
+	// descriptor (openRegisteredFile), so refusing here removes no working
+	// capability; it stops a registration from minting a token and installing a
+	// read root for a file that could never legally be served.
+	if m.hasHiddenComponent(cleaned) {
+		return nil, fmt.Errorf("path %q contains a hidden component", cleaned)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.guard != nil && m.guard(cleaned) {
+		return nil, fmt.Errorf("path %q is in a forbidden location", cleaned)
+	}
+
 	if token, ok := m.byPath[cleaned]; ok {
-		return m.byToken[token], nil
+		f := m.byToken[token]
+		f.via |= via
+		if via&(ViaOsOpen|ViaOpenRequest) != 0 {
+			_ = m.installReadRoot(filepath.Dir(cleaned), rootOpened)
+		}
+		return f, nil
 	}
 
 	token, err := generateToken()
@@ -377,6 +427,7 @@ func (m *Manager) Register(absPath string) (*File, error) {
 		AbsPath: cleaned,
 		RelPath: relPath,
 		Name:    filepath.Base(cleaned),
+		via:     via,
 	}
 
 	m.byToken[token] = f
@@ -388,8 +439,83 @@ func (m *Manager) Register(absPath string) (*File, error) {
 	// saves (that path reads f.AbsPath directly); only its sibling assets, which
 	// go through the handle, would 404, and the directory we just resolved a file
 	// in cannot realistically fail to open.
-	_ = m.installReadRoot(filepath.Dir(cleaned), rootOpened)
+	//
+	// A workspace auto-registration deliberately installs NO opened root: its
+	// reads already ride the workspace root, and an extra opened root would keep
+	// the folder readable after the workspace is revoked, which is exactly the
+	// zombie capability revocation exists to end.
+	if via&(ViaOsOpen|ViaOpenRequest) != 0 {
+		_ = m.installReadRoot(filepath.Dir(cleaned), rootOpened)
+	}
 	return f, nil
+}
+
+// RegistrationInfo is a snapshot of one registration, for the tray and for
+// provenance-aware revocation sweeps.
+type RegistrationInfo struct {
+	Path string
+	Via  Provenance
+}
+
+// Registrations returns a snapshot of every registration and its provenance.
+func (m *Manager) Registrations() []RegistrationInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]RegistrationInfo, 0, len(m.byPath))
+	for path, token := range m.byPath {
+		out = append(out, RegistrationInfo{Path: path, Via: m.byToken[token].via})
+	}
+	return out
+}
+
+// Via reports the accumulated provenance of the registration at absPath, or 0
+// when absPath is not registered.
+func (m *Manager) Via(absPath string) Provenance {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if token, ok := m.byPath[absPath]; ok {
+		return m.byToken[token].via
+	}
+	return 0
+}
+
+// Unregister withdraws absPath's registration: the token dies immediately, and
+// the opened root the registration installed is dropped when no other
+// registered file in that directory needs it and no other provenance (grant,
+// trust, workspace) holds the root. It reports whether a registration was
+// removed. Live-sync subscribers for the path are the caller's to tear down;
+// the session manager does not know the hub.
+func (m *Manager) Unregister(absPath string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	token, ok := m.byPath[absPath]
+	if !ok {
+		return false
+	}
+	delete(m.byPath, absPath)
+	delete(m.byToken, token)
+
+	dir := filepath.Dir(absPath)
+	rr, ok := m.readRoots[dir]
+	if !ok || !rr.opened {
+		return true
+	}
+	for other, tok := range m.byPath {
+		// Only registrations that install opened roots count as holders; a
+		// workspace-only sibling never created this root and must not pin it
+		// past the workspace's own revocation.
+		if filepath.Dir(other) == dir && m.byToken[tok].via&(ViaOsOpen|ViaOpenRequest) != 0 {
+			return true
+		}
+	}
+	rr.opened = false
+	if !rr.granted && !rr.trusted && !rr.workspace {
+		if rr.root != nil {
+			rr.root.Close()
+		}
+		delete(m.readRoots, dir)
+	}
+	return true
 }
 
 // installReadRoot records dir as a readable root with the given provenance and,
@@ -418,6 +544,8 @@ func (m *Manager) installReadRoot(dir string, kind rootKind) error {
 		rr.granted = true
 	case rootTrusted:
 		rr.trusted = true
+	case rootWorkspace:
+		rr.workspace = true
 	}
 	return nil
 }
@@ -451,6 +579,55 @@ func (m *Manager) InstallTrustedRoot(canonical string) error {
 // capability to a directory the user never saw.
 func (m *Manager) GrantCanonicalRoot(canonical string) error {
 	return m.installCanonicalRoot(canonical, rootGranted)
+}
+
+// InstallWorkspaceRoot installs an ALREADY-canonical workspace folder (resolved
+// and identity-checked by the caller) with its own provenance. Same contract as
+// InstallTrustedRoot: the stored path is the folder's identity and is not
+// re-resolved here, and the path is still re-validated (inside home, no hidden
+// component, not guard-vetoed) so a tampered config entry cannot install a
+// forbidden root. Unlike every other root kind, a workspace root is
+// write-granting: files under it auto-register and mint save tokens.
+func (m *Manager) InstallWorkspaceRoot(canonical string) error {
+	return m.installCanonicalRoot(canonical, rootWorkspace)
+}
+
+// RevokeWorkspaceRoot withdraws a seeded workspace root when the user removes
+// the workspace in the tray. dir must be the canonical path InstallWorkspaceRoot
+// keyed on. A root an open, grant, or trust also created survives with that
+// provenance intact.
+func (m *Manager) RevokeWorkspaceRoot(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rr, ok := m.readRoots[dir]
+	if !ok {
+		return
+	}
+	rr.workspace = false
+	if !rr.opened && !rr.granted && !rr.trusted {
+		if rr.root != nil {
+			rr.root.Close()
+		}
+		delete(m.readRoots, dir)
+	}
+}
+
+// WorkspaceCovers reports whether an installed workspace root covers absPath.
+// Saves re-check this at write time for workspace-provenance registrations, so
+// revoking a workspace genuinely ends its write capability even for a session
+// that was already minted and looked up.
+func (m *Manager) WorkspaceCovers(absPath string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, rr := range m.readRoots {
+		if !rr.workspace {
+			continue
+		}
+		if _, hit := ContainWithinHome(rr.path, absPath); hit {
+			return true
+		}
+	}
+	return false
 }
 
 // installValidatedRoot resolves symlinks in dir, then installs the resolved path.
@@ -504,7 +681,7 @@ func (m *Manager) RevokeReadRoot(dir string) {
 		return
 	}
 	rr.granted = false
-	if !rr.opened && !rr.trusted {
+	if !rr.opened && !rr.trusted && !rr.workspace {
 		if rr.root != nil {
 			rr.root.Close()
 		}
@@ -524,7 +701,7 @@ func (m *Manager) RevokeTrustedRoot(dir string) {
 		return
 	}
 	rr.trusted = false
-	if !rr.opened && !rr.granted {
+	if !rr.opened && !rr.granted && !rr.workspace {
 		if rr.root != nil {
 			rr.root.Close()
 		}
@@ -656,10 +833,11 @@ func (m *Manager) OpenAsset(absPath string) (file *os.File, authorized bool, err
 // RootInfo is a snapshot of one installed read root, for the tray to display and
 // manage. The provenance flags are independent (a dir can be more than one).
 type RootInfo struct {
-	Path    string
-	Opened  bool
-	Granted bool
-	Trusted bool
+	Path      string
+	Opened    bool
+	Granted   bool
+	Trusted   bool
+	Workspace bool
 }
 
 // ReadRoots returns a snapshot of the installed read roots, sorted by path for
@@ -668,7 +846,7 @@ func (m *Manager) ReadRoots() []RootInfo {
 	m.mu.RLock()
 	out := make([]RootInfo, 0, len(m.readRoots))
 	for _, rr := range m.readRoots {
-		out = append(out, RootInfo{Path: rr.path, Opened: rr.opened, Granted: rr.granted, Trusted: rr.trusted})
+		out = append(out, RootInfo{Path: rr.path, Opened: rr.opened, Granted: rr.granted, Trusted: rr.trusted, Workspace: rr.workspace})
 	}
 	m.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })

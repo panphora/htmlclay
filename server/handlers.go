@@ -97,7 +97,13 @@ func extractFilePath(rawPath string) string {
 }
 
 func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
-	relPath := extractFilePath(r.PathValue("path"))
+	s.serveFile(w, r, r.PathValue("path"))
+}
+
+// serveFile serves a GET for a path. rawPath is the request path before
+// extractFilePath truncation, because serveAsset needs it intact.
+func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, rawPath string) {
+	relPath := extractFilePath(rawPath)
 
 	absPath, err := ValidatePath(relPath, s.sessions.HomeDir())
 	if err != nil {
@@ -127,7 +133,7 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		// missing out-of-scope path would 404 instantly while a present one parked
 		// and 403'd, which enumerates the home tree. Hand it to serveAsset, which
 		// classifies scope on the lexical path and parks either way.
-		s.serveAsset(w, r, r.PathValue("path"))
+		s.serveAsset(w, r, rawPath)
 		return
 	}
 	absPath = filepath.Clean(resolved)
@@ -141,10 +147,30 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 
 	f, ok := s.sessions.LookupByPath(absPath)
 	if !ok {
-		s.serveAsset(w, r, r.PathValue("path"))
+		// An unregistered HTML Clay document under a workspace root registers
+		// itself through the app seam before serving, so a link inside a
+		// workspace lands on an editable page with no prompt. Everything about
+		// the decision up to the seam call is lock- and string-work only
+		// (workspace scope first, then hidden/internal), preserving the
+		// oracle-avoidance ordering serveAsset relies on.
+		if s.shouldAutoRegister(r, absPath) {
+			if regFile, handled := s.autoRegister(w, r, absPath); handled {
+				return
+			} else if regFile != nil {
+				s.serveRegistered(w, r, regFile)
+				return
+			}
+		}
+		s.serveAsset(w, r, rawPath)
 		return
 	}
 
+	s.serveRegistered(w, r, f)
+}
+
+// serveRegistered serves a registered file with its identity and, on a real
+// document load, its save token.
+func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *session.File) {
 	f.Lock()
 	data, err := s.readRegisteredFile(f.AbsPath)
 	if err != nil {
@@ -207,19 +233,26 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		// compares like-for-like and does not false-positive as a stale write.
 		f.NoteFirstObservation(versions.Hash(data))
 
-		// The snapshot stores the raw disk bytes, not the injected ones, so it
-		// dedups against the first save's pre-write backup instead of doubling
-		// every file.
-		if _, bErr := s.versions.Backup(key, f.AbsPath, data); bErr != nil {
-			s.logger.Printf("First-open snapshot failed for %s: %v", f.RelPath, bErr)
-		} else if provisional {
-			// This snapshot's identity was freshly minted; mark it so it is
-			// reclaimed if no save ever makes it durable.
-			if pErr := s.versions.SetProvisional(key, f.AbsPath, true); pErr != nil {
-				s.logger.Printf("Could not mark provisional history for %s: %v", f.RelPath, pErr)
+		// A workspace auto-registration skips the first-serve snapshot: a page
+		// can pull a whole tree into registration, and snapshotting each file on
+		// serve would copy the tree into the versions store on a page's say-so.
+		// Nothing durable is lost — the first real save's pre-write backup still
+		// captures the pre-existing state, because no history exists yet.
+		if s.sessions.Via(f.AbsPath) != session.ViaWorkspace {
+			// The snapshot stores the raw disk bytes, not the injected ones, so it
+			// dedups against the first save's pre-write backup instead of doubling
+			// every file.
+			if _, bErr := s.versions.Backup(key, f.AbsPath, data); bErr != nil {
+				s.logger.Printf("First-open snapshot failed for %s: %v", f.RelPath, bErr)
+			} else if provisional {
+				// This snapshot's identity was freshly minted; mark it so it is
+				// reclaimed if no save ever makes it durable.
+				if pErr := s.versions.SetProvisional(key, f.AbsPath, true); pErr != nil {
+					s.logger.Printf("Could not mark provisional history for %s: %v", f.RelPath, pErr)
+				}
 			}
+			pruneKey = key
 		}
-		pruneKey = key
 	}
 	f.Unlock()
 
@@ -228,7 +261,15 @@ func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		s.versions.MaybePrune(pruneKey, f.AbsPath)
 	}
 
-	served = htmlutil.InjectToken(served, f.Token)
+	// The token is a save capability, and it rides only into real documents. A
+	// silent fetch() (Sec-Fetch-Dest: empty), an iframe, or a subresource request
+	// gets the same bytes without the token, so harvesting a sibling page's
+	// capability needs a visible top-level tab per victim instead of an invisible
+	// loop. Absent means a legacy browser without Sec-Fetch support, which keeps
+	// the document behavior; every current browser sends the header.
+	if dest := r.Header.Get("Sec-Fetch-Dest"); dest == "" || dest == "document" {
+		served = htmlutil.InjectToken(served, f.Token)
+	}
 
 	// B0: edit mode via cookie, matching hyperclay-local. Both clients fall back
 	// to exactly this cookie, read synchronously from document.cookie, and the
@@ -362,6 +403,14 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	if s.isInternal(real) || session.HasHiddenComponent(s.sessions.HomeDir(), real) {
 		s.logger.Printf("Denying asset resolving to internal/hidden path: %s", absPath)
 		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	// A read-only HTML Clay document reached by a real user navigation forks to
+	// the bannered path: buffered, nonce-bearing, uncacheable. Everything else
+	// (assets, fetches, iframes, non-.htmlclay pages) streams below unchanged.
+	if s.shouldOfferOpen(r, real) {
+		s.serveReadOnlyWithBanner(w, file, real)
 		return
 	}
 
@@ -516,9 +565,25 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// workspaceWriteRevoked reports whether f's only claim to a save capability was
+// workspace coverage that has since been revoked. Revoking a workspace
+// unregisters its files, so the token normally dies with it; this closes the
+// gap for a request that resolved its token before the revoke landed, so
+// revocation bites even a session already looked up.
+func (s *Server) workspaceWriteRevoked(f *session.File) bool {
+	via := s.sessions.Via(f.AbsPath)
+	return via.Has(session.ViaWorkspace) &&
+		via&(session.ViaOsOpen|session.ViaOpenRequest) == 0 &&
+		!s.sessions.WorkspaceCovers(f.AbsPath)
+}
+
 func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.lookupSession(w, r)
 	if !ok {
+		return
+	}
+	if s.workspaceWriteRevoked(f) {
+		s.writeError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
 
@@ -560,6 +625,9 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body = htmlutil.StripToken(body)
+	// A banner that reached a token-holding tab (live-sync can push one into an
+	// edit-mode page) must never autosave itself into the file.
+	body = htmlutil.StripBanner(body)
 
 	// A valid save is always a full document (the browser serializes
 	// documentElement.outerHTML). Reject anything without an <html> tag so a

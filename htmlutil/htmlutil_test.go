@@ -2,6 +2,7 @@ package htmlutil
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -503,5 +504,66 @@ func TestIsCompleteHTMLDocumentRequiresTagNameDelimiter(t *testing.T) {
 		if got := IsCompleteHTMLDocument([]byte(c.data)); got != c.want {
 			t.Errorf("%s: IsCompleteHTMLDocument(%q) = %v, want %v", c.name, c.data, got, c.want)
 		}
+	}
+}
+
+func TestInjectBannerBeforeRealCloseTag(t *testing.T) {
+	banner := WrapBanner([]byte(`<div id="b">open?</div>`))
+
+	doc := []byte(`<html><body>content</body></html>`)
+	out := string(InjectBanner(doc, banner))
+	want := `<html><body>content</body>` + string(banner) + `</html>`
+	if out != want {
+		t.Fatalf("banner misplaced:\n got %q\nwant %q", out, want)
+	}
+
+	// A fake close tag inside a comment or a script is text, not a tag; the
+	// banner must land before the REAL close.
+	tricky := []byte(`<html><body><!-- </html> --><script>var a="</html>"</script>tail</body></html>`)
+	outTricky := string(InjectBanner(tricky, banner))
+	if !strings.HasSuffix(outTricky, string(banner)+`</html>`) {
+		t.Fatalf("banner not before the real close tag: %q", outTricky)
+	}
+	if strings.Count(outTricky, string(banner)) != 1 {
+		t.Fatalf("banner injected more than once: %q", outTricky)
+	}
+
+	// No close tag: appended at the end.
+	open := []byte(`<html><body>partial`)
+	if got := string(InjectBanner(open, banner)); got != string(open)+string(banner) {
+		t.Fatalf("bannerless-close doc: %q", got)
+	}
+
+	// No <html> tag at all: served unchanged rather than guessed at.
+	frag := []byte(`<div>fragment</div>`)
+	if got := string(InjectBanner(frag, banner)); got != string(frag) {
+		t.Fatalf("fragment must be unchanged: %q", got)
+	}
+}
+
+func TestStripBannerRemovesEveryInjection(t *testing.T) {
+	banner := WrapBanner([]byte(`<div>open?</div>`))
+	doc := []byte(`<html><body>content</body></html>`)
+
+	injected := InjectBanner(doc, banner)
+	if got := string(StripBanner(injected)); got != string(doc) {
+		t.Fatalf("strip(inject(doc)) != doc: %q", got)
+	}
+
+	// Multiple banners (a live-sync echo can duplicate one) all go.
+	double := InjectBanner(injected, banner)
+	if got := string(StripBanner(double)); got != string(doc) {
+		t.Fatalf("double banner survived: %q", got)
+	}
+
+	// No marker: unchanged.
+	if got := string(StripBanner(doc)); got != string(doc) {
+		t.Fatalf("bannerless doc changed: %q", got)
+	}
+
+	// An unterminated start marker strips nothing rather than guessing.
+	unterminated := []byte(`<html><body><!--htmlclay-banner--><div>x</div></body></html>`)
+	if got := string(StripBanner(unterminated)); got != string(unterminated) {
+		t.Fatalf("unterminated marker mangled the doc: %q", got)
 	}
 }

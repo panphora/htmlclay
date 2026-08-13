@@ -32,6 +32,35 @@ func ValidatePath(relPath string, homeDir string) (string, error) {
 	return canonical, nil
 }
 
+// sameOrigin admits a request only when the browser attests it was made by this
+// site's own page: Sec-Fetch-Site must be exactly "same-origin" AND Origin must
+// name this exact origin. It wraps every mutating /_/ route and both live-sync
+// routes.
+//
+// "same-site" is rejected because on loopback it means nothing: localhost:3000
+// reaches localhost:<this port> as same-site, so any local web tool's page could
+// drive these routes through the user's own browser. Absent headers are rejected
+// because a page in an old browser without Sec-Fetch-* support sends no Origin
+// on its no-cors requests either, and failing open there re-opens the same hole.
+// Every real client request to these routes (fetch POSTs, EventSource's
+// cors-mode GET) carries both headers, and both are browser-controlled: a page
+// cannot forge them. A non-browser local process can, but such a process runs as
+// the user and needs no confused deputy.
+//
+// The Host header was already validated upstream (HostValidationMiddleware), so
+// comparing Origin against it binds the request to this site's own origin,
+// port included.
+func sameOrigin(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Sec-Fetch-Site") != "same-origin" ||
+			r.Header.Get("Origin") != "http://"+r.Host {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		h(w, r)
+	}
+}
+
 func HostValidationMiddleware(next http.Handler, port int) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !ValidateHost(r, port) {

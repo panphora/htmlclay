@@ -34,3 +34,13 @@ func (ls *LiveSync) Shutdown() {
 	ls.hub.shutdown()
 	ls.watcher.shutdown()
 }
+
+// DropSubscribers closes every SSE stream for path, across every site. Used by
+// revocation: a live stream resolved its *session.File once and would otherwise
+// loop forever after the registration died. Each stopped stream unwinds through
+// its handler's deferred coordinator remove, which drops the watcher reference
+// and hub membership idempotently — teardown by eviction, not a second
+// bookkeeping path.
+func (ls *LiveSync) DropSubscribers(path string) {
+	ls.hub.dropSubscribers(path)
+}

@@ -215,7 +215,7 @@ func setupLiveSyncTest(t *testing.T) (*Server, *session.File) {
 	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 
 	mgr := newTestManager(t, homeDir)
-	f, err := mgr.Register(filePath)
+	f, err := mgr.Register(filePath, session.ViaOsOpen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestSSEStreamFlushesOverARealConnection(t *testing.T) {
 	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 
 	mgr := newTestManager(t, homeDir)
-	f, err := mgr.Register(filePath)
+	f, err := mgr.Register(filePath, session.ViaOsOpen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,6 +389,7 @@ func TestSSEStreamFlushesOverARealConnection(t *testing.T) {
 	pageURL := base + "/page.htmlclay"
 
 	req, _ := http.NewRequest("GET", base+"/_/live-sync/stream?page-url="+url.QueryEscape(pageURL)+"&lane=live", nil)
+	sameOriginHeaders(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -473,7 +474,7 @@ func TestShutdownClosesActiveStreamsPromptly(t *testing.T) {
 	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 
 	mgr := newTestManager(t, homeDir)
-	f, _ := mgr.Register(filePath)
+	f, _ := mgr.Register(filePath, session.ViaOsOpen)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -484,7 +485,8 @@ func TestShutdownClosesActiveStreamsPromptly(t *testing.T) {
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", srv.port)
 	pageURL := base + "/page.htmlclay"
-	resp, err := http.Get(base + "/_/live-sync/stream?page-url=" + url.QueryEscape(pageURL))
+	streamReq, _ := http.NewRequest("GET", base+"/_/live-sync/stream?page-url="+url.QueryEscape(pageURL), nil)
+	resp, err := http.DefaultClient.Do(sameOriginHeaders(streamReq))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +529,7 @@ func TestLiveSyncRejectsSymlinkEscape(t *testing.T) {
 	}
 
 	mgr := newTestManager(t, homeDir)
-	if _, err := mgr.Register(pagePath); err != nil {
+	if _, err := mgr.Register(pagePath, session.ViaOsOpen); err != nil {
 		t.Fatal(err)
 	}
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
@@ -840,7 +842,7 @@ func TestClosedStreamStopsTheWatcher(t *testing.T) {
 	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
 
 	mgr := newTestManager(t, homeDir)
-	f, _ := mgr.Register(filePath)
+	f, _ := mgr.Register(filePath, session.ViaOsOpen)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -855,7 +857,8 @@ func TestClosedStreamStopsTheWatcher(t *testing.T) {
 	})
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", srv.port)
-	resp, err := http.Get(base + "/_/live-sync/stream?page-url=" + url.QueryEscape(base+"/page.htmlclay"))
+	streamReq, _ := http.NewRequest("GET", base+"/_/live-sync/stream?page-url="+url.QueryEscape(base+"/page.htmlclay"), nil)
+	resp, err := http.DefaultClient.Do(sameOriginHeaders(streamReq))
 	if err != nil {
 		t.Fatal(err)
 	}

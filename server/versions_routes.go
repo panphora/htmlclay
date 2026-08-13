@@ -107,6 +107,12 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A restore writes to disk, so it re-checks workspace coverage the same way
+	// a save does.
+	if s.workspaceWriteRevoked(f) {
+		s.writeError(w, http.StatusUnauthorized, "invalid token")
+		return
+	}
 
 	name := r.PathValue("name")
 	if _, _, err := versions.ParseEntryName(name); err != nil {
@@ -139,6 +145,9 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "version not found")
 		return
 	}
+	// Versions are written from banner-stripped saves, but a restore must not
+	// trust that history: strip again so no path writes a banner to disk.
+	data = htmlutil.StripBanner(data)
 	if len(data) > maxRestoreSize {
 		f.Unlock()
 		s.writeError(w, http.StatusRequestEntityTooLarge, "version is too large to restore")

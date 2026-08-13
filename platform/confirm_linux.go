@@ -71,3 +71,35 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 
 	return ConfirmDeny, errors.New("no native dialog tool (zenity or kdialog) found")
 }
+
+// confirmTwoButtons shows a two-button prompt via zenity, falling back to
+// kdialog (whose --yes-label/--no-label make it a full two-button dialog, so
+// nothing degrades here). With neither tool present it fails closed.
+func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dialogTimeout)
+	defer cancel()
+
+	if bin, err := exec.LookPath("zenity"); err == nil {
+		err := exec.CommandContext(ctx, bin,
+			"--question",
+			"--no-markup",
+			"--title", title,
+			"--text", message,
+			"--ok-label", allowLabel,
+			"--cancel-label", "Deny",
+		).Run()
+		return err == nil, nil
+	}
+
+	if bin, err := exec.LookPath("kdialog"); err == nil {
+		err := exec.CommandContext(ctx, bin,
+			"--title", title,
+			"--yes-label", allowLabel,
+			"--no-label", "Deny",
+			"--warningyesno", message,
+		).Run()
+		return err == nil, nil
+	}
+
+	return false, errors.New("no native dialog tool (zenity or kdialog) found")
+}

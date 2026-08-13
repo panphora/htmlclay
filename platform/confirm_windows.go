@@ -59,3 +59,30 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 	}
 	return ConfirmDeny, nil
 }
+
+// confirmTwoButtons shows a YesNo WinForms message box. MessageBox cannot
+// relabel its buttons, so the affirmative label is folded into the message text
+// and Yes stands in for it — wording degrades, the two-choice shape does not.
+// No, close, timeout, and any error all fail closed. Text passes through env
+// vars for the same quoting-immunity reason as confirmDialog above.
+func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+	const script = "$ErrorActionPreference = 'Stop'; " +
+		"Add-Type -AssemblyName System.Windows.Forms; " +
+		"$r = [System.Windows.Forms.MessageBox]::Show(" +
+		"$env:HTMLCLAY_DIALOG_MESSAGE, $env:HTMLCLAY_DIALOG_TITLE, " +
+		"'YesNo', 'Warning'); Write-Output $r"
+
+	ctx, cancel := context.WithTimeout(context.Background(), dialogTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.Env = append(os.Environ(),
+		"HTMLCLAY_DIALOG_TITLE="+title,
+		"HTMLCLAY_DIALOG_MESSAGE="+message+"\n\nYes = "+allowLabel+"\nNo = Deny",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(string(out)) == "Yes", nil
+}

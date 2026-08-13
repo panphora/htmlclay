@@ -33,3 +33,14 @@ func (c ConfirmChoice) String() string {
 func Confirm(title, message string) (ConfirmChoice, error) {
 	return confirmDialog(title, message)
 }
+
+// ConfirmWithButtons shows a modal, foreground native dialog with exactly two
+// buttons — allowLabel and "Deny", Deny the default — and reports whether the
+// user chose allowLabel. Same contract as Confirm: always a real OS dialog a
+// page cannot spoof or auto-confirm, failing closed to false on any error,
+// timeout, or unsupported platform. Platforms whose dialog cannot relabel its
+// buttons (Windows) fold the label into the message and map their affirmative
+// button to it, which degrades wording, never safety.
+func ConfirmWithButtons(title, message, allowLabel string) (bool, error) {
+	return confirmTwoButtons(title, message, allowLabel)
+}

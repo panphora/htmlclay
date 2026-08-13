@@ -729,6 +729,22 @@ func (h *hub) capDisconnectedCursorsLocked() {
 	}
 }
 
+// dropSubscribers stops every subscriber on key. Stopping closes each writer's
+// done channel; the writers exit and run their handlers' deferred coordinator
+// removal, so membership and watcher references unwind through the one
+// existing teardown path.
+func (h *hub) dropSubscribers(key string) {
+	h.mu.Lock()
+	subs := make([]*subscriber, 0, len(h.subs[key]))
+	for sub := range h.subs[key] {
+		subs = append(subs, sub)
+	}
+	h.mu.Unlock()
+	for _, sub := range subs {
+		sub.stop()
+	}
+}
+
 // remove drops a subscriber and marks its resume cursors disconnected so they
 // expire on the cursor TTL rather than immediately.
 func (h *hub) remove(sub *subscriber) {

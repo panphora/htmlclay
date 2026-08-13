@@ -267,3 +267,57 @@ func TestResolvePortReusesSaved(t *testing.T) {
 		t.Errorf("expected same port %d, got %d", port1, port2)
 	}
 }
+
+// Workspace folders round-trip with their identity fingerprints, and — unlike
+// trusted folders — dead entries survive Load: a workspace is a standing write
+// grant, and the record of it must not silently vanish because the directory
+// is momentarily missing.
+func TestWorkspaceFoldersRoundTripAndNoPrune(t *testing.T) {
+	base := t.TempDir()
+	cfg, err := LoadFrom(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	live := t.TempDir()
+	dead := filepath.Join(t.TempDir(), "gone")
+
+	if !cfg.AddWorkspaceFolder(live, "1:42") {
+		t.Fatal("first add reported already-present")
+	}
+	if cfg.AddWorkspaceFolder(live, "1:42") {
+		t.Fatal("duplicate add reported success")
+	}
+	if !cfg.AddWorkspaceFolder(dead, "9:99") {
+		t.Fatal("second add failed")
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadFrom(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := loaded.WorkspaceFolderList()
+	if len(list) != 2 {
+		t.Fatalf("got %d workspace folders after load, want 2 (dead entries must NOT be pruned)", len(list))
+	}
+	byPath := map[string]string{}
+	for _, wf := range list {
+		byPath[wf.Path] = wf.Identity
+	}
+	if byPath[live] != "1:42" || byPath[dead] != "9:99" {
+		t.Fatalf("identities did not round-trip: %v", byPath)
+	}
+
+	if !loaded.RemoveWorkspaceFolder(dead) {
+		t.Fatal("remove reported not-present")
+	}
+	if loaded.RemoveWorkspaceFolder(dead) {
+		t.Fatal("second remove reported success")
+	}
+	if got := len(loaded.WorkspaceFolderList()); got != 1 {
+		t.Fatalf("got %d after remove, want 1", got)
+	}
+}

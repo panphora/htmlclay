@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"runtime"
 	"strings"
 	"sync"
@@ -65,6 +68,11 @@ func newTestApp(t *testing.T, home string) *app {
 			home:      home,
 			configDir: configDir,
 			confirm:   denyConfirm,
+			// The write-granting dialogs deny by default through their own
+			// distinct seams, so a test that allows read grants does not
+			// accidentally approve opens or workspaces.
+			confirmOpen:      func(string, string) (bool, error) { return false, nil },
+			confirmWorkspace: func(string, string) (bool, error) { return false, nil },
 			// Swallow notifications by default, for the same reason confirm is
 			// stubbed: no test may put real UI on the user's screen. A test that
 			// cares what the user was told overrides this with a recorder.
@@ -92,7 +100,7 @@ func (a *app) openForTest(t *testing.T, abs string) (*site, string) {
 	if err != nil {
 		t.Fatalf("resolve %s: %v", abs, err)
 	}
-	s, rel, ok := a.route(resolved)
+	s, rel, ok := a.route(resolved, session.ViaOsOpen)
 	if !ok {
 		t.Fatalf("route %s failed", resolved)
 	}
@@ -438,7 +446,7 @@ func TestFailedRegistrationLeavesNoSite(t *testing.T) {
 	writeTestFile(t, stray, "<html><body>stray</body></html>")
 
 	a := newTestApp(t, home)
-	if _, _, ok := a.route(stray); ok {
+	if _, _, ok := a.route(stray, session.ViaOsOpen); ok {
 		t.Fatal("a file outside home must not register")
 	}
 	if len(a.sites) != 0 {
@@ -1374,5 +1382,551 @@ func TestAssetResolvingOutsideItsRootIs404NotAPrompt(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&prompts); got != 0 {
 		t.Errorf("a symlink out of its root must not raise a prompt, got %d prompts", got)
+	}
+}
+
+// ---- Workspace trust: Feature A (open the file you're viewing) and Feature B
+// (workspace folders) integration tests. Server-level unit tests live in
+// server/workspace_trust_test.go; these drive real sites through the app seam.
+
+var bannerNonceRe = regexp.MustCompile(`\{nonce:'([A-Za-z0-9_-]+)'\}`)
+var tokenAttrRe = regexp.MustCompile(`htmlclaytoken="([^"]+)"`)
+
+// fetchNav is fetch with the headers of a real user navigation, which is what
+// arms the read-only banner and the auto-register branch.
+func fetchNav(t *testing.T, target string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest("GET", target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", target, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+// fetchAsSubresource mimics a page's silent fetch(): Sec-Fetch-Dest empty.
+func fetchAsSubresource(t *testing.T, target string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest("GET", target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Origin", "http://"+req.URL.Host)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", target, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+// postSameOrigin posts with the browser's same-origin attestation, which every
+// mutating /_/ route requires.
+func postSameOrigin(t *testing.T, target, contentType, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest("POST", target, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Origin", "http://"+req.URL.Host)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", target, err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(out)
+}
+
+// The whole Feature A flow on one origin: a linked sibling serves read-only
+// with a banner, approval opens it in place (same site, same origin), the page
+// reloads editable, and the tray can revoke exactly that grant while the
+// OS-opened page keeps its own session.
+func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "site", "index.htmlclay")
+	sibling := filepath.Join(home, "site", "week.htmlclay")
+	writeTestFile(t, page, "<html><body>index</body></html>")
+	writeTestFile(t, sibling, "<html><body>week</body></html>")
+
+	a := newTestApp(t, home)
+	openCalls := 0
+	a.rt.confirmOpen = func(title, message string) (bool, error) {
+		openCalls++
+		if !strings.Contains(message, sibling) {
+			t.Errorf("dialog must name the full path %s, got %q", sibling, message)
+		}
+		return true, nil
+	}
+	s, _ := a.openForTest(t, page)
+
+	relSibling := filepath.Join("site", "week.htmlclay")
+	target := fileURL(s.port, relSibling)
+
+	code, body := fetchNav(t, target)
+	if code != 200 || !strings.Contains(body, "htmlclay-banner") {
+		t.Fatalf("sibling navigation should serve the banner: %d", code)
+	}
+	if strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("read-only serve leaked a token")
+	}
+	m := bannerNonceRe.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no nonce in banner: %q", body)
+	}
+
+	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/open-request", s.port),
+		"application/json", `{"nonce":"`+m[1]+`"}`)
+	if code != 200 || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("open-request failed: %d %s", code, out)
+	}
+	if openCalls != 1 {
+		t.Fatalf("dialog fired %d times, want 1", openCalls)
+	}
+	var resp struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.URL != target {
+		t.Fatalf("sibling should open in place: url=%q, want %q", resp.URL, target)
+	}
+	if len(a.sites) != 1 {
+		t.Fatalf("sibling open created a new site: %d sites", len(a.sites))
+	}
+	if via := s.sessions.Via(sibling); via != session.ViaOpenRequest {
+		t.Fatalf("sibling provenance = %v, want ViaOpenRequest", via)
+	}
+
+	code, body = fetch(t, resp.URL)
+	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("approved sibling should serve editable")
+	}
+
+	// The tray lists exactly this grant, and revoking it ends the session
+	// without touching the OS-opened page.
+	if list := a.openedForEditing(); len(list) != 1 || list[0] != sibling {
+		t.Fatalf("openedForEditing = %v", list)
+	}
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("no token in editable serve")
+	}
+	a.revokeOpened(sibling)
+	if list := a.openedForEditing(); len(list) != 0 {
+		t.Fatalf("grant survived revoke: %v", list)
+	}
+	code, _ = postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
+		"text/html", "<html><body>worm</body></html>")
+	if code != 401 {
+		t.Fatalf("save after revoke = %d, want 401", code)
+	}
+	if _, ok := s.sessions.LookupByPath(page); !ok {
+		t.Fatal("revoking the sibling killed the OS-opened page's session")
+	}
+	if code, body := fetchNav(t, target); code != 200 || strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("revoked sibling should serve read-only again")
+	}
+}
+
+// T0.2's regression: a file covered only by a read grant must open on a fresh
+// origin, never on the granting one, so the granting page can never lift the
+// new file's token.
+func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	page := filepath.Join(home, "work", "fable", "index.htmlclay")
+	cousin := filepath.Join(home, "work", "codex", "notes.htmlclay")
+	writeTestFile(t, page, "<html><body>fable</body></html>")
+	writeTestFile(t, cousin, "<html><body>codex</body></html>")
+
+	a := newTestApp(t, home)
+	a.rt.confirmOpen = func(string, string) (bool, error) { return true, nil }
+	granting, _ := a.openForTest(t, page)
+	if err := granting.sessions.GrantReadRoot(filepath.Join(home, "work")); err != nil {
+		t.Fatal(err)
+	}
+
+	relCousin := filepath.Join("work", "codex", "notes.htmlclay")
+	code, body := fetchNav(t, fileURL(granting.port, relCousin))
+	if code != 200 || !strings.Contains(body, "htmlclay-banner") {
+		t.Fatalf("grant-covered cousin should get the banner: %d", code)
+	}
+	m := bannerNonceRe.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("no nonce")
+	}
+
+	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/open-request", granting.port),
+		"application/json", `{"nonce":"`+m[1]+`"}`)
+	if code != 200 {
+		t.Fatalf("open-request = %d: %s", code, out)
+	}
+	var resp struct {
+		URL string `json:"url"`
+	}
+	json.Unmarshal([]byte(out), &resp)
+	if strings.Contains(resp.URL, fmt.Sprintf(":%d/", granting.port)) {
+		t.Fatalf("grant-only cousin opened on the granting origin: %s", resp.URL)
+	}
+	if len(a.sites) != 2 {
+		t.Fatalf("expected a fresh site for the cousin, have %d", len(a.sites))
+	}
+
+	// The granting origin still reads it token-free; the fresh origin serves it
+	// editable.
+	if _, body := fetch(t, fileURL(granting.port, relCousin)); strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("granting origin received the cousin's token")
+	}
+	if code, body := fetch(t, resp.URL); code != 200 || !strings.Contains(body, "htmlclaytoken") {
+		t.Fatalf("fresh origin should serve editable: %d", code)
+	}
+}
+
+// The whole Feature B promise: inside a declared workspace, following links
+// just works — every page editable in place, one site, zero prompts — while a
+// silent fetch() still harvests no tokens and registers nothing.
+func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	ws := filepath.Join(home, "thelaunch")
+	index := filepath.Join(ws, "index.htmlclay")
+	week := filepath.Join(ws, "weeks", "week-02.htmlclay")
+	writeTestFile(t, index, "<html><body>launch</body></html>")
+	writeTestFile(t, week, "<html><body>week two</body></html>")
+
+	a := newTestApp(t, home)
+	var prompts int32
+	a.rt.confirm = countingDenyConfirm(&prompts)
+	a.rt.confirmOpen = func(string, string) (bool, error) { prompts++; return false, nil }
+	a.rt.confirmWorkspace = func(string, string) (bool, error) { prompts++; return false, nil }
+
+	if err := a.addWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := a.openForTest(t, index)
+
+	relWeek := filepath.Join("thelaunch", "weeks", "week-02.htmlclay")
+	code, body := fetchNav(t, fileURL(s.port, relWeek))
+	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+		t.Fatalf("workspace link should serve editable with no prompt: %d", code)
+	}
+	if strings.Contains(body, "htmlclay-banner") {
+		t.Fatal("a workspace page must not carry the read-only banner")
+	}
+	if len(a.sites) != 1 {
+		t.Fatalf("workspace sibling created a site: %d", len(a.sites))
+	}
+	if via := s.sessions.Via(week); via != session.ViaWorkspace {
+		t.Fatalf("provenance = %v, want ViaWorkspace", via)
+	}
+
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("no token")
+	}
+	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
+		"text/html", "<html><body>week two, edited</body></html>")
+	if code != 200 {
+		t.Fatalf("workspace save = %d: %s", code, out)
+	}
+	saved, _ := os.ReadFile(week)
+	if !strings.Contains(string(saved), "edited") {
+		t.Fatal("save did not reach disk")
+	}
+
+	// The worm bound: a silent fetch() of another workspace file gets bytes but
+	// no token and no registration.
+	other := filepath.Join(ws, "notes.htmlclay")
+	writeTestFile(t, other, "<html><body>notes</body></html>")
+	code, body = fetchAsSubresource(t, fileURL(s.port, filepath.Join("thelaunch", "notes.htmlclay")))
+	if code != 200 {
+		t.Fatalf("workspace fetch = %d", code)
+	}
+	if strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("a silent fetch() harvested a token")
+	}
+	if s.sessions.Via(other) != 0 {
+		t.Fatal("a silent fetch() auto-registered a file")
+	}
+
+	if atomic.LoadInt32(&prompts) != 0 {
+		t.Fatalf("%d prompt(s) fired inside a workspace", prompts)
+	}
+}
+
+// T0.1's invariant under Feature B: one file, one registration, one origin —
+// a second site covering the same workspace redirects to the hosting origin
+// instead of minting a second token.
+func TestWorkspaceFileNeverRegisteredInTwoSites(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	ws := filepath.Join(home, "ws")
+	pageA := filepath.Join(ws, "alpha", "a.htmlclay")
+	pageB := filepath.Join(ws, "bravo", "b.htmlclay")
+	shared := filepath.Join(ws, "shared.htmlclay")
+	writeTestFile(t, pageA, "<html><body>a</body></html>")
+	writeTestFile(t, pageB, "<html><body>b</body></html>")
+	writeTestFile(t, shared, "<html><body>shared</body></html>")
+
+	a := newTestApp(t, home)
+	siteA, _ := a.openForTest(t, pageA)
+	siteB, _ := a.openForTest(t, pageB)
+	if siteA == siteB {
+		t.Fatal("disjoint folders should be separate sites before the workspace exists")
+	}
+	if err := a.addWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	relShared := filepath.Join("ws", "shared.htmlclay")
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	nav := func(port int) *http.Response {
+		req, _ := http.NewRequest("GET", fileURL(port, relShared), nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-User", "?1")
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	respA := nav(siteA.port)
+	respB := nav(siteB.port)
+	defer respA.Body.Close()
+	defer respB.Body.Close()
+
+	hosts := 0
+	for _, s := range a.sites {
+		if _, ok := s.sessions.LookupByPath(shared); ok {
+			hosts++
+		}
+	}
+	if hosts != 1 {
+		t.Fatalf("shared file registered in %d sites, want exactly 1", hosts)
+	}
+
+	// One of the two navigations served inline (200), the other redirected to
+	// the hosting origin.
+	codes := []int{respA.StatusCode, respB.StatusCode}
+	sort.Ints(codes)
+	if codes[0] != 200 || codes[1] != 302 {
+		t.Fatalf("expected one 200 and one 302, got %v", codes)
+	}
+	var redirected *http.Response
+	if respA.StatusCode == 302 {
+		redirected = respA
+	} else {
+		redirected = respB
+	}
+	loc := redirected.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("redirect carried no Location")
+	}
+	if code, body := fetchNav(t, loc); code != 200 || !strings.Contains(body, "htmlclaytoken") {
+		t.Fatalf("hosting origin should serve editable: %d", code)
+	}
+}
+
+// The page-request route end to end: an OS-opened page promotes its own folder
+// after the dialog, a page-opened (Feature A) token is refused, and the
+// refusal list stops protected folders by identity, not spelling.
+func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	index := filepath.Join(proj, "index.htmlclay")
+	week := filepath.Join(proj, "week.htmlclay")
+	writeTestFile(t, index, "<html><body>index</body></html>")
+	writeTestFile(t, week, "<html><body>week</body></html>")
+
+	a := newTestApp(t, home)
+	wsDialogs := 0
+	a.rt.confirmWorkspace = func(title, message string) (bool, error) {
+		wsDialogs++
+		if !strings.Contains(message, index) || !strings.Contains(message, proj) {
+			t.Errorf("dialog must name the requesting file and the full folder: %q", message)
+		}
+		return true, nil
+	}
+	s, _ := a.openForTest(t, index)
+
+	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
+	if code != 200 {
+		t.Fatal("index serve failed")
+	}
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("no token on the OS-opened page")
+	}
+
+	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, tok[1]), "", "")
+	if code != 200 || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("workspace-request = %d: %s", code, out)
+	}
+	if wsDialogs != 1 {
+		t.Fatalf("workspace dialog fired %d times", wsDialogs)
+	}
+	found := false
+	for _, wf := range a.rt.cfg.WorkspaceFolderList() {
+		if wf.Path == proj {
+			found = true
+			if wf.Identity == "" {
+				t.Error("workspace stored without an identity fingerprint")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("workspace not recorded in config: %v", a.rt.cfg.WorkspaceFolderList())
+	}
+
+	// The promoted folder now auto-registers its files.
+	code, body = fetchNav(t, fileURL(s.port, filepath.Join("proj", "week.htmlclay")))
+	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("promoted workspace should auto-register its files")
+	}
+
+	// A Feature A token (ViaOpenRequest) cannot drive the workspace route.
+	weekTok := tokenAttrRe.FindStringSubmatch(body)
+	if s.sessions.Via(week) != session.ViaWorkspace {
+		t.Fatalf("week provenance = %v", s.sessions.Via(week))
+	}
+	code, _ = postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, weekTok[1]), "", "")
+	if code != 403 {
+		t.Fatalf("non-OS-opened token drove workspace-request: %d", code)
+	}
+	if wsDialogs != 1 {
+		t.Fatal("a refused token still raised a dialog")
+	}
+}
+
+// The refusal list judges identity, not spelling: a protected folder is caught
+// under any casing, an ancestor that would swallow one is caught, and an
+// ordinary subfolder inside one stays requestable.
+func TestWorkspaceRefusalListByIdentity(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	for _, d := range []string{
+		filepath.Join(home, "Documents", "GitHub", "myproj"),
+		filepath.Join(home, "Downloads"),
+		filepath.Join(home, "projects", "site"),
+	} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := newTestApp(t, home)
+
+	refused := []string{
+		filepath.Join(home, "Documents"),
+		filepath.Join(home, "documents"), // casing alias of the same directory
+		filepath.Join(home, "Downloads"),
+		filepath.Join(home, "Documents", "GitHub"),
+		filepath.Join(home, "documents", "github"),
+	}
+	for _, dir := range refused {
+		if !a.isRefusedWorkspace(dir) {
+			t.Errorf("%s must be refused", dir)
+		}
+	}
+	allowed := []string{
+		filepath.Join(home, "Documents", "GitHub", "myproj"),
+		filepath.Join(home, "projects", "site"),
+	}
+	for _, dir := range allowed {
+		if a.isRefusedWorkspace(dir) {
+			t.Errorf("%s must stay requestable", dir)
+		}
+	}
+
+	// The home root itself never reaches the list: canonicalization refuses it.
+	if _, err := a.canonicalTrusted(home); err == nil {
+		t.Error("home root must not canonicalize as a workspace candidate")
+	}
+
+	// The tray route ignores the list: a deliberate picker choice of a
+	// protected folder still works.
+	if err := a.addWorkspace(filepath.Join(home, "Downloads")); err != nil {
+		t.Errorf("tray route must not consult the refusal list: %v", err)
+	}
+}
+
+// Removing a workspace genuinely ends the capability: auto-registered tokens
+// die, files serve read-only again, and an OS-opened file in the same folder
+// keeps its session because its provenance survives.
+func TestRemoveWorkspaceEndsCapability(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	ws := filepath.Join(home, "ws")
+	index := filepath.Join(ws, "index.htmlclay")
+	week := filepath.Join(ws, "week.htmlclay")
+	writeTestFile(t, index, "<html><body>index</body></html>")
+	writeTestFile(t, week, "<html><body>week</body></html>")
+
+	a := newTestApp(t, home)
+	if err := a.addWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := a.openForTest(t, index)
+
+	relWeek := filepath.Join("ws", "week.htmlclay")
+	_, body := fetchNav(t, fileURL(s.port, relWeek))
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("workspace file did not auto-register")
+	}
+
+	if err := a.removeWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := s.sessions.LookupByPath(week); ok {
+		t.Fatal("auto-registered file survived workspace removal")
+	}
+	code, _ := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
+		"text/html", "<html><body>worm</body></html>")
+	if code != 401 {
+		t.Fatalf("save after workspace removal = %d, want 401", code)
+	}
+	if code, body := fetchNav(t, fileURL(s.port, relWeek)); code != 200 || strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("removed workspace's file should serve read-only")
+	}
+
+	// The OS-opened index keeps everything: its provenance is its own.
+	if _, ok := s.sessions.LookupByPath(index); !ok {
+		t.Fatal("OS-opened file lost its session on workspace removal")
+	}
+	if code, body := fetch(t, fileURL(s.port, filepath.Join("ws", "index.htmlclay"))); code != 200 || !strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("OS-opened file should still serve editable")
+	}
+
+	// Accumulated provenance survives the partial revoke: a file both
+	// OS-opened and workspace-covered keeps its registration.
+	if err := a.addWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := a.route(week, session.ViaOsOpen); !ok {
+		t.Fatal("explicit open failed")
+	}
+	if err := a.removeWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	if via := s.sessions.Via(week); !via.Has(session.ViaOsOpen) {
+		t.Fatalf("OS-open provenance lost in workspace removal: %v", via)
+	}
+	if _, ok := s.sessions.LookupByPath(week); !ok {
+		t.Fatal("dual-provenance file lost its registration")
 	}
 }

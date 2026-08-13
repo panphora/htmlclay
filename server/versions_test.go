@@ -41,7 +41,7 @@ func setupFileTest(t *testing.T, name, content string) *fileFixture {
 	}
 
 	mgr := newTestManager(t, homeDir)
-	f, err := mgr.Register(filePath)
+	f, err := mgr.Register(filePath, session.ViaOsOpen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func (fx *fileFixture) reopen(t *testing.T, relPath string) *fileFixture {
 		t.Fatal(err)
 	}
 	mgr := newTestManager(t, fx.home)
-	f, err := mgr.Register(filepath.Join(fx.home, relPath))
+	f, err := mgr.Register(filepath.Join(fx.home, relPath), session.ViaOsOpen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestCopiedHTMLClayIDForksAFreshID(t *testing.T) {
 	if err := os.WriteFile(copyPath, []byte(pageWithID(testUUID, "original")), 0644); err != nil {
 		t.Fatal(err)
 	}
-	copyFile, err := fx.srv.sessions.Register(copyPath)
+	copyFile, err := fx.srv.sessions.Register(copyPath, session.ViaOsOpen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +536,7 @@ func TestRenamedHTMLClayIDKeepsItsIdentity(t *testing.T) {
 	if err := os.Rename(fx.file.AbsPath, afterPath); err != nil {
 		t.Fatal(err)
 	}
-	renamed, err := fx.srv.sessions.Register(afterPath)
+	renamed, err := fx.srv.sessions.Register(afterPath, session.ViaOsOpen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +667,7 @@ func TestInternalVersionsDirectoryIsDenied(t *testing.T) {
 	}
 
 	mgr := newTestManager(t, homeDir)
-	if _, err := mgr.Register(pagePath); err != nil {
+	if _, err := mgr.Register(pagePath, session.ViaOsOpen); err != nil {
 		t.Fatal(err)
 	}
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
@@ -970,12 +970,14 @@ func TestListVersionsIsNewestFirstAndNoStore(t *testing.T) {
 
 func TestRedactPathHidesTokensOnVersionRoutes(t *testing.T) {
 	cases := map[string]string{
-		"/_/versions/SECRET":          "/_/versions/<redacted>",
-		"/_/version/SECRET/2026.html": "/_/version/<redacted>",
-		"/_/restore/SECRET/2026.html": "/_/restore/<redacted>",
-		"/_/save/SECRET":              "/_/save/<redacted>",
-		"/_/live-sync/stream":         "/_/live-sync/stream",
-		"/notes.htmlclay":             "/notes.htmlclay",
+		"/_/versions/SECRET":           "/_/versions/<redacted>",
+		"/_/version/SECRET/2026.html":  "/_/version/<redacted>",
+		"/_/restore/SECRET/2026.html":  "/_/restore/<redacted>",
+		"/_/save/SECRET":               "/_/save/<redacted>",
+		"/_/workspace-request/SECRET":  "/_/workspace-request/<redacted>",
+		"/_/live-sync/stream":          "/_/live-sync/stream",
+		"/_/open-request":              "/_/open-request",
+		"/notes.htmlclay":              "/notes.htmlclay",
 	}
 	for in, want := range cases {
 		if got := redactPath(in); got != want {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/panphora/htmlclay/logging"
@@ -29,6 +30,23 @@ type Server struct {
 	hub          *hub
 	watcher      *watcher
 	coord        *streamCoordinator
+
+	// openRequest is the app-level seam a banner click routes through; nil
+	// (tests, standalone servers) disables the banner entirely.
+	openRequest openRequestFunc
+	// workspaceRequest is the app-level seam a page's workspace request routes
+	// through; nil disables the endpoint.
+	workspaceRequest workspaceRequestFunc
+	// registerSeam is the app-level seam workspace auto-registration routes
+	// through; nil disables auto-register.
+	registerSeam registerSeamFunc
+	// openMu guards the open-request nonce map, the denied-directory lists, and
+	// the auto-registration counter.
+	openMu          sync.Mutex
+	openNonces      map[string]openNonce
+	openDenied      []string
+	workspaceDenied []string
+	autoRegistered  int
 }
 
 // SeqPath is where the live-sync sequence high-water mark lives, beside the
@@ -70,14 +88,26 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /_/read/{token}", s.handleRead)
-	mux.HandleFunc("POST /_/save/{token}", s.handleSave)
+	mux.HandleFunc("POST /_/save/{token}", sameOrigin(s.handleSave))
 	mux.HandleFunc("GET /_/meta/{token}", s.handleMeta)
 	mux.HandleFunc("GET /_/versions/{token}", s.handleListVersions)
 	mux.HandleFunc("GET /_/version/{token}/{name}", s.handleReadVersion)
-	mux.HandleFunc("POST /_/restore/{token}/{name}", s.handleRestoreVersion)
-	// Registered ahead of the catch-all.
-	mux.HandleFunc("GET /_/live-sync/stream", s.handleLiveSyncStream)
-	mux.HandleFunc("POST /_/live-sync/save", s.handleLiveSyncSave)
+	mux.HandleFunc("POST /_/restore/{token}/{name}", sameOrigin(s.handleRestoreVersion))
+	// Registered ahead of the catch-all. The stream is a read, but it joins the
+	// gate: live-sync authorizes by registered path rather than by token, so
+	// without the gate it is reachable by any page the user's browser has open.
+	mux.HandleFunc("GET /_/live-sync/stream", sameOrigin(s.handleLiveSyncStream))
+	mux.HandleFunc("POST /_/live-sync/save", sameOrigin(s.handleLiveSyncSave))
+	mux.HandleFunc("POST /_/open-request", sameOrigin(s.handleOpenRequest))
+	mux.HandleFunc("POST /_/workspace-request/{token}", sameOrigin(s.handleWorkspaceRequest))
+	// The data API sits ahead of the catch-all. Verified with httptest: "/_/api/{path...}" does NOT
+	// match bare "/_/api" (ServeMux 307-redirects it), hence the explicit first line; "/_/api/" with
+	// a trailing slash DOES match the wildcard with path == "", so the handler answers 400 for an
+	// empty path either way; "/_/apix" still falls to the catch-all; and "/_%2Fapi/x" decodes into a
+	// single segment and cannot smuggle into this route.
+	//
+	// This shadows any real user file at ~/_/api/…, which is the one behavior change.
+
 	mux.HandleFunc("GET /{path...}", s.handleServeFile)
 
 	handler := s.loggingMiddleware(mux)
@@ -176,6 +206,7 @@ func redactPath(p string) string {
 	for _, prefix := range []string{
 		"/_/save/", "/_/read/", "/_/meta/",
 		"/_/versions/", "/_/version/", "/_/restore/",
+		"/_/workspace-request/",
 	} {
 		if strings.HasPrefix(p, prefix) {
 			return prefix + "<redacted>"

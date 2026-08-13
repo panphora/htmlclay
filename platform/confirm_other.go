@@ -10,3 +10,7 @@ import "errors"
 func confirmDialog(title, message string) (ConfirmChoice, error) {
 	return ConfirmDeny, errors.New("native confirm dialog not implemented on this platform")
 }
+
+func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+	return false, errors.New("native confirm dialog not implemented on this platform")
+}

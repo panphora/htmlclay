@@ -66,15 +66,48 @@ type broker struct {
 	batchAt    time.Time
 	prompting  bool
 	closed     bool
+	// promptDone wakes runPrompt callers waiting for the prompting flag to
+	// clear. Signaled wherever prompting is set false, and on shutdown.
+	promptDone *sync.Cond
 }
 
 func newBroker(sessions *session.Manager, logger *logging.Logger, confirm brokerConfirm) *broker {
-	return &broker{
+	b := &broker{
 		sessions: sessions,
 		logger:   logger,
 		confirm:  confirm,
 		home:     sessions.HomeDir(),
 	}
+	b.promptDone = sync.NewCond(&b.mu)
+	return b
+}
+
+// runPrompt runs fn — a native dialog raised outside the grant pipeline (the
+// open-request and workspace-request confirms) — under the broker's one
+// prompting flag, so no two native dialogs can ever be on screen at once. A
+// second dialog timed to appear under a click aimed at the first's Deny is the
+// attack this serializes away. It waits for any grant prompt in flight, and
+// returns false without running fn when the broker is shutting down.
+func (b *broker) runPrompt(fn func()) bool {
+	b.mu.Lock()
+	for b.prompting && !b.closed {
+		b.promptDone.Wait()
+	}
+	if b.closed {
+		b.mu.Unlock()
+		return false
+	}
+	b.prompting = true
+	b.mu.Unlock()
+
+	fn()
+
+	b.mu.Lock()
+	b.prompting = false
+	b.promptDone.Broadcast()
+	b.rearmLocked()
+	b.mu.Unlock()
+	return true
 }
 
 // await parks candidate until a grant covers it (true) or it is denied, times
@@ -211,6 +244,7 @@ func (b *broker) flush() {
 
 	b.mu.Lock()
 	b.prompting = false
+	b.promptDone.Broadcast()
 	b.rearmLocked()
 	b.mu.Unlock()
 }
@@ -376,6 +410,7 @@ func (b *broker) shutdown() {
 	}
 	waiters := b.waiters
 	b.waiters = nil
+	b.promptDone.Broadcast()
 	b.mu.Unlock()
 	denyAll(waiters)
 }

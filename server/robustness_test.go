@@ -254,7 +254,7 @@ func TestConcurrentFirstOpensOfOneIDForkDistinctIdentities(t *testing.T) {
 		mgr := newTestManager(t, homeDir)
 		files := make([]*session.File, 0, len(paths))
 		for _, p := range paths {
-			f, err := mgr.Register(p)
+			f, err := mgr.Register(p, session.ViaOsOpen)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -374,7 +374,7 @@ func TestFirstOpenSnapshotCannotLandAfterALaterSave(t *testing.T) {
 			if err := os.WriteFile(p, []byte(pageWithID(id, name)), 0644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := fx.srv.sessions.Register(p); err != nil {
+			if _, err := fx.srv.sessions.Register(p, session.ViaOsOpen); err != nil {
 				t.Fatal(err)
 			}
 			noise = append(noise, name)

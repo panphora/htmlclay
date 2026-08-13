@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -60,6 +61,12 @@ type appRuntime struct {
 	// confirm, when set, overrides the native permission dialog. Production leaves
 	// it nil (the server uses the real dialog); tests inject a decision.
 	confirm func(title, message string) (platform.ConfirmChoice, error)
+	// confirmOpen and confirmWorkspace override the two-button dialogs behind
+	// the page's open-request and workspace-request. They are separate seams
+	// from confirm on purpose: a test that auto-approves read grants must not
+	// silently auto-approve the write-granting dialogs too.
+	confirmOpen      func(title, message string) (bool, error)
+	confirmWorkspace func(title, message string) (bool, error)
 	// notify, when set, overrides the native notification. Production leaves it nil
 	// (a real banner); tests capture the message instead of putting one on the
 	// user's screen. Unlike confirm, this is read live from background goroutines
@@ -341,6 +348,9 @@ func (a *app) buildSite(root string) (*site, error) {
 		srv.SetConfirm(a.rt.confirm)
 	}
 	srv.SetTrustFolder(a.trustFromPrompt)
+	srv.SetOpenRequest(a.openFromPage)
+	srv.SetWorkspaceRequest(a.workspaceFromPage)
+	srv.SetRegisterSeam(a.workspaceOpen)
 	return &site{
 		root:     root,
 		ln:       ln,
@@ -370,23 +380,32 @@ func (a *app) lookupLocked(absPath string) (*site, string, bool) {
 	return nil, "", false
 }
 
-// siteForLocked returns the site that should host an explicitly-opened absPath, or
-// nil if none already covers it through an EXPLICITLY OPENED folder. Caller holds a.mu.
+// siteForLocked returns the site that should host a newly-registered absPath, or
+// nil if none already covers it through an EXPLICITLY OPENED folder or a
+// WORKSPACE root. Caller holds a.mu.
 //
-// Only opened roots qualify. A read grant (and, later, a trusted-folder root) widens
-// READS but must never host a new explicit open: registering a file there would mint
-// its save token on an origin another page already controls, turning read-only access
-// into write access to a file opened later. So a file covered only by a grant returns
-// nil here, and route anchors it on its own fresh origin rooted at its own folder.
-// Among opened roots the most specific wins, ties broken by port, so selection is
-// deterministic regardless of map order. Siblings under one opened folder still share
-// that site; only grant-only coverage is refused.
+// A read grant (and a trusted-folder root) widens READS but must never host a
+// new registration: registering a file there would mint its save token on an
+// origin another page already controls, turning read-only access into write
+// access to a file opened later. So a file covered only by a grant returns nil
+// here, and route anchors it on its own fresh origin rooted at its own folder.
+//
+// A workspace root DOES host, deliberately: inside a workspace every page can
+// reach every file's token by design (the documented workspace trade), so
+// anchoring workspace files on the workspace site's origin gives up nothing
+// that trust hadn't already given up, and it is what makes links between
+// workspace files land editable in place. Only sites whose anchor lives inside
+// the workspace ever hold its root (per-site seeding), so the hosting origin is
+// always itself a workspace page.
+//
+// Among eligible sites the most specific covering root wins, ties broken by
+// port, so selection is deterministic regardless of map order.
 func (a *app) siteForLocked(absPath string) *site {
 	var best *site
 	var bestLen int
 	for _, s := range a.sites {
 		root, _, opened, ok := s.sessions.AssetRootOpened(absPath)
-		if !ok || !opened {
+		if !ok || (!opened && !s.sessions.WorkspaceCovers(absPath)) {
 			continue
 		}
 		switch {
@@ -413,6 +432,37 @@ func (a *app) seedTrustedRootsLocked(sessions *session.Manager, anchor string) {
 			a.rt.logger.Printf("Could not seed trusted root %s for %s: %v", tf, anchor, err)
 		}
 	}
+}
+
+// seedWorkspaceRootsLocked mirrors seedTrustedRootsLocked for workspace
+// folders, with one addition: the stored identity fingerprint must still match
+// the directory at the path. A mismatch — the folder replaced or swapped for a
+// symlink since declaration — refuses the install and leaves the entry to
+// surface as dead in the tray, rather than granting write over whatever tree
+// the path now reaches. Caller holds a.mu.
+func (a *app) seedWorkspaceRootsLocked(sessions *session.Manager, anchor string) {
+	for _, wf := range a.rt.cfg.WorkspaceFolderList() {
+		if !session.EqualOrUnder(anchor, wf.Path) {
+			continue
+		}
+		if !workspaceIdentityOK(wf) {
+			a.rt.logger.Printf("Workspace %s failed its identity check; not installed", wf.Path)
+			continue
+		}
+		if err := sessions.InstallWorkspaceRoot(wf.Path); err != nil {
+			a.rt.logger.Printf("Could not seed workspace root %s for %s: %v", wf.Path, anchor, err)
+		}
+	}
+}
+
+// workspaceIdentityOK reports whether the directory at the entry's path is
+// still provably the directory that was declared. An empty stored identity
+// (a platform without fingerprints) leaves the path as the entry's identity.
+func workspaceIdentityOK(wf config.WorkspaceFolder) bool {
+	if wf.Identity == "" {
+		return true
+	}
+	return platform.DirIdentity(wf.Path) == wf.Identity
 }
 
 // canonicalTrusted resolves and validates a folder the user asked to trust,
@@ -662,8 +712,288 @@ func (a *app) removeTrustedFolder(dir string) []string {
 	return a.trustedFolders()
 }
 
-func (a *app) registerLocked(s *site, absPath string) (string, bool) {
-	f, err := s.sessions.Register(absPath)
+// confirmOpenRequest and confirmWorkspaceRequest raise the two write-granting
+// dialogs through their test seams, defaulting to the real native two-button
+// dialog. They are distinct seams so a test that approves one class of dialog
+// can never silently approve the other.
+func (a *app) confirmOpenRequest(title, message string) (bool, error) {
+	if a.rt.confirmOpen != nil {
+		return a.rt.confirmOpen(title, message)
+	}
+	return platform.ConfirmWithButtons(title, message, "Open")
+}
+
+func (a *app) confirmWorkspaceRequest(title, message string) (bool, error) {
+	if a.rt.confirmWorkspace != nil {
+		return a.rt.confirmWorkspace(title, message)
+	}
+	return platform.ConfirmWithButtons(title, message, "Make Workspace")
+}
+
+// openFromPage handles an approved banner click: the native dialog names the
+// exact file that was served (full path, T3.4), and approval routes through
+// the same route() path a double-click takes, so the origin decision — open in
+// place under an opened folder, fresh origin for grant-only coverage — is the
+// tested one. Returns the URL the page should navigate to.
+func (a *app) openFromPage(absPath string) (string, bool) {
+	msg := fmt.Sprintf("Open %s for editing?\n\nThe page you are viewing offered this file. If you open it, the page at this file's address will be able to save changes to it.", absPath)
+	allowed, err := a.confirmOpenRequest("HTML Clay", msg)
+	if err != nil {
+		a.rt.logger.Printf("Open dialog error for %s: %v", absPath, err)
+		return "", false
+	}
+	if !allowed {
+		return "", false
+	}
+	s, rel, ok := a.route(absPath, session.ViaOpenRequest)
+	if !ok {
+		return "", false
+	}
+	return fileURL(s.port, rel), true
+}
+
+// workspaceOpen is the auto-registration seam: route absPath with workspace
+// provenance and report where it serves. The serving site redirects there when
+// the registration landed elsewhere.
+func (a *app) workspaceOpen(absPath string) (string, bool) {
+	s, rel, ok := a.route(absPath, session.ViaWorkspace)
+	if !ok {
+		return "", false
+	}
+	return fileURL(s.port, rel), true
+}
+
+// workspaceFromPage handles a page's request to make its own folder a
+// workspace. The folder is derived HERE from the requesting file — the page
+// never names one — and the server has already required the token's ViaOsOpen
+// provenance. The refusal list runs before any dialog is raised; the dialog
+// names the requesting file and the full folder path and states the
+// consequence in full.
+func (a *app) workspaceFromPage(requestingFile string) bool {
+	folder := filepath.Dir(requestingFile)
+	canonical, err := a.canonicalTrusted(folder)
+	if err != nil {
+		a.rt.logger.Printf("Workspace request for %s refused: %v", folder, err)
+		return false
+	}
+	if a.isRefusedWorkspace(canonical) {
+		a.rt.logger.Printf("Workspace request refused for protected folder %s", canonical)
+		a.reportWorkspaceRefused(canonical)
+		return false
+	}
+	msg := fmt.Sprintf("%s wants to turn its folder into a workspace:\n\n%s\n\nEvery HTML Clay file in that folder becomes editable without asking, including files added later, and any file in it will be able to change any other. Only allow this for a folder you control completely.",
+		requestingFile, canonical)
+	allowed, err := a.confirmWorkspaceRequest("HTML Clay", msg)
+	if err != nil {
+		a.rt.logger.Printf("Workspace dialog error for %s: %v", canonical, err)
+		return false
+	}
+	if !allowed {
+		return false
+	}
+	if err := a.addWorkspace(canonical); err != nil {
+		a.rt.logger.Printf("Could not add workspace %s: %v", canonical, err)
+		return false
+	}
+	return true
+}
+
+// isRefusedWorkspace reports whether dir is one of the protected personal
+// folders — or an ancestor that would swallow one — for the page-request route
+// only; the tray's picker may choose anything canonicalTrusted accepts.
+// Comparison is by identity (os.SameFile) as well as case-folded path, so a
+// casing alias or a symlinked variant of a protected folder cannot slip
+// through as a different spelling. Subfolders of protected folders stay
+// requestable: ~/Documents/GitHub is refused, ~/Documents/GitHub/myproject is
+// not.
+func (a *app) isRefusedWorkspace(dir string) bool {
+	protected := [][]string{
+		{"Desktop"}, {"Documents"}, {"Downloads"}, {"Library"}, {"Movies"},
+		{"Music"}, {"Pictures"}, {"Public"}, {"Documents", "GitHub"},
+	}
+	dirInfo, dirErr := os.Stat(dir)
+	for _, parts := range protected {
+		p := filepath.Join(append([]string{a.rt.home}, parts...)...)
+		if session.EqualOrUnder(p, dir) {
+			return true
+		}
+		if dirErr == nil {
+			if pInfo, err := os.Stat(p); err == nil && os.SameFile(dirInfo, pInfo) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// reportWorkspaceRefused tells the user a page asked for a protected folder.
+// Detached for the same reason as reportTrustRefused: this runs on a prompt
+// path that must never block.
+func (a *app) reportWorkspaceRefused(dir string) {
+	msg := dir + " was not made a workspace.\n\nA page requested it, and it is one of your main personal folders. You can add a workspace yourself from the HTML Clay menu."
+	go func() {
+		if nErr := a.notifyUser("HTML Clay", msg); nErr != nil {
+			a.rt.logger.Printf("Could not notify about the refused workspace %s: %v", dir, nErr)
+		}
+	}()
+}
+
+// addWorkspace records canonical as a workspace with its identity fingerprint
+// and live-seeds it into every open site whose anchor sits inside it.
+func (a *app) addWorkspace(canonical string) error {
+	identity := platform.DirIdentity(canonical)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.rt.cfg.AddWorkspaceFolder(canonical, identity) {
+		return nil
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		a.rt.cfg.RemoveWorkspaceFolder(canonical)
+		return fmt.Errorf("could not save config: %w", err)
+	}
+	for _, s := range a.sites {
+		if session.EqualOrUnder(s.root, canonical) {
+			if err := s.sessions.InstallWorkspaceRoot(canonical); err != nil {
+				a.rt.logger.Printf("Could not live-seed workspace root %s into site %s: %v", canonical, s.root, err)
+			}
+		}
+	}
+	a.rt.logger.Printf("Workspace folder added: %s", canonical)
+	return nil
+}
+
+// removeWorkspace drops dir from the workspace list, revokes the seeded root
+// from every site, and unregisters every file whose only provenance was this
+// workspace, tearing down its live-sync streams — revocation genuinely ends
+// the capability (T0.5). A file still covered by another workspace keeps its
+// registration.
+func (a *app) removeWorkspace(dir string) error {
+	a.mu.Lock()
+	if !a.rt.cfg.RemoveWorkspaceFolder(dir) {
+		a.mu.Unlock()
+		return nil
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		a.rt.cfg.AddWorkspaceFolder(dir, platform.DirIdentity(dir))
+		a.mu.Unlock()
+		return fmt.Errorf("could not save config: %w", err)
+	}
+	var dropped []string
+	for _, s := range a.sites {
+		s.sessions.RevokeWorkspaceRoot(dir)
+		for _, reg := range s.sessions.Registrations() {
+			if reg.Via == session.ViaWorkspace && session.EqualOrUnder(reg.Path, dir) &&
+				!s.sessions.WorkspaceCovers(reg.Path) {
+				if s.sessions.Unregister(reg.Path) {
+					dropped = append(dropped, reg.Path)
+				}
+			}
+		}
+	}
+	a.mu.Unlock()
+	for _, p := range dropped {
+		a.rt.ls.DropSubscribers(p)
+	}
+	a.rt.logger.Printf("Workspace folder removed: %s (%d registrations revoked)", dir, len(dropped))
+	return nil
+}
+
+// deadWorkspaceSuffix marks a workspace entry whose directory is gone or no
+// longer passes its identity check. The entry stays listed — it is the record
+// of a standing write grant — and the suffix is stripped before removal.
+const deadWorkspaceSuffix = " (missing or replaced)"
+
+// workspaceFolders returns the tray labels for the configured workspaces.
+func (a *app) workspaceFolders() []string {
+	out := []string{}
+	for _, wf := range a.rt.cfg.WorkspaceFolderList() {
+		label := wf.Path
+		if info, err := os.Stat(wf.Path); err != nil || !info.IsDir() || !workspaceIdentityOK(wf) {
+			label += deadWorkspaceSuffix
+		}
+		out = append(out, label)
+	}
+	return out
+}
+
+// pickAndAddWorkspace pops the native folder picker and declares the choice a
+// workspace. The tray route deliberately skips the page-request refusal list:
+// a deliberate act with a folder picker may choose anything valid.
+func (a *app) pickAndAddWorkspace() []string {
+	dir, ok, err := platform.SelectFolder("Choose a workspace folder. Every HTML Clay file inside it (including files added later) opens editable with no prompts, and any file in it can change any other.")
+	if err != nil {
+		a.rt.logger.Printf("Folder picker failed: %v", err)
+		return a.workspaceFolders()
+	}
+	if !ok {
+		return a.workspaceFolders()
+	}
+	canonical, cErr := a.canonicalTrusted(dir)
+	if cErr == nil {
+		cErr = a.addWorkspace(canonical)
+	}
+	if cErr != nil {
+		a.rt.logger.Printf("Could not add workspace %s: %v", dir, cErr)
+		go func() {
+			if nErr := a.notifyUser("HTML Clay can't make this a workspace", cErr.Error()); nErr != nil {
+				a.rt.logger.Printf("Could not show notification: %v", nErr)
+			}
+		}()
+	}
+	return a.workspaceFolders()
+}
+
+// removeWorkspaceLabel is the tray's remove hook: strip the dead-entry suffix
+// back off and remove the real path.
+func (a *app) removeWorkspaceLabel(label string) []string {
+	dir := strings.TrimSuffix(label, deadWorkspaceSuffix)
+	if err := a.removeWorkspace(dir); err != nil {
+		a.rt.logger.Printf("Could not remove workspace %s: %v", dir, err)
+	}
+	return a.workspaceFolders()
+}
+
+// openedForEditing lists files whose only registration provenance is the page
+// open-request dialog, deduped across sites and sorted: the tray's revocable
+// Feature A grants. A file also OS-opened or workspace-covered is not listed,
+// because revoking the page grant would not end its capability.
+func (a *app) openedForEditing() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	seen := map[string]bool{}
+	for _, s := range a.sites {
+		for _, reg := range s.sessions.Registrations() {
+			if reg.Via == session.ViaOpenRequest {
+				seen[reg.Path] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// revokeOpened withdraws a Feature A grant: the registration dies (token, and
+// the opened root when nothing else holds it) and its live-sync streams are
+// torn down. Returns the updated list for the tray.
+func (a *app) revokeOpened(path string) []string {
+	a.mu.Lock()
+	for _, s := range a.sites {
+		if s.sessions.Via(path) == session.ViaOpenRequest {
+			s.sessions.Unregister(path)
+		}
+	}
+	a.mu.Unlock()
+	a.rt.ls.DropSubscribers(path)
+	a.rt.logger.Printf("Page-opened file revoked: %s", path)
+	return a.openedForEditing()
+}
+
+func (a *app) registerLocked(s *site, absPath string, via session.Provenance) (string, bool) {
+	f, err := s.sessions.Register(absPath, via)
 	if err != nil {
 		a.rt.logger.Printf("Error registering file: %v", err)
 		return "", false
@@ -672,9 +1002,12 @@ func (a *app) registerLocked(s *site, absPath string) (string, bool) {
 }
 
 // route resolves absPath to the site that should serve it, registering the file
-// and creating a site if needed. It returns the site and the file's path
-// relative to home.
-func (a *app) route(absPath string) (*site, string, bool) {
+// with the given provenance and creating a site if needed. It returns the site
+// and the file's path relative to home. Every registration in the process goes
+// through here (the OS open, the page's open-request, the workspace
+// auto-register), so a file is only ever registered in one site and gets
+// exactly one token, whichever door it arrived through.
+func (a *app) route(absPath string, via session.Provenance) (*site, string, bool) {
 	a.mu.Lock()
 	if a.stopping {
 		a.mu.Unlock()
@@ -686,7 +1019,7 @@ func (a *app) route(absPath string) (*site, string, bool) {
 		return s, rel, true
 	}
 	if s := a.siteForLocked(absPath); s != nil {
-		rel, ok := a.registerLocked(s, absPath)
+		rel, ok := a.registerLocked(s, absPath, via)
 		a.mu.Unlock()
 		return s, rel, ok
 	}
@@ -714,20 +1047,21 @@ func (a *app) route(absPath string) (*site, string, bool) {
 		return s, rel, true
 	}
 	if s := a.siteForLocked(absPath); s != nil {
-		rel, ok := a.registerLocked(s, absPath)
+		rel, ok := a.registerLocked(s, absPath, via)
 		a.mu.Unlock()
 		pending.close()
 		return s, rel, ok
 	}
 	// Publish only once registration has succeeded, so a refused open never
 	// leaves a server listening that nothing tracks or shuts down.
-	rel, ok := a.registerLocked(pending, absPath)
+	rel, ok := a.registerLocked(pending, absPath, via)
 	if !ok {
 		a.mu.Unlock()
 		pending.close()
 		return nil, "", false
 	}
 	a.seedTrustedRootsLocked(pending.sessions, root)
+	a.seedWorkspaceRootsLocked(pending.sessions, root)
 	a.sites = append(a.sites, pending)
 	pending.start(a.rt.logger)
 	port := pending.port
@@ -770,7 +1104,7 @@ func (a *app) openFile(filePath string) {
 		return
 	}
 
-	s, rel, ok := a.route(absPath)
+	s, rel, ok := a.route(absPath, session.ViaOsOpen)
 	if !ok {
 		return
 	}
@@ -834,7 +1168,12 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 			List:   a.trustedFolders,
 			Add:    a.pickAndTrustFolder,
 			Remove: a.removeTrustedFolder,
-		}, &tray.GrantHooks{List: a.activeGrants, Revoke: a.revokeGrant})
+		}, &tray.GrantHooks{List: a.activeGrants, Revoke: a.revokeGrant},
+			&tray.TrustedFolderHooks{
+				List:   a.workspaceFolders,
+				Add:    a.pickAndAddWorkspace,
+				Remove: a.removeWorkspaceLabel,
+			}, &tray.GrantHooks{List: a.openedForEditing, Revoke: a.revokeOpened})
 		a.rt.logger.Printf("Tray exited")
 	}
 }

@@ -32,3 +32,19 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 		return ConfirmDeny, nil
 	}
 }
+
+// confirmTwoButtons is confirmDialog's two-button variant, sharing its
+// foregrounding and its 120s give-up (which self-dismisses to deny).
+func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+	dialog := "display dialog " + appleScriptString(message) +
+		" with title " + appleScriptString(title) +
+		" buttons {\"Deny\", " + appleScriptString(allowLabel) + `} default button "Deny" with icon caution giving up after 120`
+	out, err := exec.Command("osascript", "-e", "activate me", "-e", dialog).CombinedOutput()
+	if err != nil {
+		return false, err
+	}
+	// "button returned:Deny" and "gave up:true" both read as no. The prefix
+	// makes the match exact, so a label that happens to appear in the message
+	// text cannot register as a click.
+	return strings.Contains(string(out), "button returned:"+allowLabel), nil
+}

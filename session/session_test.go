@@ -51,7 +51,7 @@ func TestRegisterReturnsToken(t *testing.T) {
 	mgr, home := setupManager(t)
 	path := createTestFile(t, home, "test.htmlclay")
 
-	f, err := mgr.Register(path)
+	f, err := mgr.Register(path, ViaOsOpen)
 	if err != nil {
 		t.Fatalf("Register error: %v", err)
 	}
@@ -70,8 +70,8 @@ func TestRegisterSamePathReturnsSameFile(t *testing.T) {
 	mgr, home := setupManager(t)
 	path := createTestFile(t, home, "test.htmlclay")
 
-	f1, _ := mgr.Register(path)
-	f2, _ := mgr.Register(path)
+	f1, _ := mgr.Register(path, ViaOsOpen)
+	f2, _ := mgr.Register(path, ViaOsOpen)
 
 	if f1.Token != f2.Token {
 		t.Error("expected same token for same path")
@@ -86,8 +86,8 @@ func TestRegisterDifferentPathsDifferentTokens(t *testing.T) {
 	p1 := createTestFile(t, home, "a.htmlclay")
 	p2 := createTestFile(t, home, "b.htmlclay")
 
-	f1, _ := mgr.Register(p1)
-	f2, _ := mgr.Register(p2)
+	f1, _ := mgr.Register(p1, ViaOsOpen)
+	f2, _ := mgr.Register(p2, ViaOsOpen)
 
 	if f1.Token == f2.Token {
 		t.Error("expected different tokens for different paths")
@@ -100,7 +100,7 @@ func TestRegisterOutsideHomeDir(t *testing.T) {
 	os.WriteFile(outside, []byte("<html></html>"), 0644)
 	defer os.Remove(outside)
 
-	_, err := mgr.Register(outside)
+	_, err := mgr.Register(outside, ViaOsOpen)
 	if err == nil {
 		t.Error("expected error for path outside home dir")
 	}
@@ -109,7 +109,7 @@ func TestRegisterOutsideHomeDir(t *testing.T) {
 func TestLookupValid(t *testing.T) {
 	mgr, home := setupManager(t)
 	path := createTestFile(t, home, "test.htmlclay")
-	f, _ := mgr.Register(path)
+	f, _ := mgr.Register(path, ViaOsOpen)
 
 	found, ok := mgr.Lookup(f.Token)
 	if !ok {
@@ -131,7 +131,7 @@ func TestLookupInvalid(t *testing.T) {
 func TestLookupByPathRegistered(t *testing.T) {
 	mgr, home := setupManager(t)
 	path := createTestFile(t, home, "test.htmlclay")
-	f, _ := mgr.Register(path)
+	f, _ := mgr.Register(path, ViaOsOpen)
 
 	found, ok := mgr.LookupByPath(path)
 	if !ok {
@@ -153,7 +153,7 @@ func TestLookupByPathUnregistered(t *testing.T) {
 func TestRevokeAll(t *testing.T) {
 	mgr, home := setupManager(t)
 	path := createTestFile(t, home, "test.htmlclay")
-	f, _ := mgr.Register(path)
+	f, _ := mgr.Register(path, ViaOsOpen)
 
 	mgr.RevokeAll()
 
@@ -174,7 +174,7 @@ func TestConcurrentAccess(t *testing.T) {
 		wg.Add(2)
 		go func(p string) {
 			defer wg.Done()
-			mgr.Register(p)
+			mgr.Register(p, ViaOsOpen)
 		}(name)
 		go func(p string) {
 			defer wg.Done()
@@ -234,7 +234,7 @@ func TestAssetRoot(t *testing.T) {
 	if _, _, ok := m.AssetRoot(assetPath); ok {
 		t.Fatal("no files opened, nothing should be allowed")
 	}
-	if _, err := m.Register(pagePath); err != nil {
+	if _, err := m.Register(pagePath, ViaOsOpen); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	root, rel, ok := m.AssetRoot(assetPath)
@@ -262,7 +262,7 @@ func TestHomeDirNeverBecomesAssetRoot(t *testing.T) {
 	os.WriteFile(sibling, []byte("secret"), 0644)
 
 	m := newTestManager(t, home)
-	if _, err := m.Register(pagePath); err != nil {
+	if _, err := m.Register(pagePath, ViaOsOpen); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, _, ok := m.AssetRoot(sibling); ok {
@@ -328,7 +328,7 @@ func TestRevokeGrantKeepsOpenedCapability(t *testing.T) {
 	os.WriteFile(asset, []byte("body{}"), 0644)
 
 	m := newTestManager(t, home)
-	if _, err := m.Register(page); err != nil {
+	if _, err := m.Register(page, ViaOsOpen); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	dir := filepath.Join(home, "site")
@@ -436,7 +436,7 @@ func TestAssetRootOpenedReportsProvenance(t *testing.T) {
 	os.WriteFile(page, []byte("<html></html>"), 0644)
 
 	m := newTestManager(t, home)
-	if _, err := m.Register(page); err != nil {
+	if _, err := m.Register(page, ViaOsOpen); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := m.GrantReadRoot(filepath.Join(home, "granted")); err != nil {
@@ -462,7 +462,7 @@ func TestReadRootsReportsProvenance(t *testing.T) {
 	os.WriteFile(page, []byte("<html></html>"), 0644)
 
 	m := newTestManager(t, home)
-	if _, err := m.Register(page); err != nil { // opened root = home/opened
+	if _, err := m.Register(page, ViaOsOpen); err != nil { // opened root = home/opened
 		t.Fatalf("register: %v", err)
 	}
 	if err := m.GrantReadRoot(filepath.Join(home, "granted")); err != nil {
@@ -644,7 +644,7 @@ func TestAssetRootMostSpecific(t *testing.T) {
 	os.WriteFile(asset, []byte("png"), 0644)
 
 	m := newTestManager(t, home)
-	if _, err := m.Register(page); err != nil { // opened root = home/site
+	if _, err := m.Register(page, ViaOsOpen); err != nil { // opened root = home/site
 		t.Fatalf("register: %v", err)
 	}
 	if err := m.GrantReadRoot(filepath.Join(home, "site", "img")); err != nil {
@@ -793,6 +793,7 @@ func TestHistoryKeyIsResolvedOnce(t *testing.T) {
 		t.Fatalf("history key moved to %q; it must never be re-derived", f.HistoryKey())
 	}
 }
+
 // The probe must agree with what the volume actually does, measured
 // independently on the same directory. This exercises the case-insensitive
 // branch on macOS/Windows runners and the case-sensitive branch on Linux, so

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/panphora/htmlclay/session"
 )
 
 func TestExtractFilePath(t *testing.T) {
@@ -209,6 +211,7 @@ func TestSaveThroughMux(t *testing.T) {
 	body := `<!DOCTYPE html><html htmlclaytoken="x"><body>Mux Save</body></html>`
 	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(body))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	sameOriginHeaders(req)
 
 	w := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(w, req)
@@ -368,7 +371,7 @@ func setupAssetTest(t *testing.T, name string, body []byte) *fileFixture {
 	if err := os.WriteFile(pagePath, []byte(page("sub")), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fx.srv.sessions.Register(pagePath); err != nil {
+	if _, err := fx.srv.sessions.Register(pagePath, session.ViaOsOpen); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(assetDir, name), body, 0644); err != nil {

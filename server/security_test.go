@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
@@ -172,5 +173,55 @@ func TestVersionsPathIsContainedButStillDenied(t *testing.T) {
 	}
 	if !store.Contains(abs) {
 		t.Fatal("a versions path inside the store was not recognized as internal")
+	}
+}
+
+// The same-origin gate admits only a browser-attested request from this site's
+// own page: Sec-Fetch-Site must be literally same-origin (same-site means any
+// other loopback port) and Origin must name this origin, port included. Absent
+// headers are what an old browser's no-cors request and a bare local process
+// send, and both are refused.
+func TestSameOriginGate(t *testing.T) {
+	handled := false
+	h := sameOrigin(func(w http.ResponseWriter, r *http.Request) {
+		handled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cases := []struct {
+		name   string
+		site   string
+		origin string
+		want   int
+	}{
+		{"attested same-origin", "same-origin", "http://127.0.0.1:7777", 200},
+		{"same-site is another local port", "same-site", "http://127.0.0.1:7777", 403},
+		{"cross-site", "cross-site", "http://evil.example", 403},
+		{"none (direct navigation)", "none", "http://127.0.0.1:7777", 403},
+		{"absent headers", "", "", 403},
+		{"origin names a different port", "same-origin", "http://127.0.0.1:9999", 403},
+		{"origin absent", "same-origin", "", 403},
+		{"origin is https", "same-origin", "https://127.0.0.1:7777", 403},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handled = false
+			req := httptest.NewRequest("POST", "/_/save/tok", nil)
+			req.Host = "127.0.0.1:7777"
+			if tc.site != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.site)
+			}
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			w := httptest.NewRecorder()
+			h(w, req)
+			if w.Code != tc.want {
+				t.Fatalf("status = %d, want %d", w.Code, tc.want)
+			}
+			if handled != (tc.want == 200) {
+				t.Fatalf("handler ran = %v with status %d", handled, w.Code)
+			}
+		})
 	}
 }

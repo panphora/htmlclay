@@ -33,7 +33,62 @@ type Config struct {
 	// and validates (inside home, not the config tree, no hidden component) before
 	// adding, so containment checks here can stay simple.
 	TrustedFolders []string `json:"trustedFolders,omitempty"`
-	baseDir        string
+	// WorkspaceFolders are folders the user declared fully theirs: HTML Clay
+	// files under one auto-register and self-save with no prompts, which makes
+	// this the one WRITE-granting trust in the config. Same canonical-path
+	// contract as TrustedFolders. Unlike trusted folders these are never pruned
+	// on Load: a workspace is a standing write capability, and a dead or
+	// identity-changed entry must surface in the tray as dead rather than
+	// silently vanish from the record of what the user granted.
+	WorkspaceFolders []WorkspaceFolder `json:"workspaceFolders,omitempty"`
+	baseDir          string
+}
+
+// WorkspaceFolder is one declared workspace. Identity is the folder's
+// device+inode fingerprint at declaration time ("" where the platform cannot
+// provide one); installers compare it before seeding so a directory swapped for
+// a symlink since declaration is refused under the old name instead of granting
+// write over whatever tree the link now points at.
+type WorkspaceFolder struct {
+	Path     string `json:"path"`
+	Identity string `json:"identity,omitempty"`
+}
+
+// AddWorkspaceFolder records dir as a workspace with its identity fingerprint,
+// returning false if the path was already present. dir must already be
+// canonical (resolved, home-contained), like AddTrustedFolder.
+func (c *Config) AddWorkspaceFolder(dir, identity string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, w := range c.WorkspaceFolders {
+		if w.Path == dir {
+			return false
+		}
+	}
+	c.WorkspaceFolders = append(c.WorkspaceFolders, WorkspaceFolder{Path: dir, Identity: identity})
+	return true
+}
+
+// RemoveWorkspaceFolder drops dir from the workspace list, returning whether it
+// was present.
+func (c *Config) RemoveWorkspaceFolder(dir string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, w := range c.WorkspaceFolders {
+		if w.Path == dir {
+			c.WorkspaceFolders = append(c.WorkspaceFolders[:i], c.WorkspaceFolders[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// WorkspaceFolderList returns a copy of the workspace folders so callers can
+// read the list without touching the field under the lock.
+func (c *Config) WorkspaceFolderList() []WorkspaceFolder {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]WorkspaceFolder(nil), c.WorkspaceFolders...)
 }
 
 // AddTrustedFolder records dir as trusted, returning false if it was already

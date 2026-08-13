@@ -301,6 +301,70 @@ func StripHTMLClayID(data []byte) []byte {
 	return stripAttr(data, htmlclayidAttr)
 }
 
+// bannerStart and bannerEnd delimit the server-injected read-only banner. The
+// markers exist so StripBanner can remove the banner byte-exactly without
+// parsing: everything between them is server-authored and never user content.
+var (
+	bannerStart = []byte("<!--htmlclay-banner-->")
+	bannerEnd   = []byte("<!--/htmlclay-banner-->")
+)
+
+// WrapBanner surrounds server-authored banner markup with the strip markers.
+func WrapBanner(banner []byte) []byte {
+	out := make([]byte, 0, len(bannerStart)+len(banner)+len(bannerEnd))
+	out = append(out, bannerStart...)
+	out = append(out, banner...)
+	out = append(out, bannerEnd...)
+	return out
+}
+
+// InjectBanner inserts an already-wrapped banner immediately before the real
+// top-level </html> end tag, using the same comment- and raw-text-aware scan as
+// IsCompleteHTMLDocument, so a fake close tag inside a script or comment cannot
+// misplace it. Position in the DOM is irrelevant to a fixed-position banner,
+// and inserting at the end sidesteps every head/body reparenting subtlety an
+// injection near <html> would raise. A document with no close tag gets the
+// banner appended; one with no <html> tag at all is returned unchanged (served
+// plain rather than guessed at).
+func InjectBanner(data, wrappedBanner []byte) []byte {
+	_, closeAngle, ok := findHTMLTagRange(data)
+	if !ok {
+		return data
+	}
+	insert := len(data)
+	if end := findHTMLCloseTag(data, closeAngle+1); end >= 0 {
+		insert = end
+	}
+	out := make([]byte, 0, len(data)+len(wrappedBanner))
+	out = append(out, data[:insert]...)
+	out = append(out, wrappedBanner...)
+	out = append(out, data[insert:]...)
+	return out
+}
+
+// StripBanner removes every marker-delimited banner from data. It runs on every
+// save and restore: a banner that reached a token-holding tab (for instance
+// pushed through live-sync into an edit-mode page) must never autosave itself
+// into the file on disk. An unterminated start marker strips nothing rather
+// than guessing at an end.
+func StripBanner(data []byte) []byte {
+	for {
+		i := bytes.Index(data, bannerStart)
+		if i < 0 {
+			return data
+		}
+		rest := data[i+len(bannerStart):]
+		j := bytes.Index(rest, bannerEnd)
+		if j < 0 {
+			return data
+		}
+		next := make([]byte, 0, i+len(rest)-j-len(bannerEnd))
+		next = append(next, data[:i]...)
+		next = append(next, rest[j+len(bannerEnd):]...)
+		data = next
+	}
+}
+
 // GenerateHTMLClayID generates a UUID v4 using crypto/rand.
 func GenerateHTMLClayID() (string, error) {
 	var b [16]byte
