@@ -1,3 +1,13 @@
+# Features
+
+- [x] Workspace trust: read-only banner + "open this file for editing" (single-use nonce, native
+      dialog), workspace folders (declared folders whose `.htmlclay` files auto-register editable,
+      device+inode fingerprints, real revocation), same-origin gate on every mutating route,
+      `Sec-Fetch-Dest` gate on token injection, volume-probed case folding.
+      Plan: `hyper/plans/htmlclay/workspace-trust-plan.md`
+
+---
+
 # HTMLClay Release Setup TODO
 
 GitHub secrets to add to `panphora/htmlclay` (same values as hyperclay-local unless noted):

@@ -129,7 +129,7 @@ For a deeper exploration of the problem and the landscape of existing solutions,
 
 ## Security
 
-HTML Clay only lets you save files you explicitly opened, and only lets a page read inside the folder you opened it from. Anything outside that pauses and asks. [`SECURITY.md`](SECURITY.md) explains the model, what each protection covers, and the current known limitations.
+HTML Clay only saves files you chose: a file you opened yourself, a file you approved from its read-only banner, or a file inside a folder you declared a workspace. A page can only read inside the folder you opened it from; anything outside that pauses and asks. [`SECURITY.md`](SECURITY.md) explains the model, what each protection covers, and the current known limitations.
 
 ## Technical deep dive
 
@@ -179,7 +179,8 @@ dist/windows/        File association registration script
 
 ### Security model
 
-- **Localhost only** — The server binds to `127.0.0.1`, validates the `Host` header, and rejects cross-site requests (`Sec-Fetch-Site: cross-site`).
+- **Localhost only** — The server binds to `127.0.0.1`, validates the `Host` header, and rejects cross-site requests (`Sec-Fetch-Site: cross-site`). Mutating routes (save, restore, live sync, permission requests) additionally require `Sec-Fetch-Site: same-origin` and a matching `Origin`.
+- **Read-only by default, three ways to editable** — A linked or typed `.htmlclay` file serves read-only with a banner offering to open it for editing (a single-use server-minted nonce plus a native dialog). Folders declared as workspaces auto-register their `.htmlclay` files as editable on real navigations, with no prompts. Save tokens are injected only into document navigations, never into background fetches.
 - **256-bit session tokens** — Each opened file gets a cryptographically random token. The read, save, and meta endpoints (under `/_/`) require a valid token; the top-level file-serving route only resolves paths that match an already-open file. Tokens are redacted from the log and live for the lifetime of the process (there is no per-file expiry); on a single-user desktop this is fine, since they never leave loopback.
 - **Path traversal prevention** — All file paths are validated as relative and within the user's home directory. Symlinks are resolved before validation.
 - **Atomic writes** — Files are written to a temp file first, then renamed into place, preventing corruption on crash.
