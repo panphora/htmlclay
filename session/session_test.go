@@ -3,6 +3,7 @@ package session
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -790,5 +791,91 @@ func TestHistoryKeyIsResolvedOnce(t *testing.T) {
 	f.SetHistoryKey("path:second")
 	if f.HistoryKey() != "id:first" {
 		t.Fatalf("history key moved to %q; it must never be re-derived", f.HistoryKey())
+	}
+}
+// The probe must agree with what the volume actually does, measured
+// independently on the same directory. This exercises the case-insensitive
+// branch on macOS/Windows runners and the case-sensitive branch on Linux, so
+// both outcomes are covered across CI without any platform assumption in the
+// assertion itself.
+func TestProbeCaseInsensitiveDirMatchesVolume(t *testing.T) {
+	dir := t.TempDir()
+	insensitive, err := probeCaseInsensitiveDir(dir)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+
+	truthPath := filepath.Join(dir, "case-Truth")
+	if err := os.WriteFile(truthPath, []byte("x"), 0644); err != nil {
+		t.Fatalf("write ground-truth file: %v", err)
+	}
+	_, statErr := os.Stat(filepath.Join(dir, "CASE-tRUTH"))
+	truth := statErr == nil
+
+	if insensitive != truth {
+		t.Fatalf("probe says insensitive=%v, the volume says %v", insensitive, truth)
+	}
+}
+
+func TestProbeLeavesNoFileBehind(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := probeCaseInsensitiveDir(dir); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("probe left %d file(s) behind: %v", len(entries), entries)
+	}
+}
+
+func TestFlipASCIICase(t *testing.T) {
+	for in, want := range map[string]string{
+		".htmlclay-CaseProbe-12345": ".HTMLCLAY-cASEpROBE-12345",
+		"abcXYZ":                    "ABCxyz",
+		"1234-_.":                   "1234-_.",
+		"":                          "",
+	} {
+		if got := flipASCIICase(in); got != want {
+			t.Fatalf("flipASCIICase(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The scenario T2.3 names: a genuinely case-sensitive volume on macOS, where
+// the old GOOS-keyed answer was wrong. Built with a throwaway APFS disk image;
+// skipped when hdiutil cannot run (sandboxed CI).
+func TestProbeOnCaseSensitiveVolume(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("hdiutil is macOS-only")
+	}
+	img := filepath.Join(t.TempDir(), "probe.dmg")
+	if out, err := exec.Command("hdiutil", "create", "-size", "4m",
+		"-fs", "Case-sensitive APFS", "-volname", "htmlclay-case-probe", img).CombinedOutput(); err != nil {
+		t.Skipf("cannot create disk image: %v: %s", err, out)
+	}
+	out, err := exec.Command("hdiutil", "attach", "-nobrowse", "-readwrite", img).CombinedOutput()
+	if err != nil {
+		t.Skipf("cannot attach disk image: %v: %s", err, out)
+	}
+	mount := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if i := strings.Index(line, "/Volumes/"); i >= 0 {
+			mount = strings.TrimSpace(line[i:])
+		}
+	}
+	if mount == "" {
+		t.Skipf("no mountpoint in hdiutil output: %s", out)
+	}
+	defer exec.Command("hdiutil", "detach", mount, "-force").Run()
+
+	insensitive, err := probeCaseInsensitiveDir(mount)
+	if err != nil {
+		t.Fatalf("probe on case-sensitive volume: %v", err)
+	}
+	if insensitive {
+		t.Fatal("a case-sensitive volume probed as case-insensitive")
 	}
 }

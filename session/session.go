@@ -204,11 +204,72 @@ func (m *Manager) HomeDir() string {
 	return m.homeDir
 }
 
-// caseInsensitiveFS reports whether the host platform's default filesystem
-// ignores case (Windows and macOS). On those, two paths that differ only in case
-// name the same file, so home-containment checks must fold case.
+// caseInsensitiveFS reports whether path comparisons in this package fold case.
+// It is decided by probing the volume that actually holds the user's home
+// directory, not by the OS name: macOS can host a case-sensitive APFS home and
+// a Linux home can sit on a case-insensitive mount, and guessing from GOOS on
+// those setups treats two distinct files as one (or one file as two) in every
+// containment and root check. Every comparison in this package is about paths
+// under home, so home's volume is the deciding one, probed once per process.
+//
+// A volume with different folding mounted INSIDE home is still misjudged by
+// string comparison; decisions that grant write scope must therefore compare by
+// descriptor identity (os.SameFile), never by folded strings alone.
 func caseInsensitiveFS() bool {
-	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+	return fsCaseFold()
+}
+
+var fsCaseFold = sync.OnceValue(func() bool {
+	fallback := runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fallback
+	}
+	insensitive, err := probeCaseInsensitiveDir(home)
+	if err != nil {
+		return fallback
+	}
+	return insensitive
+})
+
+// probeCaseInsensitiveDir reports whether the filesystem holding dir ignores
+// case, by creating a file and statting it under a case-flipped name. The
+// letters to flip come from the pattern: CreateTemp's random suffix is digits,
+// which have no case. The probe file is hidden and removed before returning.
+func probeCaseInsensitiveDir(dir string) (bool, error) {
+	f, err := os.CreateTemp(dir, ".htmlclay-CaseProbe-*")
+	if err != nil {
+		return false, err
+	}
+	name := f.Name()
+	f.Close()
+	defer os.Remove(name)
+
+	orig, err := os.Stat(name)
+	if err != nil {
+		return false, err
+	}
+	flipped, err := os.Stat(filepath.Join(dir, flipASCIICase(filepath.Base(name))))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return os.SameFile(orig, flipped), nil
+}
+
+func flipASCIICase(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z':
+			b[i] = c - 'a' + 'A'
+		case c >= 'A' && c <= 'Z':
+			b[i] = c - 'A' + 'a'
+		}
+	}
+	return string(b)
 }
 
 // ContainWithinHome reports whether child is strictly inside home. When it is, it
