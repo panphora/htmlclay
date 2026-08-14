@@ -1,11 +1,11 @@
 tier: 3
 face: query
-expect: error
-note: The property split is lastIndexOf('@') over the whole rule, with no awareness of quoting, so
-note: an @ inside an attribute value splits the selector there: 'a[href*="' plus the property name
-note: '"]'. The quoted string parsed perfectly; only extraction sees the damage.
-note: DIVERGENCE, same class as selector-unknown-pseudo-is-500. css-what says "Attribute value
-note: didn't end", which contains neither "JSON" nor "selector", so the JS hosts answer 500.
-note: Compare rules-iterate-lookahead-unquoted: also a css-select failure, but its message happens
-note: to contain the word "selector", so it answers 400. Two sibling failures, two statuses,
-note: decided entirely by upstream prose. htmlclay maps by TYPE and answers 400 for both.
+expect: ok
+note: The property split scans for the last "@" at bracket depth zero and outside quotes, so an @
+note: inside an attribute value stays part of the selector. `a[href*="@"]` is one selector reading
+note: the link's text, not a broken split into 'a[href*="' plus a property name.
+note: This case previously pinned the opposite: a plain lastIndexOf over the whole rule, which cut
+note: the selector mid-bracket and left css-what to report "Attribute value didn't end". It was
+note: fixed across all four implementations at once (2026-08-13) rather than left as a divergence,
+note: because splitting inside the brackets always leaves an unclosed "[" or quote, so every rule
+note: the old split touched was a hard parse error and nothing could have depended on it.

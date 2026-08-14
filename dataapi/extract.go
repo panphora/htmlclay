@@ -147,11 +147,9 @@ func extractScalar(d *Document, ctx *html.Node, rule string) (Value, error) {
 		return readPropOrAttr(d, ctx, rule[1:]), nil
 	}
 
-	// "sel@name" — split on the LAST @, with no awareness of quoting. An @ inside an attribute
-	// value therefore splits the selector in half; that is a known wart, pinned by the
-	// rules-lastindexof-at-split case, and the split has to stay where it is.
-	if strings.Contains(rule, "@") {
-		at := strings.LastIndex(rule, "@")
+	// "sel@name" — split at the last @ outside brackets, parens and quotes, so a selector may
+	// carry its own @ (a mailto href, a container query) and still read as one selector.
+	if at := ruleAttrIndex(rule); at != -1 {
 		selector, name := rule[:at], rule[at+1:]
 
 		matches := []*html.Node{ctx}

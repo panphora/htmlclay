@@ -420,3 +420,41 @@ func splitTopLevelCommas(s string) [][2]int {
 	}
 	return append(out, [2]int{start, len(s)})
 }
+
+// ruleAttrIndex finds the "@" that separates a scalar rule's selector from its property name, or
+// -1 when the rule names no property. It is the LAST "@", because a property name never contains
+// one, but a selector often does: `a[href="mailto:hi@example.com"]`, a container query, a Tailwind
+// arbitrary variant. Every one of those carries its "@" inside brackets, parens or quotes, so a
+// separator is an "@" at bracket depth zero and outside any quote.
+//
+// This used to be strings.LastIndex over the whole rule, matching the reference implementation's
+// wart and pinned by the rules-lastindexof-at-split conformance case. Both were fixed together:
+// splitting inside the brackets always leaves an unclosed "[" or quote behind, so every rule the
+// old split touched was a hard parse error rather than a quiet mis-bind.
+func ruleAttrIndex(rule string) int {
+	depth := 0
+	var quote byte
+	found := -1
+	for i := 0; i < len(rule); i++ {
+		ch := rule[i]
+		switch {
+		case ch == '\\':
+			i++
+		case quote != 0:
+			if ch == quote {
+				quote = 0
+			}
+		case ch == '"' || ch == '\'':
+			quote = ch
+		case ch == '[' || ch == '(':
+			depth++
+		case ch == ']' || ch == ')':
+			if depth > 0 {
+				depth--
+			}
+		case ch == '@' && depth == 0:
+			found = i
+		}
+	}
+	return found
+}
