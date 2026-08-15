@@ -16,10 +16,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/session"
 )
+
+// equalOrUnderFold is EqualOrUnder with capitalization always ignored, whatever
+// the disk underneath does.
+//
+// The tables below are a rule about which folders a person keeps their life in,
+// not a statement about path identity, and two spellings of Documents are the
+// same folder to whoever reads the dialog. session.EqualOrUnder follows the home
+// volume's own rule instead, which is correct for containment and wrong here: on
+// a case-sensitive disk it refuses ~/Documents while letting ~/documents past,
+// and on Linux a lowercase personal folder is an ordinary setup rather than a
+// trick. Refusing both spellings costs nothing, because the tray picker ignores
+// these rules entirely and can still trust either one deliberately.
+func equalOrUnderFold(path, root string) bool {
+	return session.EqualOrUnder(strings.ToLower(path), strings.ToLower(root))
+}
 
 // Policy answers "may this folder be trusted, and on whose say-so".
 type Policy struct {
@@ -105,7 +121,7 @@ func (p Policy) RefuseSteered(dir string) bool {
 			}
 		}
 		for _, d := range forms {
-			if session.EqualOrUnder(dir, d) || session.EqualOrUnder(d, dir) {
+			if equalOrUnderFold(dir, d) || equalOrUnderFold(d, dir) {
 				return true
 			}
 		}
@@ -136,7 +152,7 @@ func (p Policy) RefuseOwnFolder(dir string) bool {
 	dirInfo, dirErr := os.Stat(dir)
 	for _, parts := range candidates {
 		target := filepath.Join(append([]string{p.Home}, parts...)...)
-		if session.EqualOrUnder(target, dir) {
+		if equalOrUnderFold(target, dir) {
 			return true
 		}
 		if dirErr == nil {
@@ -154,8 +170,8 @@ func (p Policy) RefuseOwnFolder(dir string) bool {
 // anything Canonical accepts.
 func (p Policy) IsPersonal(dir string) bool {
 	for _, name := range personalNames {
-		if session.EqualOrUnder(filepath.Join(p.Home, name), dir) &&
-			session.EqualOrUnder(dir, filepath.Join(p.Home, name)) {
+		if equalOrUnderFold(filepath.Join(p.Home, name), dir) &&
+			equalOrUnderFold(dir, filepath.Join(p.Home, name)) {
 			return true
 		}
 	}
