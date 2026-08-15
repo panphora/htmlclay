@@ -62,7 +62,7 @@ type appRuntime struct {
 	// trust its own folder. It is a separate seam from confirm on purpose: a test
 	// that auto-approves read grants must not silently auto-approve the
 	// write-granting dialog too.
-	confirmTrust func(title, message string) (bool, error)
+	confirmTrust func(title, message, affirmative string) (bool, error)
 	// notify, when set, overrides the native notification. Production leaves it nil
 	// (a real banner); tests capture the message instead of putting one on the
 	// user's screen. Unlike confirm, this is read live from background goroutines

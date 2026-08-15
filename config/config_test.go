@@ -179,10 +179,10 @@ func TestTrustedFolderAddRemoveRoundTrip(t *testing.T) {
 		t.Fatalf("expected 2 trusted folders after reload, got %v", loaded.TrustedFolderList())
 	}
 
-	if !loaded.RemoveTrustedFolder(dirA) {
+	if _, ok := loaded.RemoveTrustedFolder(dirA); !ok {
 		t.Error("removing a present folder should report removed")
 	}
-	if loaded.RemoveTrustedFolder(dirA) {
+	if _, ok := loaded.RemoveTrustedFolder(dirA); ok {
 		t.Error("removing an absent folder should report not-removed")
 	}
 	if err := loaded.Save(); err != nil {
@@ -320,10 +320,10 @@ func TestTrustedFoldersRoundTripAndNoPrune(t *testing.T) {
 		t.Fatalf("identities did not round-trip: %v", byPath)
 	}
 
-	if !loaded.RemoveTrustedFolder(dead) {
+	if _, ok := loaded.RemoveTrustedFolder(dead); !ok {
 		t.Fatal("remove reported not-present")
 	}
-	if loaded.RemoveTrustedFolder(dead) {
+	if _, ok := loaded.RemoveTrustedFolder(dead); ok {
 		t.Fatal("second remove reported success")
 	}
 	if got := len(loaded.TrustedFolderList()); got != 1 {

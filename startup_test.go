@@ -59,7 +59,7 @@ func TestBookmarkedURLSurvivesARestart(t *testing.T) {
 	second := newTestAppWithConfigDir(t, home, cfgBase)
 	var prompts int32
 	second.rt.confirm = failingConfirm(t, &prompts)
-	second.rt.confirmTrust = func(string, string) (bool, error) {
+	second.rt.confirmTrust = func(string, string, string) (bool, error) {
 		t.Error("startup raised the trust dialog")
 		return false, nil
 	}

@@ -86,17 +86,25 @@ func (c *Config) AddTrustedFolder(dir, identity string) bool {
 	return true
 }
 
-// RemoveTrustedFolder drops dir from the list, returning whether it was present.
-func (c *Config) RemoveTrustedFolder(dir string) bool {
+// RemoveTrustedFolder drops dir from the list, returning the entry it removed
+// along with whether it was there at all.
+//
+// The entry comes back so a caller whose removal fails to reach disk can restore
+// exactly what it took out. Re-adding a freshly built entry instead re-pins the
+// folder to whatever is at that path now, which turns a dead entry (folder
+// deleted and replaced, granting nothing) into a live grant over the newcomer —
+// the one thing the identity pin exists to prevent, arrived at through an error
+// path.
+func (c *Config) RemoveTrustedFolder(dir string) (TrustedFolder, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i, w := range c.TrustedFolders {
 		if w.Path == dir {
 			c.TrustedFolders = append(c.TrustedFolders[:i], c.TrustedFolders[i+1:]...)
-			return true
+			return w, true
 		}
 	}
-	return false
+	return TrustedFolder{}, false
 }
 
 // SetTrustedIdentity re-pins an existing entry and returns the pin it replaced,
@@ -170,6 +178,24 @@ func (c *Config) RememberSitePort(anchor string, port int) {
 		c.SitePorts = make(map[string]int)
 	}
 	c.SitePorts[anchor] = port
+}
+
+// ForgetSitePort drops the remembered port for anchor and returns it, so a
+// caller whose change fails to reach disk can put it back.
+//
+// Untrusting a folder forgets its port. Keeping it would hand the folder's exact
+// origin straight back to the first file re-homed out of it: that file's own
+// folder IS the untrusted folder, so it anchors there and binds the same
+// remembered port, leaving the untrusted folder's still-open pages same-origin
+// with a file that has a live save token. "Files you had opened yourself
+// survive, on a new address of their own" is the promise, and the new address is
+// the whole of it.
+func (c *Config) ForgetSitePort(anchor string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	port := c.SitePorts[anchor]
+	delete(c.SitePorts, anchor)
+	return port
 }
 
 // SitePortList returns a copy of the remembered ports for startup planning.

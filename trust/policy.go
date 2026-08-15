@@ -52,13 +52,86 @@ type Policy struct {
 var personalNames = []string{
 	"Desktop", "Documents", "Downloads", "Library", "Movies", "Music",
 	"Pictures", "Public",
-	"Dropbox", "Google Drive", "Nextcloud", "Sync", "Box",
+	"Dropbox", "Google Drive", "Nextcloud", "Sync", "Box", "OneDrive",
 }
+
+// syncRootPrefixes match a folder by the start of its name rather than the whole
+// of it, because a work or school OneDrive mounts as "OneDrive - <Organisation>"
+// and the organisation is not knowable from here. Matched case-folded against
+// what is actually in the home directory, so the table does not have to guess.
+var syncRootPrefixes = []string{"onedrive"}
+
+// redirectedNames are the personal folders Windows moves INSIDE a sync root when
+// folder backup is on, which is the default on Windows 11. There ~/Documents
+// frequently does not exist at all and the user's real documents live at
+// ~/OneDrive/Documents, so a sync root's children by these names carry the same
+// protection the top-level names do. Without this the table would guard a folder
+// that is not there and miss the one that is.
+var redirectedNames = []string{"Desktop", "Documents", "Pictures"}
 
 // ownFolderExtra are refused on the RefuseOwnFolder route only. A file sitting
 // directly in ~/Documents/GitHub asking to trust its own folder would take the
 // whole checkout tree; one level further down is an ordinary project.
 var ownFolderExtra = [][]string{{"Documents", "GitHub"}}
+
+// personalDirs resolves the tables against the home directory that is really on
+// disk: every fixed name, plus any folder whose name marks it as a sync root.
+// The second return is just the sync roots, because their children need the
+// treatment redirectedNames describes.
+//
+// Reading the directory is safe here in a way it would not be on the
+// auto-registration path: these rules only ever run behind a dialog the user is
+// about to see, never as part of deciding what to serve, so nothing a page can
+// time is affected by what home contains.
+func (p Policy) personalDirs() (dirs []string, syncRoots []string) {
+	listed := map[string]bool{}
+	for _, name := range personalNames {
+		dir := filepath.Join(p.Home, name)
+		dirs = append(dirs, dir)
+		listed[strings.ToLower(name)] = true
+		if isSyncRootName(name) {
+			syncRoots = append(syncRoots, dir)
+		}
+	}
+	entries, err := os.ReadDir(p.Home)
+	if err != nil {
+		return dirs, syncRoots
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if listed[strings.ToLower(name)] || !isSyncRootName(name) {
+			continue
+		}
+		dir := filepath.Join(p.Home, name)
+		dirs = append(dirs, dir)
+		syncRoots = append(syncRoots, dir)
+	}
+	return dirs, syncRoots
+}
+
+// personalAndRedirected is personalDirs plus the personal folders redirected
+// into a sync root. It is what "one of your main personal folders" means once
+// the folder backup case is taken seriously, so the two rules that ask that
+// question and the tray's warning all read the same list.
+func (p Policy) personalAndRedirected() []string {
+	dirs, syncRoots := p.personalDirs()
+	for _, root := range syncRoots {
+		for _, name := range redirectedNames {
+			dirs = append(dirs, filepath.Join(root, name))
+		}
+	}
+	return dirs
+}
+
+func isSyncRootName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, prefix := range syncRootPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 func resolve(path string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
@@ -99,11 +172,15 @@ func (p Policy) Canonical(dir string) (string, error) {
 // The read prompt offers to trust the common ancestor of the requesting file
 // and the asset it asked for, and a page picks its own assets: two requests
 // under different subfolders make their common ancestor the whole of
-// Documents. One click would then durably trust everything the user owns. A
-// real project folder is essentially never one of these exactly, and a
-// subfolder such as ~/Documents/projects/site is still trustable, so this
-// costs the honest case nothing. Picking one of these from the tray still
-// works, because that takes a deliberate act with a folder picker.
+// Documents. One click would then durably trust everything the user owns.
+//
+// Note what that means in practice, because it is broader than it first reads
+// and the honest case does pay for it: ANYTHING under a personal folder is
+// refused on this route, so someone whose projects live in ~/Documents or
+// ~/Desktop never sees this button. The other two doors are still open to them,
+// the banner on a file they opened (RefuseOwnFolder, which allows exactly that
+// case) and the tray picker, which consults none of this because choosing a
+// folder from a picker is already a deliberate act.
 //
 // dir arrives already symlink-resolved, so each name is compared in both its
 // lexical and its resolved form. A Downloads or Documents folder that is
@@ -112,8 +189,8 @@ func (p Policy) Canonical(dir string) (string, error) {
 // and sail past a purely lexical match. Folders the user has renamed outright
 // are still not recognized.
 func (p Policy) RefuseSteered(dir string) bool {
-	for _, name := range personalNames {
-		lexical := filepath.Join(p.Home, name)
+	personal, _ := p.personalDirs()
+	for _, lexical := range personal {
 		forms := []string{lexical}
 		if resolved, err := filepath.EvalSymlinks(lexical); err == nil {
 			if cleaned := filepath.Clean(resolved); cleaned != lexical {
@@ -143,15 +220,13 @@ func (p Policy) RefuseSteered(dir string) bool {
 // casing alias or a symlinked variant of a personal folder cannot slip through
 // as a different spelling.
 func (p Policy) RefuseOwnFolder(dir string) bool {
-	candidates := make([][]string, 0, len(personalNames)+len(ownFolderExtra))
-	for _, name := range personalNames {
-		candidates = append(candidates, []string{name})
+	targets := p.personalAndRedirected()
+	for _, parts := range ownFolderExtra {
+		targets = append(targets, filepath.Join(append([]string{p.Home}, parts...)...))
 	}
-	candidates = append(candidates, ownFolderExtra...)
 
 	dirInfo, dirErr := os.Stat(dir)
-	for _, parts := range candidates {
-		target := filepath.Join(append([]string{p.Home}, parts...)...)
+	for _, target := range targets {
 		if equalOrUnderFold(target, dir) {
 			return true
 		}
@@ -169,9 +244,8 @@ func (p Policy) RefuseOwnFolder(dir string) bool {
 // it refuses nothing, because a deliberate act with a folder picker may choose
 // anything Canonical accepts.
 func (p Policy) IsPersonal(dir string) bool {
-	for _, name := range personalNames {
-		if equalOrUnderFold(filepath.Join(p.Home, name), dir) &&
-			equalOrUnderFold(dir, filepath.Join(p.Home, name)) {
+	for _, target := range p.personalAndRedirected() {
+		if equalOrUnderFold(target, dir) && equalOrUnderFold(dir, target) {
 			return true
 		}
 	}

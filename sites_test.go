@@ -89,7 +89,7 @@ func newTestAppWithConfigDir(t *testing.T, home, cfgBase string) *app {
 			// The write-granting dialog denies by default through its own
 			// distinct seam, so a test that allows read grants does not
 			// accidentally approve a folder trust.
-			confirmTrust: func(string, string) (bool, error) { return false, nil },
+			confirmTrust: func(string, string, string) (bool, error) { return false, nil },
 			// Swallow notifications by default, for the same reason confirm is
 			// stubbed: no test may put real UI on the user's screen. A test that
 			// cares what the user was told overrides this with a recorder.
@@ -1599,7 +1599,7 @@ func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 
 	a := newTestApp(t, home)
 	trustCalls := 0
-	a.rt.confirmTrust = func(title, message string) (bool, error) {
+	a.rt.confirmTrust = func(title, message, affirmative string) (bool, error) {
 		trustCalls++
 		if !strings.Contains(message, sibling) {
 			t.Errorf("dialog must name the requesting file %s, got %q", sibling, message)
@@ -1682,7 +1682,7 @@ func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
 	writeTestFile(t, cousin, "<html><body>codex</body></html>")
 
 	a := newTestApp(t, home)
-	a.rt.confirmTrust = func(string, string) (bool, error) { return true, nil }
+	a.rt.confirmTrust = func(string, string, string) (bool, error) { return true, nil }
 	granting, _ := a.openForTest(t, page)
 	if err := granting.sessions.GrantReadRoot(filepath.Join(home, "work")); err != nil {
 		t.Fatal(err)
@@ -1757,7 +1757,7 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 	a := newTestApp(t, home)
 	var prompts int32
 	a.rt.confirm = countingDenyConfirm(&prompts)
-	a.rt.confirmTrust = func(string, string) (bool, error) {
+	a.rt.confirmTrust = func(string, string, string) (bool, error) {
 		atomic.AddInt32(&prompts, 1)
 		return false, nil
 	}
@@ -1902,7 +1902,7 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 
 	a := newTestApp(t, home)
 	wsDialogs := 0
-	a.rt.confirmTrust = func(title, message string) (bool, error) {
+	a.rt.confirmTrust = func(title, message, affirmative string) (bool, error) {
 		wsDialogs++
 		if !strings.Contains(message, index) || !strings.Contains(message, proj) {
 			t.Errorf("dialog must name the requesting file and the full folder: %q", message)
@@ -1989,7 +1989,7 @@ func TestWorkspaceRequestRepinsReplacedFolder(t *testing.T) {
 
 	a := newTestApp(t, home)
 	wsDialogs := 0
-	a.rt.confirmTrust = func(title, message string) (bool, error) {
+	a.rt.confirmTrust = func(title, message, affirmative string) (bool, error) {
 		wsDialogs++
 		return true, nil
 	}
@@ -2064,7 +2064,7 @@ func TestWorkspaceRequestAlreadyCoveredSkipsDialog(t *testing.T) {
 
 	a := newTestApp(t, home)
 	wsDialogs := 0
-	a.rt.confirmTrust = func(title, message string) (bool, error) {
+	a.rt.confirmTrust = func(title, message, affirmative string) (bool, error) {
 		wsDialogs++
 		return true, nil
 	}
@@ -2219,7 +2219,7 @@ func TestOpeningAWorkspaceFileRecordsTheOpen(t *testing.T) {
 	writeTestFile(t, week, "<html><body>week</body></html>")
 
 	a := newTestApp(t, home)
-	a.rt.confirmTrust = func(string, string) (bool, error) { return true, nil }
+	a.rt.confirmTrust = func(string, string, string) (bool, error) { return true, nil }
 	s, _ := a.openForTest(t, index)
 
 	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
@@ -2279,5 +2279,142 @@ func TestOpeningAWorkspaceFileRecordsTheOpen(t *testing.T) {
 	saved, _ := os.ReadFile(week)
 	if !strings.Contains(string(saved), "edited") {
 		t.Fatal("save did not reach disk")
+	}
+}
+
+// The affirmative button is what the user actually clicks, so its label has to
+// agree with what clicking it does. v1.3.0 hardcoded "Trust Folder" for every
+// dialog confirmTrustRequest raises, including the tray's removal confirm, so
+// "Stop trusting this folder?" was answered by clicking a button that said
+// Trust Folder while the button that KEPT the trust said Deny. Both labels were
+// the opposite of their action, on the app's only destructive action. No test
+// saw it because every test injects the seam and none of them looked at the
+// label, which is why the seam now carries it.
+func TestConfirmLabelsMatchTheirAction(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	file := filepath.Join(proj, "index.htmlclay")
+	writeTestFile(t, file, "<html><body>doc</body></html>")
+
+	a := newTestApp(t, home)
+	var message, label string
+	a.rt.confirmTrust = func(_, msg, affirmative string) (bool, error) {
+		message, label = msg, affirmative
+		return true, nil
+	}
+
+	if _, ok := a.trustFromPage(file, true); !ok {
+		t.Fatalf("a page asking to trust its own ordinary folder should be allowed: %q", message)
+	}
+	if label != "Trust Folder" {
+		t.Errorf("the dialog that trusts a folder must say so, got %q with message %q", label, message)
+	}
+
+	message, label = "", ""
+	a.removeTrustedFolder(proj)
+	if label != "Stop Trusting" {
+		t.Errorf("the dialog that UNtrusts a folder must not offer to trust it, got %q with message %q", label, message)
+	}
+	if !strings.Contains(message, "Stop trusting") {
+		t.Errorf("the removal confirm should say what it does, got %q", message)
+	}
+	if hasFolder(a.rt.cfg.TrustedFolderList(), proj) {
+		t.Error("approving the removal confirm must actually untrust the folder")
+	}
+}
+
+// SECURITY.md:34 promises that a file you opened yourself survives an untrust
+// "on a new address of their own". The new address is the whole of the
+// protection. v1.3.0 kept the folder's remembered port, and the survivor's own
+// folder IS the untrusted folder, so it anchored there and bound the very same
+// port: every page the trust had auto-registered, still open in a tab, stayed
+// same-origin with a file that now holds a fresh save token, and could open it
+// and lift that token. Untrusting has to take the address with it.
+func TestUntrustMovesTheSurvivorToANewAddress(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	mine := filepath.Join(proj, "mine.htmlclay")
+	writeTestFile(t, mine, "<html><body>mine</body></html>")
+
+	a := newTestApp(t, home)
+	if err := a.trustFolder(proj); err != nil {
+		t.Fatalf("trust: %v", err)
+	}
+	s, _ := a.openForTest(t, mine)
+	before := s.port
+
+	if err := a.untrustFolder(proj); err != nil {
+		t.Fatalf("untrust: %v", err)
+	}
+
+	if after := hostOf(t, a, mine); after.port == before {
+		t.Fatalf("the survivor must leave the untrusted folder's origin, still on port %d", before)
+	}
+	if remembered := a.rt.cfg.SitePort(proj); remembered == before {
+		t.Errorf("the untrusted folder's port must not stay remembered, still %d", remembered)
+	}
+	// The freed address degrades to the recovery page rather than serving a file.
+	code, body := fetchNav(t, fmt.Sprintf("http://127.0.0.1:%d/proj/mine.htmlclay", before))
+	if code != 404 || !strings.Contains(body, "Nothing is open at this address") {
+		t.Fatalf("the freed port should hold nothing but the recovery page, got %d: %s", code, body)
+	}
+	if strings.Contains(body, "htmlclaytoken") {
+		t.Error("the freed port served a save token")
+	}
+}
+
+// The untrust rollback has to put back exactly what it took out. Rebuilding the
+// entry from the folder on disk re-pins it, so an entry that was DEAD — folder
+// deleted and replaced, granting nothing, showing "(missing or replaced)" in the
+// tray — comes back as a live grant over whatever is at that path now. That is
+// the one thing the identity pin exists to prevent, reached through an error
+// path. trustFolder's own rollback twenty lines earlier already gets this right.
+func TestUntrustSaveFailureRestoresTheEntryVerbatim(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	writeTestFile(t, filepath.Join(proj, "index.htmlclay"), "<html><body>doc</body></html>")
+
+	cfgBase := t.TempDir()
+	a := newTestAppWithConfigDir(t, home, cfgBase)
+	if err := a.trustFolder(proj); err != nil {
+		t.Fatalf("trust: %v", err)
+	}
+	// A pin no recomputation could ever produce, standing in for an entry whose
+	// folder has since been replaced.
+	const deadPin = "pin-of-the-folder-that-used-to-be-here"
+	if _, ok := a.rt.cfg.SetTrustedIdentity(proj, deadPin); !ok {
+		t.Fatal("could not set the stored pin")
+	}
+	a.rt.cfg.RememberSitePort(proj, 51515)
+
+	// Fail the next Save on every platform, Windows included: config.json becomes
+	// a directory, so the atomic rename onto it cannot succeed. A chmod would be a
+	// no-op there.
+	path := filepath.Join(config.DirFrom(cfgBase), "config.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.untrustFolder(proj); err == nil {
+		t.Fatal("untrust must report a config write that did not land")
+	}
+
+	var restored config.TrustedFolder
+	for _, tf := range a.rt.cfg.TrustedFolderList() {
+		if tf.Path == proj {
+			restored = tf
+		}
+	}
+	if restored.Path != proj {
+		t.Fatalf("a failed untrust must leave the folder trusted: %v", a.rt.cfg.TrustedFolderList())
+	}
+	if restored.Identity != deadPin {
+		t.Errorf("the rollback re-pinned the entry: identity = %q, want the stored %q", restored.Identity, deadPin)
+	}
+	if got := a.rt.cfg.SitePort(proj); got != 51515 {
+		t.Errorf("the rollback must restore the remembered port too, got %d", got)
 	}
 }

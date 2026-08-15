@@ -90,12 +90,21 @@ func (a *app) adoptLocked(canonical string) {
 // the tray asks before untrusting.
 func (a *app) untrustFolder(dir string) error {
 	a.mu.Lock()
-	if !a.rt.cfg.RemoveTrustedFolder(dir) {
+	removed, ok := a.rt.cfg.RemoveTrustedFolder(dir)
+	if !ok {
 		a.mu.Unlock()
 		return nil
 	}
+	// Forget the port in the same write that drops the trust, or re-homing below
+	// binds it straight back and the survivor keeps the untrusted folder's origin.
+	forgottenPort := a.rt.cfg.ForgetSitePort(dir)
 	if err := a.rt.cfg.Save(); err != nil {
-		a.rt.cfg.AddTrustedFolder(dir, platform.DirIdentity(dir))
+		// Restore what was taken out, exactly. Rebuilding the entry from the folder
+		// on disk would re-pin a dead one to whatever is there now.
+		a.rt.cfg.AddTrustedFolder(removed.Path, removed.Identity)
+		if forgottenPort != 0 {
+			a.rt.cfg.RememberSitePort(dir, forgottenPort)
+		}
 		a.mu.Unlock()
 		return fmt.Errorf("could not save config: %w", err)
 	}
@@ -133,9 +142,10 @@ func (a *app) untrustFolder(dir string) error {
 			a.rt.logger.Printf("Could not re-home %s after untrusting %s", p, dir)
 		}
 	}
-	// Hold the freed port with the recovery page, unless re-homing already took
-	// it back for a file that lives directly in the folder. A live bookmark then
-	// degrades to a page rather than a connection refusal.
+	// Hold the freed port with the recovery page, so a live bookmark degrades to a
+	// page rather than a connection refusal for the rest of this run. Re-homing
+	// cannot have taken it back: the port was forgotten with the trust, so the
+	// survivors bound fresh ones.
 	if freedPort != 0 {
 		a.parkPort(dir, freedPort)
 	}
@@ -230,7 +240,7 @@ func (a *app) trustFromPage(requestingFile string, openedByUser bool) (string, b
 	}
 	msg := fmt.Sprintf("%s%s wants to trust its folder:\n\n%s\n\nEvery HTML Clay file in that folder becomes editable without asking, including files added later, and any file in it will be able to change any other. Only allow this for a folder you control completely.",
 		reached, requestingFile, canonical)
-	allowed, err := a.confirmTrustRequest("HTML Clay", msg)
+	allowed, err := a.confirmTrustRequest("HTML Clay", msg, "Trust Folder")
 	if err != nil {
 		a.rt.logger.Printf("Trust dialog error for %s: %v", canonical, err)
 		return "", false
@@ -257,15 +267,22 @@ func (a *app) serveURL(absPath string) (string, bool) {
 	return fileURL(s.port, rel), true
 }
 
-// confirmTrustRequest raises the write-granting dialog through its test seam,
-// defaulting to the real native two-button dialog. It is a separate seam from
-// the read prompt's confirm so a test that approves one class of dialog can
-// never silently approve the other.
-func (a *app) confirmTrustRequest(title, message string) (bool, error) {
+// confirmTrustRequest raises a two-button dialog through its test seam,
+// defaulting to the real native one. It is a separate seam from the read
+// prompt's confirm so a test that approves one class of dialog can never
+// silently approve the other.
+//
+// affirmative is what the button the user clicks actually says, and it is a
+// parameter because this helper serves both directions: the same dialog asks to
+// trust a folder and to stop trusting one. A fixed "Trust Folder" label shipped
+// on the removal dialog in 1.3.0, so "Stop trusting this folder?" was answered
+// by clicking a button that said Trust Folder, and Deny was the one that kept
+// the trust. Every label was the opposite of its action.
+func (a *app) confirmTrustRequest(title, message, affirmative string) (bool, error) {
 	if a.rt.confirmTrust != nil {
-		return a.rt.confirmTrust(title, message)
+		return a.rt.confirmTrust(title, message, affirmative)
 	}
-	return platform.ConfirmWithButtons(title, message, "Trust Folder")
+	return platform.ConfirmWithButtons(title, message, affirmative)
 }
 
 // reportTrustRefused tells the user why a folder was not remembered. Staying
@@ -336,7 +353,7 @@ func (a *app) pickAndTrustFolder() []tray.Row {
 	canonical, cErr := a.rt.policy.Canonical(dir)
 	if cErr == nil && a.rt.policy.IsPersonal(canonical) {
 		msg := fmt.Sprintf("%s is one of your main personal folders.\n\nTrusting it makes every HTML Clay file anywhere inside it editable with no prompts, and lets any of them change any other. Most people want a single project folder instead.", canonical)
-		proceed, cfErr := a.confirmTrustRequest("HTML Clay", msg)
+		proceed, cfErr := a.confirmTrustRequest("HTML Clay", msg, "Trust Folder")
 		if cfErr != nil || !proceed {
 			return a.trustedFolderRows()
 		}
@@ -359,7 +376,7 @@ func (a *app) pickAndTrustFolder() []tray.Row {
 // misclick now closes a live origin and kills the address a bookmark points at.
 func (a *app) removeTrustedFolder(dir string) []tray.Row {
 	msg := fmt.Sprintf("Stop trusting this folder?\n\n%s\n\nFiles in it will stop opening editable, and any of its pages you have open now will need to be opened again.", dir)
-	proceed, err := a.confirmTrustRequest("HTML Clay", msg)
+	proceed, err := a.confirmTrustRequest("HTML Clay", msg, "Stop Trusting")
 	if err != nil || !proceed {
 		return a.trustedFolderRows()
 	}
