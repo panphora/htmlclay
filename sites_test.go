@@ -102,6 +102,14 @@ func newTestAppWithConfigDir(t *testing.T, home, cfgBase string) *app {
 		ls.Shutdown()
 		a.mu.Lock()
 		defer a.mu.Unlock()
+		// Set stopping the way the real shutdown does, under this same lock. Work
+		// raised by a dialog answer runs on whichever goroutine answered it, so a
+		// trust can still be in flight here, and closing the sites it can see is not
+		// the same as stopping it: without this it publishes a site and saves the
+		// port afterwards, into a config directory t.TempDir is already deleting.
+		// That failed on Linux as "TempDir RemoveAll cleanup: directory not empty",
+		// and never once on macOS in 300 runs.
+		a.stopping = true
 		for _, s := range a.sites {
 			s.close()
 		}
