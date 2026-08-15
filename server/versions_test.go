@@ -970,14 +970,14 @@ func TestListVersionsIsNewestFirstAndNoStore(t *testing.T) {
 
 func TestRedactPathHidesTokensOnVersionRoutes(t *testing.T) {
 	cases := map[string]string{
-		"/_/versions/SECRET":           "/_/versions/<redacted>",
-		"/_/version/SECRET/2026.html":  "/_/version/<redacted>",
-		"/_/restore/SECRET/2026.html":  "/_/restore/<redacted>",
-		"/_/save/SECRET":               "/_/save/<redacted>",
-		"/_/workspace-request/SECRET":  "/_/workspace-request/<redacted>",
-		"/_/live-sync/stream":          "/_/live-sync/stream",
-		"/_/open-request":              "/_/open-request",
-		"/notes.htmlclay":              "/notes.htmlclay",
+		"/_/versions/SECRET":          "/_/versions/<redacted>",
+		"/_/version/SECRET/2026.html": "/_/version/<redacted>",
+		"/_/restore/SECRET/2026.html": "/_/restore/<redacted>",
+		"/_/save/SECRET":              "/_/save/<redacted>",
+		"/_/workspace-request/SECRET": "/_/workspace-request/<redacted>",
+		"/_/live-sync/stream":         "/_/live-sync/stream",
+		"/_/open-request":             "/_/open-request",
+		"/notes.htmlclay":             "/notes.htmlclay",
 	}
 	for in, want := range cases {
 		if got := redactPath(in); got != want {

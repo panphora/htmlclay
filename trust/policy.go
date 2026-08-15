@@ -141,17 +141,53 @@ func resolve(path string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
+// onDiskSpelling replaces path with the capitalization the filesystem itself
+// reports for it, asked of the OS by handle.
+//
+// EvalSymlinks keeps the caller's spelling of every component that is not a
+// symlink, and on the read-prompt route the PAGE steers that spelling by choosing
+// which asset it asks for. Without this, one directory could be stored as two
+// trusted folders under two casings, and untrusting the one the user recognizes
+// left the other granting write over the same tree.
+//
+// The answer is accepted only when it still names the same directory in both
+// directions. A handle-to-path lookup may re-spell the path; it must never be
+// able to redirect the grant somewhere else, so an unexpected form (a substituted
+// drive, a Windows device path) falls back to the input rather than moving it.
+func onDiskSpelling(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return path
+	}
+	defer f.Close()
+	actual, err := platform.RealPath(f)
+	if err != nil {
+		return path
+	}
+	actual = filepath.Clean(actual)
+	if !session.EqualOrUnder(actual, path) || !session.EqualOrUnder(path, actual) {
+		return path
+	}
+	return actual
+}
+
 // Canonical resolves and validates a folder the user asked to trust, returning
 // the canonical path to store. The folder must resolve, sit strictly inside
 // home (so home itself is refused), carry no hidden component, and not be
 // HTML Clay's own config/versions tree. Storing the same canonical form the
 // session manager keys its roots on is what keeps live-revoke able to find the
 // root later.
+//
+// It is also where one directory is reduced to one spelling: every door that
+// records a trusted folder passes through here, so normalizing the
+// capitalization at this single point is what stops the list, the remembered
+// ports, and siteAtLocked from each seeing two folders where there is one.
 func (p Policy) Canonical(dir string) (string, error) {
 	resolved, err := resolve(dir)
 	if err != nil {
 		return "", fmt.Errorf("cannot resolve folder: %w", err)
 	}
+	resolved = onDiskSpelling(resolved)
 	canonical, ok := session.ContainWithinHome(p.Home, resolved)
 	if !ok {
 		return "", fmt.Errorf("%s is outside your home folder", resolved)

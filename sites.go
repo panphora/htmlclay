@@ -508,6 +508,12 @@ func (a *app) shutdown() {
 			s.srv.Close()
 		}
 		cancel()
+		// Close the listener directly, the way site.close does. Shutdown and Close
+		// only release listeners Serve has registered, and start() runs Serve on a
+		// goroutine, so a site built moments before quitting can reach here with its
+		// socket still held by nothing the server knows about. It is then released
+		// later, by Serve's own defer, which is after the port was supposed to be free.
+		s.ln.Close()
 		s.sessions.RevokeAll()
 	}
 }
