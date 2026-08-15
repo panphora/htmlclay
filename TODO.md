@@ -1,10 +1,15 @@
 # Features
 
-- [x] Workspace trust: read-only banner + "open this file for editing" (single-use nonce, native
-      dialog), workspace folders (declared folders whose `.htmlclay` files auto-register editable,
+- [x] Folder trust: read-only banner + "open this file for editing" (single-use nonce, native
+      dialog), trusted folders (declared folders whose `.htmlclay` files auto-register editable,
       device+inode fingerprints, real revocation), same-origin gate on every mutating route,
       `Sec-Fetch-Dest` gate on token injection, volume-probed case folding.
       Plan: `hyper/plans/htmlclay/archive/workspace-trust-plan.md`
+
+- [x] Simplification, shipped in v1.3.0: one concept (Trusted Folders, granting read and write) in
+      place of four, a lasting port per folder so a bookmarked URL survives a restart, a recovery
+      page on a remembered port that is no longer served, and app mode deleted.
+      Plan: `hyper/plans/htmlclay/archive/simplification-plan.md`
 
 ---
 
