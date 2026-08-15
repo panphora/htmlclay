@@ -2579,3 +2579,57 @@ func TestAShadowedTrustedFolderIsLabelledAndItsDialogTellsTheTruth(t *testing.T)
 		t.Errorf("the control: removing the folder in charge really does revoke:\n%s", outerMsg)
 	}
 }
+
+// Trusting a folder once the app is quitting builds nothing.
+//
+// bringLive runs on whichever goroutine answered the dialog, so a trust can arrive
+// after shutdown has closed every listener, emptied the parked list, and gone. A
+// site or a parked port created then is bound to a process on its way out and
+// nothing is left to close it.
+//
+// This pins the check bringLive makes before it does any work. It does NOT cover
+// the narrower window where the quit lands mid-bind, after that check and before
+// the second one; that path needs a quit to interleave with a port bind, and I
+// could not drive it from a test without adding a seam to production code for the
+// purpose. It is guarded by the stopping test in shouldBindLiveLocked and by CI.
+func TestTrustingOnceQuittingHasStartedBuildsNothing(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(home, "proj")
+	writeTestFile(t, filepath.Join(proj, "index.htmlclay"), "<html><body>i</body></html>")
+
+	cfgBase := t.TempDir()
+	first := newTestAppWithConfigDir(t, home, cfgBase)
+	s, _ := first.openForTest(t, filepath.Join(proj, "index.htmlclay"))
+	remembered := s.port
+	first.shutdown()
+
+	a := newTestAppWithConfigDir(t, home, cfgBase)
+	a.startSites()
+	if got := a.rt.cfg.SitePort(proj); got != remembered {
+		t.Fatalf("precondition: the port should be remembered, got %d want %d", got, remembered)
+	}
+	a.shutdown()
+
+	a.mu.Lock()
+	if n := len(a.parked); n != 0 {
+		a.mu.Unlock()
+		t.Fatalf("precondition: shutdown empties the parked list, got %d", n)
+	}
+	a.mu.Unlock()
+
+	if err := a.trustFolder(proj); err != nil {
+		t.Fatalf("trust: %v", err)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if n := len(a.parked); n != 0 {
+		t.Errorf("trusting during a quit parked %d listener(s); shutdown has already closed them all", n)
+	}
+	if n := len(a.sites); n != 0 {
+		t.Errorf("trusting during a quit built %d site(s) nothing will shut down", n)
+	}
+}

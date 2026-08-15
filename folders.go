@@ -90,17 +90,26 @@ func (a *app) bringLive(canonical string) {
 	// anchor, so publishing on the earlier answer could leave a trusted site for a
 	// folder no longer in the list, which the tray cannot show or revoke.
 	if !a.shouldBindLiveLocked(canonical) {
+		stopping := a.stopping
 		a.mu.Unlock()
 		s.close()
-		a.reparkRemembered(canonical)
+		// A quit wants nothing held. shutdown has already closed every parked
+		// listener and emptied the list, so parking one now would bind a port
+		// after the snapshot that was supposed to account for it.
+		if !stopping {
+			a.reparkRemembered(canonical)
+		}
 		return
 	}
 	a.sites = append(a.sites, s)
+	// Persist the port in the same critical section that publishes the site, and
+	// so under the same lock shutdown takes to set stopping. Saving after the
+	// unlock let a config write land after shutdown had already returned.
+	a.rememberPort(canonical, s.port)
 	a.mu.Unlock()
 	s.start(a.rt.logger)
 
 	a.rt.logger.Printf("Trusted folder %s listening on 127.0.0.1:%d", canonical, s.port)
-	a.rememberPort(canonical, s.port)
 }
 
 func (a *app) shouldBindLive(canonical string) bool {
