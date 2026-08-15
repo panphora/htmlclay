@@ -112,6 +112,88 @@ func TestRefusalsFoldCaseOnEveryPlatform(t *testing.T) {
 	}
 }
 
+// A folder that CONTAINS a relocated personal folder is refused on both page
+// routes, and the tray picker warns about the relocated folder itself.
+//
+// Moving Documents to an external drive or a synced folder and leaving a symlink
+// behind is an ordinary setup. Before 1.4.0 only RefuseSteered resolved the
+// symlink, so a file sitting in ~/relocated could ask to trust its own folder and
+// take the whole real Documents tree with one click, and picking the real folder
+// from the tray produced no warning at all. All three rules now read the resolved
+// forms from personalDirs.
+func TestRefusalsSeeAFolderThatContainsARelocatedPersonalFolder(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	relocated := filepath.Join(home, "relocated", "Documents")
+	for _, dir := range []string{relocated, filepath.Join(relocated, "project"), filepath.Join(home, "code", "site")} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Skip on the error, not on GOOS: Go asks for the unprivileged-create flag, so
+	// this often works on a Windows runner, and Windows is the platform where a
+	// redirected personal folder is the default rather than the exception.
+	if err := os.Symlink(relocated, filepath.Join(home, "Documents")); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	p := Policy{Home: home}
+
+	ancestor := filepath.Join(home, "relocated")
+	if !p.RefuseOwnFolder(ancestor) {
+		t.Error("a folder containing the real Documents must not be trustable by a file inside it")
+	}
+	if !p.RefuseSteered(ancestor) {
+		t.Error("the control: RefuseSteered already caught this and must keep doing so")
+	}
+	if !p.IsPersonal(relocated) {
+		t.Error("the tray picker must warn when the folder picked IS the real Documents")
+	}
+
+	for _, tc := range []struct{ dir, why string }{
+		{filepath.Join(relocated, "project"), "an ordinary project inside the real Documents stays trustable by its own file"},
+		{filepath.Join(home, "code", "site"), "a project outside every personal folder is untouched"},
+	} {
+		if p.RefuseOwnFolder(tc.dir) {
+			t.Errorf("RefuseOwnFolder(%s) = true, want false (%s)", tc.dir, tc.why)
+		}
+	}
+}
+
+// Canonical stores the spelling the filesystem itself reports, so one directory
+// can only ever enter the trusted list one way.
+//
+// EvalSymlinks preserves the caller's casing of every non-symlink component, and
+// on the read-prompt route the page chooses that casing by choosing which asset to
+// request. Before this, two spellings meant two trusted entries over one folder,
+// and untrusting the one the user recognized left the other granting write.
+func TestCanonicalStoresTheOnDiskSpelling(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDisk := filepath.Join(home, "projects", "Site")
+	if err := os.MkdirAll(onDisk, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Ask this filesystem rather than runtime.GOOS: whether two spellings name one
+	// directory is a property of the volume the folder is on, and on a
+	// case-sensitive volume they really are two folders and must stay two.
+	variant := filepath.Join(home, "projects", "site")
+	if _, err := os.Stat(variant); err != nil {
+		t.Skip("case-sensitive filesystem: one directory cannot be reached by two spellings")
+	}
+
+	got, err := Policy{Home: home}.Canonical(variant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != onDisk {
+		t.Errorf("Canonical(%q) = %q, want the on-disk spelling %q", variant, got, onDisk)
+	}
+}
+
 // Home itself is never a trust candidate, whatever the tables say: Canonical
 // refuses it before any refusal rule is consulted.
 func TestCanonicalRefusesHomeItself(t *testing.T) {

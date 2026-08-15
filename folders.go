@@ -48,7 +48,91 @@ func (a *app) trustFolder(dir string) error {
 	a.mu.Unlock()
 
 	a.rt.logger.Printf("Trusted folder added: %s", canonical)
+	a.bringLive(canonical)
 	return nil
+}
+
+// bringLive gives a newly trusted folder its own origin now rather than at the
+// next launch. It does nothing when a site is already anchored there, which is
+// adoptLocked's case.
+//
+// The recovery page tells the user to add the folder under Trusted Folders, and
+// until 1.4.0 following that instruction changed nothing until a restart:
+// trustFolder only adopted an existing SITE anchored at the folder, and a parked
+// port is not one. So the bookmark kept answering with the same page that had just
+// told them how to fix it. Binding here is the state startSites reaches at boot
+// anyway, arrived at when the user asked for it.
+//
+// It fires on all three doors, not only the tray, because trustFolder is the
+// common tail of the picker, the page banner, and the read prompt's Trust button.
+// A page-steered approval therefore binds a listener and remembers a port for a
+// folder no file has been opened in. That is intended, since the folder is
+// genuinely trusted either way, but it is why sitePortCap matters more than it did.
+func (a *app) bringLive(canonical string) {
+	if !a.shouldBindLive(canonical) {
+		return
+	}
+
+	// Release the recovery listener first, or the bind below finds its own port
+	// taken and moves the origin, breaking the bookmark the port was held for.
+	// Bind outside a.mu: it is the one call here that can block on a stalled mount.
+	a.unpark(canonical)
+	s, err := a.buildSite(canonical, true)
+	if err != nil {
+		a.rt.logger.Printf("Could not bind a port for trusted folder %s: %v", canonical, err)
+		a.reparkRemembered(canonical)
+		return
+	}
+
+	a.mu.Lock()
+	// Re-check everything the first pass established. An untrust or a quit can land
+	// while the bind is in flight, and a concurrent open can publish a site at this
+	// anchor, so publishing on the earlier answer could leave a trusted site for a
+	// folder no longer in the list, which the tray cannot show or revoke.
+	if !a.shouldBindLiveLocked(canonical) {
+		a.mu.Unlock()
+		s.close()
+		a.reparkRemembered(canonical)
+		return
+	}
+	a.sites = append(a.sites, s)
+	a.mu.Unlock()
+	s.start(a.rt.logger)
+
+	a.rt.logger.Printf("Trusted folder %s listening on 127.0.0.1:%d", canonical, s.port)
+	a.rememberPort(canonical, s.port)
+}
+
+func (a *app) shouldBindLive(canonical string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.shouldBindLiveLocked(canonical)
+}
+
+// shouldBindLiveLocked answers whether canonical still wants a site of its own.
+// Caller holds a.mu.
+//
+// The trustedAnchor test is invariant 4, exactly as startSites applies it: only
+// the broadest of a nested set gets a site. Without it, trusting a folder inside
+// one already trusted builds a second origin over a tree that already has one, and
+// remembers a port for a shadowed anchor. The next startSites parks that port
+// instead of serving it, so the same URL would work now and be dead after a
+// restart, which is the class of bug this whole item exists to remove.
+func (a *app) shouldBindLiveLocked(canonical string) bool {
+	if a.stopping || a.siteAtLocked(canonical) != nil {
+		return false
+	}
+	anchor, ok := a.trustedAnchor(canonical)
+	return ok && anchor == canonical
+}
+
+// reparkRemembered puts a recovery page back on a port unparked for a bind that
+// then did not happen, so a live bookmark degrades to a page that explains itself
+// rather than to a refused connection for the rest of the run.
+func (a *app) reparkRemembered(canonical string) {
+	if port := a.rt.cfg.SitePort(canonical); port != 0 {
+		a.parkPort(canonical, port)
+	}
 }
 
 // adoptLocked brings a newly trusted folder live. Caller holds a.mu.
@@ -330,10 +414,34 @@ func (a *app) trustedFolderRows() []tray.Row {
 			// The entry stays listed: it is the record of a standing write grant,
 			// and it must surface as dead rather than silently vanish.
 			label += " (missing or replaced)"
+		} else if outer, ok := a.shadowedBy(tf.Path); ok {
+			// Dead wins over covered when both apply: a dead entry grants nothing
+			// whatever encloses it.
+			label += " (covered by " + filepath.Base(outer) + ")"
 		}
 		out = append(out, tray.Row{Path: tf.Path, Label: label})
 	}
 	return out
+}
+
+// shadowedBy names the live trusted folder that owns dir's tree, when that is not
+// dir itself.
+//
+// Broadest-wins means an enclosing trusted folder anchors everything under it, so
+// the inner entry is a declaration with no present effect: untrusting it closes
+// nothing and its files stay editable. The tray said the opposite, promising that
+// files would stop opening editable and open pages would need reopening, and a
+// brand new file created in the folder afterwards still served with a save token.
+//
+// It asks trustedAnchor rather than testing containment lexically, so an outer
+// folder whose identity pin no longer matches does not count: the inner entry is
+// then genuinely in charge and its removal really does revoke.
+func (a *app) shadowedBy(dir string) (string, bool) {
+	anchor, ok := a.trustedAnchor(dir)
+	if !ok || anchor == dir {
+		return "", false
+	}
+	return anchor, true
 }
 
 // pickAndTrustFolder pops the native folder picker and trusts the choice. The
@@ -374,9 +482,20 @@ func (a *app) pickAndTrustFolder() []tray.Row {
 
 // removeTrustedFolder is the tray's remove hook. It asks first, because a
 // misclick now closes a live origin and kills the address a bookmark points at.
+//
+// A folder covered by a broader trusted folder gets different wording, because
+// for it none of that is true: the outer folder still anchors the tree, so nothing
+// closes and nothing stops opening editable. Removing it is still worth allowing,
+// since it is the user's own declaration and it takes effect the moment the outer
+// folder goes, but the dialog must not claim a revocation it will not perform.
 func (a *app) removeTrustedFolder(dir string) []tray.Row {
 	msg := fmt.Sprintf("Stop trusting this folder?\n\n%s\n\nFiles in it will stop opening editable, and any of its pages you have open now will need to be opened again.", dir)
-	proceed, err := a.confirmTrustRequest("HTML Clay", msg, "Stop Trusting")
+	affirmative := "Stop Trusting"
+	if outer, ok := a.shadowedBy(dir); ok {
+		msg = fmt.Sprintf("Remove this folder from your trusted list?\n\n%s\n\nIt sits inside %s, which you also trust, so its files stay editable and its pages stay open. Removing it here takes effect if you stop trusting that folder too.", dir, outer)
+		affirmative = "Remove"
+	}
+	proceed, err := a.confirmTrustRequest("HTML Clay", msg, affirmative)
 	if err != nil || !proceed {
 		return a.trustedFolderRows()
 	}

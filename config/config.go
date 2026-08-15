@@ -162,6 +162,52 @@ func (c *Config) promoteLegacyTrusted(identity func(string) string) bool {
 	return true
 }
 
+// dedupeTrustedFolders drops entries that name a directory an earlier entry
+// already names, keeping the first and its pin.
+//
+// Until 1.4.0 the list compared paths byte for byte while trust.Canonical stored
+// whatever capitalization the caller supplied, so a page could add a second entry
+// for one folder by asking for an asset under a different casing, and untrusting
+// the spelling the user recognized left the other one granting write. Canonical
+// now stores the filesystem's own spelling, which stops new duplicates; this
+// clears out the ones already written to disk.
+//
+// Sameness is os.SameFile, never a case-folded string compare. session.EqualOrUnder
+// follows the home volume's rule, and its own comment warns that a volume with
+// different folding mounted inside home is misjudged: folding here would merge two
+// genuinely distinct directories and hand one folder's pin to the other. A dead
+// entry stats nothing, so it matches only its own byte-exact path and survives,
+// which is what keeps it visible in the tray as dead.
+func (c *Config) dedupeTrustedFolders() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	type seen struct {
+		path string
+		info os.FileInfo
+	}
+	var keptInfo []seen
+	kept := make([]TrustedFolder, 0, len(c.TrustedFolders))
+	for _, w := range c.TrustedFolders {
+		info, err := os.Stat(w.Path)
+		if err != nil {
+			info = nil
+		}
+		duplicate := false
+		for _, s := range keptInfo {
+			if s.path == w.Path || (info != nil && s.info != nil && os.SameFile(info, s.info)) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		kept = append(kept, w)
+		keptInfo = append(keptInfo, seen{path: w.Path, info: info})
+	}
+	c.TrustedFolders = kept
+}
+
 // SitePort returns the port previously used for an anchor, or 0 if there is none.
 func (c *Config) SitePort(anchor string) int {
 	c.mu.Lock()
@@ -351,6 +397,9 @@ func LoadFrom(baseDir string, identity func(string) string) (*Config, Result, er
 	}
 
 	res.PromotedLegacy = cfg.promoteLegacyTrusted(identity)
+	// After the promotion, which appends straight to the list with a byte-exact
+	// dedupe of its own and so can add an alias of an entry already there.
+	cfg.dedupeTrustedFolders()
 	cfg.capSitePorts()
 	return cfg, res, nil
 }

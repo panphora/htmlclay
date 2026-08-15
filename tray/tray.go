@@ -54,10 +54,17 @@ type TrustedFolderHooks struct {
 	Remove func(path string) []Row
 }
 
-// slotCount is the number of pre-allocated submenu rows. systray cannot delete
-// menu items, so a list is rendered into a fixed pool of rows that are shown,
-// retitled, and hidden. Beyond this many entries the extras stay active but are
-// not shown (logged on render).
+// slotCount is how many submenu rows exist before any list is rendered. The pool
+// grows from there as entries need places to sit.
+//
+// A row is never destroyed. systray v1.12.0 does have MenuItem.Remove(), on all
+// three platforms, but rebuilding the list every render would reintroduce the
+// queued-click hazard render exists to prevent and churn a goroutine per row per
+// render; rows are shown, retitled, and hidden instead. Adding one at runtime is
+// the library's normal operating mode, which is what makes growing possible. It
+// has to be: the row click is the only caller of untrustFolder, so a fixed pool
+// meant every trusted folder past the sixteenth could not be revoked from the
+// menu at all, while still granting silent reads and writes.
 const slotCount = 16
 
 type slot struct {
@@ -90,14 +97,17 @@ func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit 
 	systray.Run(t.onReady, t.onExit)
 }
 
-// listMenu renders an authoritative list into a fixed slot pool, with an
+// listMenu renders an authoritative list into a growing slot pool, with an
 // optional add row, per-row click actions, and polling for lists that change
 // outside the tray.
 type listMenu struct {
-	mu         sync.Mutex
-	empty      *systray.MenuItem
-	overflow   *systray.MenuItem
-	slots      []*slot
+	mu    sync.Mutex
+	menu  *systray.MenuItem
+	empty *systray.MenuItem
+	slots []*slot
+	// onRow is set by watch, after the slots exist, and read at click time rather
+	// than captured, so a slot grown later behaves exactly like one built up front.
+	onRow      func(string) []Row
 	rowTooltip string
 }
 
@@ -107,19 +117,57 @@ func newListMenu(title, tooltip, emptyText, addTitle, addTooltip string) (*listM
 	if addTitle != "" {
 		addItem = menu.AddSubMenuItem(addTitle, addTooltip)
 	}
-	lm := &listMenu{}
+	lm := &listMenu{menu: menu}
 	lm.empty = menu.AddSubMenuItem(emptyText, "")
 	lm.empty.Disable()
-	lm.slots = make([]*slot, slotCount)
-	for i := range lm.slots {
-		item := menu.AddSubMenuItem("", "")
-		item.Hide()
-		lm.slots[i] = &slot{item: item}
+	lm.mu.Lock()
+	for i := 0; i < slotCount; i++ {
+		lm.addSlotLocked()
 	}
-	lm.overflow = menu.AddSubMenuItem("", "")
-	lm.overflow.Disable()
-	lm.overflow.Hide()
+	lm.mu.Unlock()
 	return lm, addItem
+}
+
+// addSlotLocked appends one hidden row and starts its click goroutine. Caller
+// holds lm.mu.
+//
+// The goroutine closes over the *slot, never its index. Growing appends to
+// lm.slots and so reallocates the backing array, and an index read from the
+// goroutine would race with that append; the pointer stays valid whatever the
+// slice does.
+func (lm *listMenu) addSlotLocked() *slot {
+	s := &slot{item: lm.menu.AddSubMenuItem("", "")}
+	s.item.Hide()
+	lm.slots = append(lm.slots, s)
+	go func() {
+		for range s.item.ClickedCh {
+			lm.mu.Lock()
+			path, onRow := s.path, lm.onRow
+			lm.mu.Unlock()
+			if path == "" || onRow == nil {
+				continue
+			}
+			// In its own goroutine: removing asks for confirmation first,
+			// and a blocking dialog here would freeze every other row.
+			go func() {
+				if rows := onRow(path); rows != nil {
+					lm.render(rows)
+				}
+			}()
+		}
+	}()
+	return s
+}
+
+// freeSlotLocked returns a vacant slot, growing the pool when every slot is
+// taken. Caller holds lm.mu.
+func (lm *listMenu) freeSlotLocked() *slot {
+	for _, s := range lm.slots {
+		if s.path == "" {
+			return s
+		}
+	}
+	return lm.addSlotLocked()
 }
 
 // render reconciles the slot pool with rows. An entry keeps its existing slot
@@ -152,69 +200,35 @@ func (lm *listMenu) render(rows []Row) {
 		s.path = ""
 		s.item.Hide()
 	}
-	// Place new entries into the lowest free slots.
-	overflow := 0
+	// Place new entries into the lowest free slot, adding one when the pool is
+	// full. Every entry therefore has a clickable row, which is what makes every
+	// grant revocable from the menu.
 	for _, r := range rows {
 		if assigned[r.Path] {
 			continue
 		}
-		placed := false
-		for _, s := range lm.slots {
-			if s.path == "" {
-				s.path = r.Path
-				s.item.SetTitle(r.Label)
-				s.item.SetTooltip(lm.rowTooltip)
-				s.item.Show()
-				assigned[r.Path] = true
-				placed = true
-				break
-			}
-		}
-		if !placed {
-			overflow++
-		}
+		s := lm.freeSlotLocked()
+		s.path = r.Path
+		s.item.SetTitle(r.Label)
+		s.item.SetTooltip(lm.rowTooltip)
+		s.item.Show()
+		assigned[r.Path] = true
 	}
 	if len(assigned) == 0 {
 		lm.empty.Show()
 	} else {
 		lm.empty.Hide()
 	}
-	// The pool is fixed because systray cannot delete rows. Say so in the menu
-	// rather than let the extras disappear silently: they are still trusted and
-	// still granting silent reads and writes.
-	if overflow > 0 {
-		lm.overflow.SetTitle(fmt.Sprintf("…and %d more not shown", overflow))
-		lm.overflow.Show()
-		fmt.Fprintf(os.Stderr, "[htmlclay] %d trusted folders exceed %d tray rows; the extras stay active but are not listed\n",
-			len(rows), len(lm.slots))
-	} else {
-		lm.overflow.Hide()
-	}
 }
 
-// watch spawns the per-row click goroutines and, when poll is set, the poller
-// that keeps the menu in step with entries created outside the tray.
+// watch sets the row action and, when poll is set, starts the poller that keeps
+// the menu in step with entries created outside the tray. The per-row click
+// goroutines belong to the slots themselves (addSlotLocked), because the pool can
+// gain a slot long after this has run.
 func (lm *listMenu) watch(onRow func(string) []Row, poll func() []Row) {
-	for i := range lm.slots {
-		i := i
-		go func() {
-			for range lm.slots[i].item.ClickedCh {
-				lm.mu.Lock()
-				p := lm.slots[i].path
-				lm.mu.Unlock()
-				if p == "" || onRow == nil {
-					continue
-				}
-				// In its own goroutine: removing asks for confirmation first,
-				// and a blocking dialog here would freeze every other row.
-				go func() {
-					if rows := onRow(p); rows != nil {
-						lm.render(rows)
-					}
-				}()
-			}
-		}()
-	}
+	lm.mu.Lock()
+	lm.onRow = onRow
+	lm.mu.Unlock()
 	if poll != nil {
 		go func() {
 			ticker := time.NewTicker(listPollInterval)

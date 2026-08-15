@@ -2418,3 +2418,164 @@ func TestUntrustSaveFailureRestoresTheEntryVerbatim(t *testing.T) {
 		t.Errorf("the rollback must restore the remembered port too, got %d", got)
 	}
 }
+
+// The recovery page's own instruction has to work when followed.
+//
+// It says to add the file's folder under Trusted Folders. Until 1.4.0 doing that
+// changed nothing until the app was restarted: trustFolder adopted an existing
+// site anchored at the folder, and a parked port is not one, so the bookmark kept
+// answering with the same page that had just explained how to fix it.
+func TestTrustingAParkedFolderMakesItsAddressWorkWithoutARestart(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(home, "proj")
+	page := filepath.Join(proj, "index.htmlclay")
+	writeTestFile(t, page, "<html><body>index</body></html>")
+
+	cfgBase := t.TempDir()
+	first := newTestAppWithConfigDir(t, home, cfgBase)
+	s, rel := first.openForTest(t, page)
+	bookmark := fileURL(s.port, rel)
+	port := s.port
+	first.shutdown()
+
+	// The folder was never trusted, so the second launch holds its remembered port
+	// with the recovery page rather than a site.
+	second := newTestAppWithConfigDir(t, home, cfgBase)
+	defer second.shutdown()
+	second.startSites()
+	if code, _ := fetch(t, bookmark); code != http.StatusNotFound {
+		t.Fatalf("precondition: the remembered port should hold the recovery page, got %d", code)
+	}
+
+	if err := second.trustFolder(proj); err != nil {
+		t.Fatalf("trust: %v", err)
+	}
+
+	code, body := fetch(t, bookmark)
+	if code != http.StatusOK {
+		t.Fatalf("the bookmark must answer after following the page's instruction, got %d", code)
+	}
+	if !strings.Contains(body, "htmlclaytoken") {
+		t.Error("the file should serve editable once its folder is trusted")
+	}
+
+	second.mu.Lock()
+	defer second.mu.Unlock()
+	live := 0
+	for _, site := range second.sites {
+		if site.anchor == proj {
+			live++
+			if site.port != port {
+				t.Errorf("the origin moved to %d; the whole point of the remembered port is that it does not", site.port)
+			}
+		}
+	}
+	if live != 1 {
+		t.Errorf("the trusted folder should own exactly one site, got %d", live)
+	}
+}
+
+// Trusting a folder nested inside one already trusted must not bind a second
+// origin for a tree that already has one (invariant 4).
+//
+// The outer folder keeps anchoring everything under it, so a second site would
+// hold a redundant listener and remember a port for a shadowed anchor. startSites
+// skips shadowed folders, so after a restart that port would be parked instead:
+// the same URL would work now and be dead tomorrow.
+func TestTrustingANestedFolderBindsNoSecondSite(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer := filepath.Join(home, "proj")
+	inner := filepath.Join(outer, "sub")
+	if err := os.MkdirAll(inner, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newTestAppWithConfigDir(t, home, t.TempDir())
+	defer a.shutdown()
+	if err := a.trustFolder(outer); err != nil {
+		t.Fatalf("trust outer: %v", err)
+	}
+	if err := a.trustFolder(inner); err != nil {
+		t.Fatalf("trust inner: %v", err)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var anchors []string
+	for _, s := range a.sites {
+		anchors = append(anchors, s.anchor)
+	}
+	if len(anchors) != 1 || anchors[0] != outer {
+		t.Errorf("the outer folder must own the only site, got %v", anchors)
+	}
+	if got := a.rt.cfg.SitePort(inner); got != 0 {
+		t.Errorf("a shadowed folder must not have a remembered port, got %d", got)
+	}
+}
+
+// A trusted folder covered by a broader one says so in the tray, and its removal
+// dialog stops claiming a revocation it will not perform.
+//
+// Removing the inner entry is a no-op while the outer folder stands: the tree
+// still anchors there, and a brand new file created in the inner folder still
+// serves with a save token. The dialog nonetheless said files would stop opening
+// editable and open pages would need reopening.
+func TestAShadowedTrustedFolderIsLabelledAndItsDialogTellsTheTruth(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer := filepath.Join(home, "proj")
+	inner := filepath.Join(outer, "sub")
+	if err := os.MkdirAll(inner, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newTestAppWithConfigDir(t, home, t.TempDir())
+	defer a.shutdown()
+	if err := a.trustFolder(outer); err != nil {
+		t.Fatalf("trust outer: %v", err)
+	}
+	if err := a.trustFolder(inner); err != nil {
+		t.Fatalf("trust inner: %v", err)
+	}
+
+	labels := map[string]string{}
+	for _, row := range a.trustedFolderRows() {
+		labels[row.Path] = row.Label
+	}
+	if !strings.Contains(labels[inner], "covered by") {
+		t.Errorf("the shadowed row should say what covers it, got %q", labels[inner])
+	}
+	if strings.Contains(labels[outer], "covered by") {
+		t.Errorf("the folder in charge is not covered by anything, got %q", labels[outer])
+	}
+
+	var innerMsg, outerMsg string
+	a.rt.confirmTrust = func(_, message, _ string) (bool, error) {
+		innerMsg = message
+		return false, nil
+	}
+	a.removeTrustedFolder(inner)
+	a.rt.confirmTrust = func(_, message, _ string) (bool, error) {
+		outerMsg = message
+		return false, nil
+	}
+	a.removeTrustedFolder(outer)
+
+	if strings.Contains(innerMsg, "stop opening editable") {
+		t.Errorf("removing a shadowed entry stops nothing; the dialog must not say it does:\n%s", innerMsg)
+	}
+	if !strings.Contains(innerMsg, outer) {
+		t.Errorf("the dialog should name the folder that keeps the files editable:\n%s", innerMsg)
+	}
+	if !strings.Contains(outerMsg, "stop opening editable") {
+		t.Errorf("the control: removing the folder in charge really does revoke:\n%s", outerMsg)
+	}
+}

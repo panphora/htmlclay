@@ -74,10 +74,33 @@ var redirectedNames = []string{"Desktop", "Documents", "Pictures"}
 // whole checkout tree; one level further down is an ordinary project.
 var ownFolderExtra = [][]string{{"Documents", "GitHub"}}
 
+// forms is a path plus, when it differs, the path it resolves to.
+//
+// A personal folder that is itself a symlink, pointing at an external drive or a
+// synced folder, is an ordinary setup, and every rule below compares by path. With
+// only the lexical name, a folder reaches those rules under its target's name and
+// sails past the match: with ~/Documents -> ~/relocated/Documents, ~/relocated is
+// an ancestor of the real Documents and does not look like it. Folders the user
+// has renamed outright are still not recognized.
+func forms(dir string) []string {
+	out := []string{dir}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		if cleaned := filepath.Clean(resolved); cleaned != dir {
+			out = append(out, cleaned)
+		}
+	}
+	return out
+}
+
 // personalDirs resolves the tables against the home directory that is really on
-// disk: every fixed name, plus any folder whose name marks it as a sync root.
-// The second return is just the sync roots, because their children need the
-// treatment redirectedNames describes.
+// disk: every fixed name in both its forms, plus any folder whose name marks it
+// as a sync root. The second return is just the sync roots, because their
+// children need the treatment redirectedNames describes.
+//
+// The resolution happens here, at the one point all three rules read, rather than
+// in each of them. RefuseSteered used to carry its own copy and the other two had
+// none, which is how a folder containing a relocated Documents stayed trustable by
+// its own file and the tray picker warned about neither.
 //
 // Reading the directory is safe here in a way it would not be on the
 // auto-registration path: these rules only ever run behind a dialog the user is
@@ -85,13 +108,17 @@ var ownFolderExtra = [][]string{{"Documents", "GitHub"}}
 // time is affected by what home contains.
 func (p Policy) personalDirs() (dirs []string, syncRoots []string) {
 	listed := map[string]bool{}
-	for _, name := range personalNames {
-		dir := filepath.Join(p.Home, name)
-		dirs = append(dirs, dir)
-		listed[strings.ToLower(name)] = true
-		if isSyncRootName(name) {
-			syncRoots = append(syncRoots, dir)
+	add := func(name string) {
+		for _, form := range forms(filepath.Join(p.Home, name)) {
+			dirs = append(dirs, form)
+			if isSyncRootName(name) {
+				syncRoots = append(syncRoots, form)
+			}
 		}
+	}
+	for _, name := range personalNames {
+		listed[strings.ToLower(name)] = true
+		add(name)
 	}
 	entries, err := os.ReadDir(p.Home)
 	if err != nil {
@@ -102,9 +129,7 @@ func (p Policy) personalDirs() (dirs []string, syncRoots []string) {
 		if listed[strings.ToLower(name)] || !isSyncRootName(name) {
 			continue
 		}
-		dir := filepath.Join(p.Home, name)
-		dirs = append(dirs, dir)
-		syncRoots = append(syncRoots, dir)
+		add(name)
 	}
 	return dirs, syncRoots
 }
@@ -218,25 +243,14 @@ func (p Policy) Canonical(dir string) (string, error) {
 // case) and the tray picker, which consults none of this because choosing a
 // folder from a picker is already a deliberate act.
 //
-// dir arrives already symlink-resolved, so each name is compared in both its
-// lexical and its resolved form. A Downloads or Documents folder that is
-// itself a symlink, pointing at an external drive or a synced folder, is an
-// ordinary setup, and it would otherwise reach here under its target's name
-// and sail past a purely lexical match. Folders the user has renamed outright
-// are still not recognized.
+// dir arrives already symlink-resolved, and personalDirs supplies each name in
+// both its lexical and its resolved form, so a personal folder that is itself a
+// symlink is recognized under either name.
 func (p Policy) RefuseSteered(dir string) bool {
 	personal, _ := p.personalDirs()
-	for _, lexical := range personal {
-		forms := []string{lexical}
-		if resolved, err := filepath.EvalSymlinks(lexical); err == nil {
-			if cleaned := filepath.Clean(resolved); cleaned != lexical {
-				forms = append(forms, cleaned)
-			}
-		}
-		for _, d := range forms {
-			if equalOrUnderFold(dir, d) || equalOrUnderFold(d, dir) {
-				return true
-			}
+	for _, d := range personal {
+		if equalOrUnderFold(dir, d) || equalOrUnderFold(d, dir) {
+			return true
 		}
 	}
 	return false
@@ -254,11 +268,15 @@ func (p Policy) RefuseSteered(dir string) bool {
 //
 // Comparison is by identity (os.SameFile) as well as case-folded path, so a
 // casing alias or a symlinked variant of a personal folder cannot slip through
-// as a different spelling.
+// as a different spelling. The ancestor test runs against the resolved forms
+// personalDirs supplies, so a folder that CONTAINS a relocated personal folder is
+// refused too: with ~/Documents -> ~/relocated/Documents, a file in ~/relocated
+// asking to trust its own folder would otherwise take the whole real Documents
+// tree, since os.SameFile only ever answered for dir BEING a personal folder.
 func (p Policy) RefuseOwnFolder(dir string) bool {
 	targets := p.personalAndRedirected()
 	for _, parts := range ownFolderExtra {
-		targets = append(targets, filepath.Join(append([]string{p.Home}, parts...)...))
+		targets = append(targets, forms(filepath.Join(append([]string{p.Home}, parts...)...))...)
 	}
 
 	dirInfo, dirErr := os.Stat(dir)

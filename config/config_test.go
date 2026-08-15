@@ -434,3 +434,75 @@ func TestSitePortsAreCappedButTrustedFoldersSurvive(t *testing.T) {
 		t.Errorf("a trusted folder's port must never be evicted: got %d, want 51000", got)
 	}
 }
+
+// A config that already holds one folder under two spellings is healed on load,
+// keeping the first entry and its pin.
+//
+// v1.3.0 could write this: the list compared paths byte for byte, and the read
+// prompt's Trust button let a page choose the casing by choosing which asset it
+// asked for. Untrusting the spelling the user recognized then left the other entry
+// granting write over the same tree, so normalizing new entries is not enough on
+// its own; the ones already on disk have to go.
+func TestDuplicateTrustedSpellingsAreHealedOnLoad(t *testing.T) {
+	baseDir := t.TempDir()
+	work := t.TempDir()
+	onDisk := filepath.Join(work, "Site")
+	if err := os.MkdirAll(onDisk, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// The volume decides whether these are one directory or two, so ask it rather
+	// than assuming from runtime.GOOS. On a case-sensitive filesystem they really
+	// are two folders and both entries must survive.
+	variant := filepath.Join(work, "site")
+	if _, err := os.Stat(variant); err != nil {
+		t.Skip("case-sensitive filesystem: one directory cannot be reached by two spellings")
+	}
+
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AddTrustedFolder(onDisk, "pin-for-the-real-one")
+	cfg.AddTrustedFolder(variant, "pin-added-by-a-page")
+	if got := len(cfg.TrustedFolderList()); got != 2 {
+		t.Fatalf("precondition: the mutators are byte-exact, so both spellings should be present, got %d", got)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := reloaded.TrustedFolderList()
+	if len(list) != 1 {
+		t.Fatalf("one directory must hold one entry after a load, got %d: %v", len(list), list)
+	}
+	if list[0].Path != onDisk || list[0].Identity != "pin-for-the-real-one" {
+		t.Errorf("the first entry and its pin must be the survivor, got %+v", list[0])
+	}
+}
+
+// A dead entry stats nothing, so it can only ever match its own byte-exact path.
+// Two dead entries stay two, because the tray is the record of what was granted
+// and merging them would quietly drop one.
+func TestDeadTrustedEntriesAreNotMergedOnLoad(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AddTrustedFolder(filepath.Join(t.TempDir(), "gone-a"), "a")
+	cfg.AddTrustedFolder(filepath.Join(t.TempDir(), "gone-b"), "b")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(reloaded.TrustedFolderList()); got != 2 {
+		t.Errorf("two missing folders are two dead entries, got %d", got)
+	}
+}
