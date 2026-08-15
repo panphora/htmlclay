@@ -1931,8 +1931,15 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 	for _, tf := range a.rt.cfg.TrustedFolderList() {
 		if tf.Path == proj {
 			found = true
-			if tf.Identity == "" {
-				t.Error("trusted folder stored without an identity fingerprint")
+			// The pin must be the folder's own fingerprint, which is what makes a
+			// folder deleted and replaced stop granting. Windows produces no cheap
+			// lasting fingerprint, so there the pin is empty and the stored path is
+			// the whole of the entry's identity; asserting equality states both
+			// facts without pretending the Windows one is a bug.
+			if want := platform.DirIdentity(proj); tf.Identity != want {
+				t.Errorf("trusted folder pin = %q, want the folder's fingerprint %q", tf.Identity, want)
+			} else if want == "" && runtime.GOOS != "windows" {
+				t.Error("this platform should produce a directory fingerprint")
 			}
 		}
 	}
