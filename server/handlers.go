@@ -156,12 +156,12 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, rawPath strin
 
 	f, ok := s.sessions.LookupByPath(absPath)
 	if !ok {
-		// An unregistered HTML Clay document under a workspace root registers
-		// itself through the app seam before serving, so a link inside a
-		// workspace lands on an editable page with no prompt. Everything about
-		// the decision up to the seam call is lock- and string-work only
-		// (workspace scope first, then hidden/internal), preserving the
-		// oracle-avoidance ordering serveAsset relies on.
+		// An unregistered HTML Clay document inside a trusted folder registers
+		// itself through the app seam before serving, so a link inside a project
+		// lands on an editable page with no prompt. Everything about the
+		// decision up to the seam call is lock- and string-work only (trusted
+		// scope first, then hidden/internal), preserving the oracle-avoidance
+		// ordering serveAsset relies on.
 		//
 		// A data request never registers. Registration is per-file state created on
 		// a caller's say-so, and it can redirect to another site's origin, neither of
@@ -268,12 +268,13 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 		// compares like-for-like and does not false-positive as a stale write.
 		f.NoteFirstObservation(versions.Hash(data))
 
-		// A workspace auto-registration skips the first-serve snapshot: a page
-		// can pull a whole tree into registration, and snapshotting each file on
-		// serve would copy the tree into the versions store on a page's say-so.
-		// Nothing durable is lost — the first real save's pre-write backup still
-		// captures the pre-existing state, because no history exists yet.
-		if s.sessions.Via(f.AbsPath) != session.ViaWorkspace {
+		// A trusted-folder auto-registration skips the first-serve snapshot: a
+		// page can pull a whole tree into registration, and snapshotting each
+		// file on serve would copy the tree into the versions store on a page's
+		// say-so. Nothing durable is lost — the first real save's pre-write
+		// backup still captures the pre-existing state, because no history
+		// exists yet.
+		if s.sessions.Via(f.AbsPath) != session.ViaTrusted {
 			// The snapshot stores the raw disk bytes, not the injected ones, so it
 			// dedups against the first save's pre-write backup instead of doubling
 			// every file.
@@ -616,16 +617,20 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// workspaceWriteRevoked reports whether f's only claim to a save capability was
-// workspace coverage that has since been revoked. Revoking a workspace
-// unregisters its files, so the token normally dies with it; this closes the
-// gap for a request that resolved its token before the revoke landed, so
-// revocation bites even a session already looked up.
-func (s *Server) workspaceWriteRevoked(f *session.File) bool {
+// trustedWriteRevoked reports whether f's only claim to a save capability was
+// trusted-folder coverage that has since been revoked. Untrusting a folder
+// closes its origin and unregisters its files, so the token normally dies with
+// it; this closes the gap for a request that resolved its token before the
+// revoke landed, so revocation bites even a session already looked up.
+//
+// It reads the session's installed roots rather than the declared list on
+// purpose: this is the write path, and what authorizes a write is the held
+// capability, not what config says.
+func (s *Server) trustedWriteRevoked(f *session.File) bool {
 	via := s.sessions.Via(f.AbsPath)
-	return via.Has(session.ViaWorkspace) &&
-		via&(session.ViaOsOpen|session.ViaOpenRequest) == 0 &&
-		!s.sessions.WorkspaceCovers(f.AbsPath)
+	return via.Has(session.ViaTrusted) &&
+		!via.Has(session.ViaOsOpen) &&
+		!s.sessions.TrustedCovers(f.AbsPath)
 }
 
 func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
@@ -633,7 +638,7 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.workspaceWriteRevoked(f) {
+	if s.trustedWriteRevoked(f) {
 		s.writeError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}

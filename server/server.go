@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/panphora/htmlclay/logging"
-	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/session"
 	"github.com/panphora/htmlclay/versions"
 )
@@ -31,22 +30,17 @@ type Server struct {
 	watcher      *watcher
 	coord        *streamCoordinator
 
-	// openRequest is the app-level seam a banner click routes through; nil
-	// (tests, standalone servers) disables the banner entirely.
-	openRequest openRequestFunc
-	// workspaceRequest is the app-level seam a page's workspace request routes
-	// through; nil disables the endpoint.
-	workspaceRequest workspaceRequestFunc
-	// registerSeam is the app-level seam workspace auto-registration routes
-	// through; nil disables auto-register.
-	registerSeam registerSeamFunc
+	// hooks are the app-level decisions this server cannot make itself. A nil
+	// field disables that route; a zero Hooks (tests, standalone servers)
+	// disables all of them.
+	hooks Hooks
 	// openMu guards the open-request nonce map, the denied-directory lists, and
 	// the auto-registration counter.
-	openMu          sync.Mutex
-	openNonces      map[string]openNonce
-	openDenied      []string
-	workspaceDenied []string
-	autoRegistered  int
+	openMu         sync.Mutex
+	openNonces     map[string]openNonce
+	openDenied     []string
+	trustDenied    []string
+	autoRegistered int
 }
 
 // SeqPath is where the live-sync sequence high-water mark lives, beside the
@@ -98,8 +92,12 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	// without the gate it is reachable by any page the user's browser has open.
 	mux.HandleFunc("GET /_/live-sync/stream", sameOrigin(s.handleLiveSyncStream))
 	mux.HandleFunc("POST /_/live-sync/save", sameOrigin(s.handleLiveSyncSave))
+	// Both endpoints keep their 1.2.0 URLs. User HTML calls
+	// /_/workspace-request/{token} directly, so the concept renames in Go and
+	// not on the wire; /_/open-request is only ever called by bytes this server
+	// injects, but there is nothing to gain by moving it.
 	mux.HandleFunc("POST /_/open-request", sameOrigin(s.handleOpenRequest))
-	mux.HandleFunc("POST /_/workspace-request/{token}", sameOrigin(s.handleWorkspaceRequest))
+	mux.HandleFunc("POST /_/workspace-request/{token}", sameOrigin(s.handleTrustRequest))
 	// The data API sits ahead of the catch-all. Verified with httptest: "/_/api/{path...}" does NOT
 	// match bare "/_/api" (ServeMux 307-redirects it), hence the explicit first line; "/_/api/" with
 	// a trailing slash DOES match the wildcard with path == "", so the handler answers 400 for an
@@ -136,23 +134,6 @@ func (s *Server) SetInternalDir(dir string) { s.internalDir = dir }
 // SetSiteLabel names this site in the permission dialog so the user knows which
 // page is asking. Optional; the broker falls back to a generic label.
 func (s *Server) SetSiteLabel(label string) { s.broker.label = label }
-
-// SetConfirm replaces the permission prompt. Production uses the native dialog;
-// tests inject a deterministic decision so no real dialog is ever shown.
-func (s *Server) SetConfirm(fn func(title, message string) (platform.ConfirmChoice, error)) {
-	s.broker.mu.Lock()
-	s.broker.confirm = fn
-	s.broker.mu.Unlock()
-}
-
-// SetTrustFolder wires the durable half of the permission dialog's "Trust this
-// folder" choice. Optional: with no hook the choice still installs the session
-// read root, so the page works and the folder simply asks again next launch.
-func (s *Server) SetTrustFolder(fn func(dir string) error) {
-	s.broker.mu.Lock()
-	s.broker.trust = fn
-	s.broker.mu.Unlock()
-}
 
 // isInternal reports whether absPath belongs to htmlclay's own state and must be
 // refused outright, before any existence check, so the denial is not an oracle.

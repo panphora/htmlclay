@@ -36,16 +36,6 @@ type openNonce struct {
 	expires  time.Time
 }
 
-// openRequestFunc is the app-level seam an approved banner click routes
-// through: it raises the native dialog and, on approval, registers the file
-// through the same route() path a double-click uses. It returns the URL the
-// page should navigate to and whether the open was allowed.
-type openRequestFunc func(absPath string) (url string, allowed bool)
-
-// SetOpenRequest wires the app-level open seam. With no hook wired (tests, or
-// a server run outside the app), no banner is ever offered.
-func (s *Server) SetOpenRequest(fn openRequestFunc) { s.openRequest = fn }
-
 func generateNonce() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -115,13 +105,13 @@ func (s *Server) openDeniedCovers(path string) bool {
 	return false
 }
 
-// shouldOfferOpen reports whether this read-only serve gets the open banner:
-// an HTML Clay document, fetched by a real user navigation (Sec-Fetch-User is
-// only sent on user-activated navigations, and Dest must be document — a
-// silent fetch() or iframe never mints a nonce), with the open seam wired and
-// the file's directory not under a this-session Deny.
+// shouldOfferOpen reports whether this read-only serve gets the banner: an
+// HTML Clay document, fetched by a real user navigation (Sec-Fetch-User is only
+// sent on user-activated navigations, and Dest must be document — a silent
+// fetch() or iframe never mints a nonce), with the trust seam wired and the
+// file's directory not under a this-session Deny.
 func (s *Server) shouldOfferOpen(r *http.Request, real string) bool {
-	if s.openRequest == nil {
+	if s.hooks.TrustRequest == nil {
 		return false
 	}
 	if r.Method != http.MethodGet {
@@ -161,11 +151,16 @@ func (s *Server) serveReadOnlyWithBanner(w http.ResponseWriter, file *os.File, r
 // end-of-document DOM placement is invisible; everything inline, so it needs no
 // asset requests of its own. The page holds only the nonce — never a path —
 // and the nonce resolves server-side to the exact file that was served.
+//
+// The button trusts the file's whole folder rather than opening the one file,
+// so the wording names the folder and the native dialog that follows states the
+// full consequence. One click from a read-only page to an editable project is
+// the point; the dialog is what makes it a decision.
 func openBannerHTML(nonce string) []byte {
 	return []byte(`<div style="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;display:flex;align-items:center;gap:12px;padding:10px 16px;background:#1c1c1e;color:#f2f2f7;font:13px/1.4 -apple-system,system-ui,sans-serif;box-shadow:0 -1px 8px rgba(0,0,0,.35)">` +
 		`<span style="flex:1">Read-only view. This file was opened from a link.</span>` +
 		`<button style="padding:6px 14px;border:0;border-radius:6px;background:#0a84ff;color:#fff;font:inherit;cursor:pointer" ` +
-		`onclick="var e=this,b=e.parentNode;e.disabled=true;fetch('/_/open-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce:'` + nonce + `'})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok&&d.url){location.href=d.url}else{b.firstElementChild.textContent=(d&&d.error)==='expired'?'This offer expired. Reload the page to ask again.':'Not opened.';e.remove()}}).catch(function(){e.disabled=false})">Open for editing</button>` +
+		`onclick="var e=this,b=e.parentNode;e.disabled=true;fetch('/_/open-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce:'` + nonce + `'})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok&&d.url){location.href=d.url}else{b.firstElementChild.textContent=(d&&d.error)==='expired'?'This offer expired. Reload the page to ask again.':'Not trusted.';e.remove()}}).catch(function(){e.disabled=false})">Trust this folder</button>` +
 		`<button style="padding:6px 10px;border:0;border-radius:6px;background:#3a3a3c;color:#f2f2f7;font:inherit;cursor:pointer" onclick="this.parentNode.remove()">Dismiss</button>` +
 		`</div>`)
 }
@@ -181,8 +176,13 @@ func writeOpenRefused(w http.ResponseWriter, code string) {
 }
 
 // handleOpenRequest turns a banner click into a native dialog and, on approval,
-// an app-level open. The request names only a nonce; the file identity, the
-// dialog text, and the resulting URL are all server-side facts.
+// trust for the served file's folder. The request names only a nonce; the file
+// identity, the folder derived from it, the dialog text, and the resulting URL
+// are all server-side facts, so the page cannot steer any of them.
+//
+// openedByUser is false here on purpose: the banner is shown precisely because
+// the file was reached by a link rather than opened, and the dialog says so on
+// its first line.
 func (s *Server) handleOpenRequest(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	body, err := io.ReadAll(r.Body)
@@ -207,7 +207,7 @@ func (s *Server) handleOpenRequest(w http.ResponseWriter, r *http.Request) {
 		writeOpenRefused(w, "denied")
 		return
 	}
-	hook := s.openRequest
+	hook := s.hooks.TrustRequest
 	if hook == nil {
 		writeOpenRefused(w, "denied")
 		return
@@ -217,18 +217,18 @@ func (s *Server) handleOpenRequest(w http.ResponseWriter, r *http.Request) {
 	var allowed bool
 	// The dialog runs under the broker's one prompting flag, so it can never
 	// stack over (or under) a read-grant prompt.
-	if !s.broker.runPrompt(func() { url, allowed = hook(real) }) {
+	if !s.broker.runPrompt(func() { url, allowed = hook(real, false) }) {
 		writeOpenRefused(w, "denied")
 		return
 	}
 	if !allowed {
 		s.suppressOpenDenied(filepath.Dir(real))
-		s.logger.Printf("Open request denied for %s; directory suppressed for this session", real)
+		s.logger.Printf("Trust request from the banner denied for %s; directory suppressed for this session", real)
 		writeOpenRefused(w, "denied")
 		return
 	}
 
-	s.logger.Printf("Open request approved for %s", real)
+	s.logger.Printf("Trust request from the banner approved for %s", real)
 	noStoreJSON(w)
 	fmt.Fprintf(w, `{"ok":true,"url":%q}`, url)
 }

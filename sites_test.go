@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,6 +20,7 @@ import (
 	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/server"
 	"github.com/panphora/htmlclay/session"
+	"github.com/panphora/htmlclay/trust"
 	"github.com/panphora/htmlclay/versions"
 )
 
@@ -28,22 +28,29 @@ import (
 // confirm to deny, so a broker that parks an out-of-scope request resolves it
 // without ever calling the native osascript prompt. A grant-flow test overrides
 // a.rt.confirm before opening the site it wants to allow.
-func denyConfirm(string, string) (platform.ConfirmChoice, error) {
+func denyConfirm(string, string, bool) (platform.ConfirmChoice, error) {
 	return platform.ConfirmDeny, nil
 }
 
-func allowOnceConfirm(string, string) (platform.ConfirmChoice, error) {
+func allowOnceConfirm(string, string, bool) (platform.ConfirmChoice, error) {
 	return platform.ConfirmAllowOnce, nil
 }
 
-func trustFolderConfirm(string, string) (platform.ConfirmChoice, error) {
+// trustFolderConfirm answers "Trust this folder". It reports Deny when the
+// dialog was not allowed to offer that choice, because a dialog with two
+// buttons cannot return a third one and a test that ignored allowTrust would
+// assert a path the user can never take.
+func trustFolderConfirm(_, _ string, allowTrust bool) (platform.ConfirmChoice, error) {
+	if !allowTrust {
+		return platform.ConfirmDeny, nil
+	}
 	return platform.ConfirmTrustFolder, nil
 }
 
 // countingDenyConfirm denies every prompt and counts how many were raised, so a
 // test can assert that a refusal never reached the user at all.
-func countingDenyConfirm(n *int32) func(string, string) (platform.ConfirmChoice, error) {
-	return func(string, string) (platform.ConfirmChoice, error) {
+func countingDenyConfirm(n *int32) func(string, string, bool) (platform.ConfirmChoice, error) {
+	return func(string, string, bool) (platform.ConfirmChoice, error) {
 		atomic.AddInt32(n, 1)
 		return platform.ConfirmDeny, nil
 	}
@@ -51,14 +58,25 @@ func countingDenyConfirm(n *int32) func(string, string) (platform.ConfirmChoice,
 
 func newTestApp(t *testing.T, home string) *app {
 	t.Helper()
+	return newTestAppWithConfigDir(t, home, t.TempDir())
+}
+
+// newTestAppWithConfigDir builds an app whose config lives in a caller-chosen
+// directory, so two app instances can share one config.json and a restart can
+// be simulated.
+func newTestAppWithConfigDir(t *testing.T, home, cfgBase string) *app {
+	t.Helper()
 	logger := logging.NewStdout()
 	store := versions.New(t.TempDir())
 	ls := server.NewLiveSync(server.SeqPath(store), logger)
-	cfg, err := config.LoadFrom(t.TempDir())
+	cfg, _, err := config.LoadFrom(cfgBase, platform.DirIdentity)
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
 	configDir := filepath.Join(t.TempDir(), "htmlclay")
+	guard := func(dir string) bool {
+		return session.EqualOrUnder(dir, configDir) || session.EqualOrUnder(configDir, dir)
+	}
 	a := &app{
 		rt: &appRuntime{
 			cfg:       cfg,
@@ -68,18 +86,16 @@ func newTestApp(t *testing.T, home string) *app {
 			home:      home,
 			configDir: configDir,
 			confirm:   denyConfirm,
-			// The write-granting dialogs deny by default through their own
-			// distinct seams, so a test that allows read grants does not
-			// accidentally approve opens or workspaces.
-			confirmOpen:      func(string, string) (bool, error) { return false, nil },
-			confirmWorkspace: func(string, string) (bool, error) { return false, nil },
+			// The write-granting dialog denies by default through its own
+			// distinct seam, so a test that allows read grants does not
+			// accidentally approve a folder trust.
+			confirmTrust: func(string, string) (bool, error) { return false, nil },
 			// Swallow notifications by default, for the same reason confirm is
 			// stubbed: no test may put real UI on the user's screen. A test that
 			// cares what the user was told overrides this with a recorder.
 			notify: func(string, string) error { return nil },
-			guard: func(dir string) bool {
-				return session.EqualOrUnder(dir, configDir) || session.EqualOrUnder(configDir, dir)
-			},
+			guard:  guard,
+			policy: trust.Policy{Home: home, Guard: guard},
 		},
 	}
 	t.Cleanup(func() {
@@ -89,8 +105,26 @@ func newTestApp(t *testing.T, home string) *app {
 		for _, s := range a.sites {
 			s.close()
 		}
+		for _, p := range a.parked {
+			p.close()
+		}
 	})
 	return a
+}
+
+// hostOf returns the live site holding absPath. Untrusting a folder closes its
+// origin and re-homes the files the user opened themselves, so a test that
+// checks what survived has to ask where the file lives now rather than reuse
+// the site pointer it started with.
+func hostOf(t *testing.T, a *app, absPath string) *site {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s, _, ok := a.lookupLocked(absPath)
+	if !ok {
+		t.Fatalf("%s is not registered in any live site", absPath)
+	}
+	return s
 }
 
 // openForTest drives the real routing path without launching a browser.
@@ -330,7 +364,7 @@ func TestPromptNamesTheFolderItGrants(t *testing.T) {
 	var msgMu sync.Mutex
 	var shown string
 	a := newTestApp(t, home)
-	a.rt.confirm = func(_ string, message string) (platform.ConfirmChoice, error) {
+	a.rt.confirm = func(_ string, message string, _ bool) (platform.ConfirmChoice, error) {
 		msgMu.Lock()
 		shown = message
 		msgMu.Unlock()
@@ -342,28 +376,32 @@ func TestPromptNamesTheFolderItGrants(t *testing.T) {
 		t.Fatalf("the aliased asset should resume with 200 after Allow, got %d", code)
 	}
 
-	grants := a.activeGrants()
-	if len(grants) != 1 {
-		t.Fatalf("expected exactly one grant, got %v", grants)
+	granted, _, ok := s.sessions.AssetRoot(filepath.Join(realDir, "notes.js"))
+	if !ok {
+		t.Fatal("the allowed asset installed no read root")
 	}
 	msgMu.Lock()
 	defer msgMu.Unlock()
-	if grants[0] != realDir {
-		t.Errorf("the grant must land on the resolved folder: got %q, want %q", grants[0], realDir)
+	if granted != realDir {
+		t.Errorf("the grant must land on the resolved folder: got %q, want %q", granted, realDir)
 	}
-	if !strings.Contains(shown, grants[0]) {
-		t.Errorf("the dialog must name the folder it grants:\ndialog  = %q\ngranted = %q", shown, grants[0])
+	// The alias name itself must never become a root of its own, or the folder
+	// would be readable under two keys and revocable under only one.
+	if _, _, aliased := s.sessions.AssetRoot(filepath.Join(alias, "notes.js")); aliased {
+		t.Errorf("the grant must not also land on the alias %q", alias)
+	}
+	if !strings.Contains(shown, granted) {
+		t.Errorf("the dialog must name the folder it grants:\ndialog  = %q\ngranted = %q", shown, granted)
 	}
 	if strings.Contains(shown, alias) {
 		t.Errorf("the dialog must not name the alias the page reached through: %q", shown)
 	}
 }
 
-// The Temporary Access Granted tray submenu is backed by activeGrants (the
-// runtime read grants) and revokeGrant. Allowing an out-of-scope asset installs a
-// grant that appears in activeGrants; revoking it removes the grant and the asset
-// is refused again. The confirm allows the first prompt and denies afterwards, so
-// the post-revoke re-request 403s instead of re-granting.
+// Allowing an out-of-scope asset installs a runtime read grant and the asset
+// becomes readable; revoking that root makes it refused again. The confirm
+// allows the first prompt and denies afterwards, so the post-revoke re-request
+// 403s instead of quietly re-granting.
 func TestActiveGrantsListsAndRevokesRuntimeGrants(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	page := filepath.Join(home, "work", "review", "fable", "index.html")
@@ -374,7 +412,7 @@ func TestActiveGrantsListsAndRevokesRuntimeGrants(t *testing.T) {
 	var confirmMu sync.Mutex
 	allowed := false
 	a := newTestApp(t, home)
-	a.rt.confirm = func(string, string) (platform.ConfirmChoice, error) {
+	a.rt.confirm = func(string, string, bool) (platform.ConfirmChoice, error) {
 		confirmMu.Lock()
 		defer confirmMu.Unlock()
 		if !allowed {
@@ -391,14 +429,14 @@ func TestActiveGrantsListsAndRevokesRuntimeGrants(t *testing.T) {
 	}
 
 	grantDir := filepath.Join(home, "work", "review", "shared")
-	grants := a.activeGrants()
-	if len(grants) != 1 || grants[0] != grantDir {
-		t.Fatalf("activeGrants = %v, want [%s]", grants, grantDir)
+	root, _, ok := s.sessions.AssetRoot(asset)
+	if !ok || root != grantDir {
+		t.Fatalf("the allowed asset should be covered by a grant at %s: root=%q ok=%v", grantDir, root, ok)
 	}
 
-	after := a.revokeGrant(grantDir)
-	if len(after) != 0 {
-		t.Fatalf("revokeGrant should leave no grants, got %v", after)
+	s.sessions.RevokeReadRoot(grantDir)
+	if _, _, ok := s.sessions.AssetRoot(asset); ok {
+		t.Fatal("revoking the granted root should leave the asset uncovered")
 	}
 
 	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 403 {
@@ -532,9 +570,9 @@ func TestGuardRefusesConfigTreeBothDirections(t *testing.T) {
 	s, _ := a.openForTest(t, page)
 
 	for _, dir := range []string{
-		configDir,                                    // exactly the config dir
-		filepath.Join(configDir, "versions"),         // inside it
-		filepath.Join(home, "Library"),               // an ancestor that swallows it
+		configDir,                            // exactly the config dir
+		filepath.Join(configDir, "versions"), // inside it
+		filepath.Join(home, "Library"),       // an ancestor that swallows it
 		filepath.Join(home, "Library", "Application Support"),
 	} {
 		if err := s.sessions.GrantReadRoot(dir); err == nil {
@@ -604,59 +642,120 @@ func TestFileOpenedOutsideTrustedFoldersGetsNoTrustedReads(t *testing.T) {
 	}
 }
 
-// Trusting a folder live-seeds the capability into a site that is already open,
-// so the user does not have to reopen a page for a fresh trust to take effect.
-func TestTrustFolderLiveSeedsAlreadyOpenSite(t *testing.T) {
+// Trusting a folder BELOW an already-open site takes effect immediately: a file
+// in it requested from the open site lands editable on the trusted folder's own
+// origin, rather than serving read-only with the banner until the user reopens
+// something. Anchoring reads the declared list, so there is nothing to seed.
+func TestTrustFolderBelowOpenSiteGrantsImmediately(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
-	sitesDir := filepath.Join(home, "sites")
-	page := filepath.Join(sitesDir, "app", "index.html")
-	asset := filepath.Join(sitesDir, "shared", "lib.js")
-	writeTestFile(t, page, "<html><body>app</body></html>")
-	writeTestFile(t, asset, "console.log('lib')")
+	proj := filepath.Join(home, "proj")
+	top := filepath.Join(proj, "top.htmlclay")
+	review := filepath.Join(proj, "review")
+	nested := filepath.Join(review, "d.htmlclay")
+	writeTestFile(t, top, "<html><body>top</body></html>")
+	writeTestFile(t, nested, "<html><body>nested</body></html>")
 
 	a := newTestApp(t, home)
-	s, _ := a.openForTest(t, page)
+	s, _ := a.openForTest(t, top)
 
-	relAsset := filepath.Join("sites", "shared", "lib.js")
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code == 200 {
-		t.Fatal("the asset should be out of scope before the folder is trusted")
+	relNested := filepath.Join("proj", "review", "d.htmlclay")
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	nav := func() *http.Response {
+		req, _ := http.NewRequest("GET", fileURL(s.port, relNested), nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-User", "?1")
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
 	}
 
-	if err := a.trustFolder(sitesDir); err != nil {
+	before := nav()
+	beforeBody, _ := io.ReadAll(before.Body)
+	before.Body.Close()
+	if before.StatusCode != 200 || strings.Contains(string(beforeBody), "htmlclaytoken") {
+		t.Fatalf("before the trust the nested file must serve read-only: %d, token=%v",
+			before.StatusCode, strings.Contains(string(beforeBody), "htmlclaytoken"))
+	}
+
+	if err := a.trustFolder(review); err != nil {
 		t.Fatalf("trust: %v", err)
 	}
 
-	code, body := fetch(t, fileURL(s.port, relAsset))
-	if code != 200 || !strings.Contains(body, "lib") {
-		t.Fatalf("trusting a folder must live-seed the open site: got %d, %q", code, body)
+	after := nav()
+	defer after.Body.Close()
+	if after.StatusCode != 302 {
+		body, _ := io.ReadAll(after.Body)
+		t.Fatalf("a folder trusted below an open site must take effect at once: got %d, %q",
+			after.StatusCode, body)
+	}
+	loc := after.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("the redirect carried no Location")
+	}
+	if strings.Contains(loc, fmt.Sprintf(":%d/", s.port)) {
+		t.Fatalf("the trusted folder must own its own origin, not the opening site's: %s", loc)
+	}
+	code, body := fetchNav(t, loc)
+	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+		t.Fatalf("the trusted folder's origin should serve the file editable: %d, token=%v",
+			code, strings.Contains(body, "htmlclaytoken"))
 	}
 }
 
-// Untrusting a folder live-revokes the seeded capability from open sites.
+// Untrusting a folder closes its origin: the config entry goes, the site goes
+// with it, and a save through a token that was minted under that trust is
+// refused. Anything less leaves a page holding write access to a folder the
+// user just took back.
 func TestUntrustFolderLiveRevokesFromOpenSite(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	sitesDir := filepath.Join(home, "sites")
-	page := filepath.Join(sitesDir, "app", "index.html")
-	asset := filepath.Join(sitesDir, "shared", "lib.js")
+	page := filepath.Join(sitesDir, "app", "index.htmlclay")
 	writeTestFile(t, page, "<html><body>app</body></html>")
-	writeTestFile(t, asset, "console.log('lib')")
 
 	a := newTestApp(t, home)
 	if err := a.trustFolder(sitesDir); err != nil {
 		t.Fatalf("trust: %v", err)
 	}
-	s, _ := a.openForTest(t, page)
+	s, rel := a.openForTest(t, page)
+	if s.anchor != sitesDir {
+		t.Fatalf("a file in a trusted folder should anchor there: got %q", s.anchor)
+	}
 
-	relAsset := filepath.Join("sites", "shared", "lib.js")
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 200 {
-		t.Fatal("the trusted asset should serve while the folder is trusted")
+	code, body := fetch(t, fileURL(s.port, rel))
+	if code != 200 {
+		t.Fatalf("the trusted page should serve: %d", code)
+	}
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("no save token on the trusted page")
+	}
+	saveURL := fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1])
+	if code, out := postSameOrigin(t, saveURL, "text/html", "<html><body>edited</body></html>"); code != 200 {
+		t.Fatalf("save while trusted = %d: %s", code, out)
 	}
 
 	if err := a.untrustFolder(sitesDir); err != nil {
 		t.Fatalf("untrust: %v", err)
 	}
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code == 200 {
-		t.Error("untrusting the folder must live-revoke the seeded read from the open site")
+
+	if hasFolder(a.rt.cfg.TrustedFolderList(), sitesDir) {
+		t.Errorf("untrust must drop the folder from config: %v", a.rt.cfg.TrustedFolderList())
+	}
+	a.mu.Lock()
+	stillLive := a.siteAtLocked(sitesDir) != nil
+	a.mu.Unlock()
+	if stillLive {
+		t.Error("untrust must close the folder's origin, not leave its site listening")
+	}
+	if _, ok := s.sessions.Lookup(tok[1]); ok {
+		t.Error("a token minted under the trust survived the untrust")
+	}
+	if code := postAllowingFailure(t, saveURL, "text/html", "<html><body>worm</body></html>"); code == 200 {
+		t.Error("a save through a token minted under the trust must be refused after untrusting")
 	}
 }
 
@@ -721,9 +820,9 @@ func TestPromptCannotTrustDownloads(t *testing.T) {
 	}
 }
 
-func hasFolder(list []string, want string) bool {
+func hasFolder(list []config.TrustedFolder, want string) bool {
 	for _, f := range list {
-		if f == want {
+		if f.Path == want {
 			return true
 		}
 	}
@@ -736,12 +835,12 @@ func hasFolder(list []string, want string) bool {
 func waitForTrusted(t *testing.T, a *app, dir string) {
 	t.Helper()
 	for i := 0; i < 500; i++ {
-		if hasFolder(a.trustedFolders(), dir) {
+		if hasFolder(a.rt.cfg.TrustedFolderList(), dir) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("the prompt's Trust this folder choice must record %s: trusted list = %v", dir, a.trustedFolders())
+	t.Fatalf("the prompt's Trust this folder choice must record %s: trusted list = %v", dir, a.rt.cfg.TrustedFolderList())
 }
 
 // The production wiring, end to end. The broker's trust hook must be the app's own
@@ -768,9 +867,15 @@ func TestPromptTrustChoiceRecordsAnOrdinaryFolder(t *testing.T) {
 }
 
 // The same flow aimed at one of the main personal folders. The page picked the
-// folder, by asking for an asset that sits directly in ~/Documents, so the read is
-// allowed for this session and nothing durable is recorded. Wiring the tray's own
-// permissive route here instead would trust the whole of Documents in one click.
+// folder, by asking for an asset that sits directly in ~/Documents, so the
+// durable choice is never offered at all: the read is allowed for this session
+// and nothing durable is recorded. Wiring the tray's own permissive route here
+// instead would trust the whole of Documents in one click.
+//
+// The refusal is decided BEFORE the dialog is drawn, which is why this asserts
+// on the allowTrust flag rather than on a notification: the user is never asked
+// to make a choice that could not be honored, so there is nothing to apologize
+// for afterwards.
 func TestPromptTrustChoiceRefusesAPersonalFolder(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	page := filepath.Join(home, "Documents", "evil", "index.html")
@@ -779,7 +884,12 @@ func TestPromptTrustChoiceRefusesAPersonalFolder(t *testing.T) {
 	writeTestFile(t, asset, "console.log('lib')")
 
 	a := newTestApp(t, home)
-	a.rt.confirm = trustFolderConfirm
+	var offered atomic.Bool
+	offered.Store(true)
+	a.rt.confirm = func(_, _ string, allowTrust bool) (platform.ConfirmChoice, error) {
+		offered.Store(allowTrust)
+		return platform.ConfirmAllowOnce, nil
+	}
 	told := make(chan string, 4)
 	a.rt.notify = func(_, message string) error {
 		told <- message
@@ -792,19 +902,16 @@ func TestPromptTrustChoiceRefusesAPersonalFolder(t *testing.T) {
 		t.Fatalf("the read itself should still resume: got %d, %q", code, body)
 	}
 
-	// The notice is what proves the prompt route ran and refused; the user asked
-	// for something durable and got something that lasts until they quit.
-	documents := filepath.Join(home, "Documents")
+	if offered.Load() {
+		t.Error("a page-chosen personal folder must never be offered as a durable trust")
+	}
+	if got := a.rt.cfg.TrustedFolderList(); len(got) != 0 {
+		t.Errorf("a page-chosen personal folder must never be remembered: %v", got)
+	}
 	select {
 	case msg := <-told:
-		if !strings.Contains(msg, documents) {
-			t.Errorf("the notice should name the folder it refused, got %q", msg)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("a page-chosen personal folder must be refused and reported: trusted list = %v", a.trustedFolders())
-	}
-	if got := a.trustedFolders(); len(got) != 0 {
-		t.Errorf("a page-chosen personal folder must never be remembered: %v", got)
+		t.Errorf("a choice that was never offered needs no apology, got %q", msg)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -824,10 +931,10 @@ func TestUntrustingAPromptTrustedFolderEndsTheRead(t *testing.T) {
 	var confirmMu sync.Mutex
 	asked := false
 	a := newTestApp(t, home)
-	a.rt.confirm = func(string, string) (platform.ConfirmChoice, error) {
+	a.rt.confirm = func(_, _ string, allowTrust bool) (platform.ConfirmChoice, error) {
 		confirmMu.Lock()
 		defer confirmMu.Unlock()
-		if !asked {
+		if !asked && allowTrust {
 			asked = true
 			return platform.ConfirmTrustFolder, nil
 		}
@@ -871,7 +978,7 @@ func TestConcurrentOutOfScopeAssetsResumeTogetherOnAllow(t *testing.T) {
 	var enterOnce sync.Once
 	release := make(chan struct{})
 	a := newTestApp(t, home)
-	a.rt.confirm = func(string, string) (platform.ConfirmChoice, error) {
+	a.rt.confirm = func(string, string, bool) (platform.ConfirmChoice, error) {
 		atomic.AddInt32(&prompts, 1)
 		enterOnce.Do(func() { close(entered) })
 		<-release
@@ -926,9 +1033,10 @@ func TestConcurrentOutOfScopeAssetsResumeTogetherOnAllow(t *testing.T) {
 	if got := atomic.LoadInt32(&prompts); got != 1 {
 		t.Errorf("a burst under one common dir must prompt exactly once, got %d", got)
 	}
-	grants := a.activeGrants()
-	if len(grants) != 1 || grants[0] != shared {
-		t.Errorf("exactly one read root should be installed: activeGrants = %v, want [%s]", grants, shared)
+	// One prompt installs one root, at the batch's common dir and no broader.
+	root, _, ok := s.sessions.AssetRoot(filepath.Join(shared, names[0]))
+	if !ok || root != shared {
+		t.Errorf("exactly one read root should be installed, at %s: got %q (ok=%v)", shared, root, ok)
 	}
 }
 
@@ -953,7 +1061,7 @@ func TestConcurrentOutOfScopeAssetsRefuseTogetherOnDeny(t *testing.T) {
 	var enterOnce sync.Once
 	release := make(chan struct{})
 	a := newTestApp(t, home)
-	a.rt.confirm = func(string, string) (platform.ConfirmChoice, error) {
+	a.rt.confirm = func(string, string, bool) (platform.ConfirmChoice, error) {
 		atomic.AddInt32(&prompts, 1)
 		enterOnce.Do(func() { close(entered) })
 		<-release
@@ -1006,8 +1114,8 @@ func TestConcurrentOutOfScopeAssetsRefuseTogetherOnDeny(t *testing.T) {
 	if got := atomic.LoadInt32(&prompts); got != 1 {
 		t.Errorf("a denied burst must prompt exactly once, got %d", got)
 	}
-	if grants := a.activeGrants(); len(grants) != 0 {
-		t.Errorf("a denied burst must install no read root, got %v", grants)
+	if root, _, ok := s.sessions.AssetRoot(filepath.Join(shared, names[0])); ok {
+		t.Errorf("a denied burst must install no read root, got %q", root)
 	}
 }
 
@@ -1118,56 +1226,57 @@ func TestServeAssetSymlinkSwapRaceNeverLeaksConfig(t *testing.T) {
 	flipper.Wait()
 }
 
-// Untrusting a folder is complete: it drops the folder from the trusted list AND
-// live-revokes the seeded read from every open site, so the tree 403s again. The
-// two halves must move together, or a stale config entry could re-seed a revoked
-// root on the next open.
+// Untrusting a folder is complete: it drops the folder from the trusted list,
+// on disk as well as in memory, AND closes the folder's origin so the tokens
+// minted under it die. The two halves must move together, or a stale config
+// entry could revive a revoked root on the next open.
 func TestUntrustFolderClearsConfigAndRevokesServe(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	sitesDir := filepath.Join(home, "sites")
-	page := filepath.Join(sitesDir, "app", "index.html")
+	page := filepath.Join(sitesDir, "app", "index.htmlclay")
 	asset := filepath.Join(sitesDir, "shared", "lib.js")
 	writeTestFile(t, page, "<html><body>app</body></html>")
 	writeTestFile(t, asset, "console.log('lib')")
 
 	cfgBase := t.TempDir()
-	cfg, err := config.LoadFrom(cfgBase)
-	if err != nil {
-		t.Fatalf("config: %v", err)
-	}
-	a := newTestApp(t, home)
-	a.rt.cfg = cfg // a config whose on-disk baseDir the test can reload
+	a := newTestAppWithConfigDir(t, home, cfgBase)
 	if err := a.trustFolder(sitesDir); err != nil {
 		t.Fatalf("trust: %v", err)
 	}
-	s, _ := a.openForTest(t, page)
+	s, rel := a.openForTest(t, page)
 
 	relAsset := filepath.Join("sites", "shared", "lib.js")
 	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 200 {
 		t.Fatal("the trusted asset should serve while the folder is trusted")
 	}
-	if !hasFolder(a.trustedFolders(), sitesDir) {
-		t.Fatalf("config should list the trusted folder before untrust: %v", a.trustedFolders())
+	if !hasFolder(a.rt.cfg.TrustedFolderList(), sitesDir) {
+		t.Fatalf("config should list the trusted folder before untrust: %v", a.rt.cfg.TrustedFolderList())
 	}
+	_, body := fetch(t, fileURL(s.port, rel))
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("no save token on the trusted page")
+	}
+	saveURL := fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1])
 
 	if err := a.untrustFolder(sitesDir); err != nil {
 		t.Fatalf("untrust: %v", err)
 	}
 
-	if hasFolder(a.trustedFolders(), sitesDir) {
-		t.Errorf("untrust must drop the folder from config: %v", a.trustedFolders())
+	if hasFolder(a.rt.cfg.TrustedFolderList(), sitesDir) {
+		t.Errorf("untrust must drop the folder from config: %v", a.rt.cfg.TrustedFolderList())
 	}
-	// The removal must reach disk, not just memory, or a restart re-seeds the revoked
-	// root from a stale config entry.
-	reloaded, err := config.LoadFrom(cfgBase)
+	// The removal must reach disk, not just memory, or a restart revives the
+	// revoked root from a stale config entry.
+	reloaded, _, err := config.LoadFrom(cfgBase, platform.DirIdentity)
 	if err != nil {
 		t.Fatalf("reload config: %v", err)
 	}
 	if hasFolder(reloaded.TrustedFolderList(), sitesDir) {
 		t.Errorf("untrust must persist to disk: reloaded trusted list still has it: %v", reloaded.TrustedFolderList())
 	}
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 403 {
-		t.Errorf("untrust must live-revoke the seeded read (403), got %d", code)
+	if code := postAllowingFailure(t, saveURL, "text/html", "<html><body>worm</body></html>"); code == 200 {
+		t.Error("untrust must revoke the write capability its trust granted")
 	}
 }
 
@@ -1452,23 +1561,51 @@ func postSameOrigin(t *testing.T, target, contentType, body string) (int, string
 	return resp.StatusCode, string(out)
 }
 
-// The whole Feature A flow on one origin: a linked sibling serves read-only
-// with a banner, approval opens it in place (same site, same origin), the page
-// reloads editable, and the tray can revoke exactly that grant while the
-// OS-opened page keeps its own session.
+// postAllowingFailure is postSameOrigin for a request whose origin may be gone.
+// Untrusting a folder closes its site, so the refusal a test is checking can
+// arrive as a dead port rather than as a status code; 0 stands for that.
+func postAllowingFailure(t *testing.T, target, contentType, body string) int {
+	t.Helper()
+	req, err := http.NewRequest("POST", target, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Origin", "http://"+req.URL.Host)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// The whole banner flow on one origin: a linked sibling serves read-only with a
+// banner, and the button trusts the file's folder rather than opening the one
+// file. Approval records the folder durably and the returned URL serves the
+// sibling editable, in place on the same origin, because the opened page's own
+// folder is what just became trusted.
 func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
-	page := filepath.Join(home, "site", "index.htmlclay")
-	sibling := filepath.Join(home, "site", "week.htmlclay")
+	siteDir := filepath.Join(home, "site")
+	page := filepath.Join(siteDir, "index.htmlclay")
+	sibling := filepath.Join(siteDir, "week.htmlclay")
 	writeTestFile(t, page, "<html><body>index</body></html>")
 	writeTestFile(t, sibling, "<html><body>week</body></html>")
 
 	a := newTestApp(t, home)
-	openCalls := 0
-	a.rt.confirmOpen = func(title, message string) (bool, error) {
-		openCalls++
+	trustCalls := 0
+	a.rt.confirmTrust = func(title, message string) (bool, error) {
+		trustCalls++
 		if !strings.Contains(message, sibling) {
-			t.Errorf("dialog must name the full path %s, got %q", sibling, message)
+			t.Errorf("dialog must name the requesting file %s, got %q", sibling, message)
+		}
+		if !strings.Contains(message, siteDir) {
+			t.Errorf("dialog must name the full folder %s, got %q", siteDir, message)
 		}
 		return true, nil
 	}
@@ -1494,9 +1631,13 @@ func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 	if code != 200 || !strings.Contains(out, `"ok":true`) {
 		t.Fatalf("open-request failed: %d %s", code, out)
 	}
-	if openCalls != 1 {
-		t.Fatalf("dialog fired %d times, want 1", openCalls)
+	if trustCalls != 1 {
+		t.Fatalf("dialog fired %d times, want 1", trustCalls)
 	}
+	if !hasFolder(a.rt.cfg.TrustedFolderList(), siteDir) {
+		t.Fatalf("the banner's button must trust the folder: %v", a.rt.cfg.TrustedFolderList())
+	}
+
 	var resp struct {
 		URL string `json:"url"`
 	}
@@ -1507,40 +1648,26 @@ func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 		t.Fatalf("sibling should open in place: url=%q, want %q", resp.URL, target)
 	}
 	if len(a.sites) != 1 {
-		t.Fatalf("sibling open created a new site: %d sites", len(a.sites))
+		t.Fatalf("trusting the opened page's own folder created a new site: %d sites", len(a.sites))
 	}
-	if via := s.sessions.Via(sibling); via != session.ViaOpenRequest {
-		t.Fatalf("sibling provenance = %v, want ViaOpenRequest", via)
+	if via := s.sessions.Via(sibling); !via.Has(session.ViaTrusted) {
+		t.Fatalf("sibling provenance = %v, want ViaTrusted", via)
 	}
 
 	code, body = fetch(t, resp.URL)
 	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
-		t.Fatal("approved sibling should serve editable")
-	}
-
-	// The tray lists exactly this grant, and revoking it ends the session
-	// without touching the OS-opened page.
-	if list := a.openedForEditing(); len(list) != 1 || list[0] != sibling {
-		t.Fatalf("openedForEditing = %v", list)
+		t.Fatal("the returned URL should serve the sibling with a save token")
 	}
 	tok := tokenAttrRe.FindStringSubmatch(body)
 	if tok == nil {
 		t.Fatal("no token in editable serve")
 	}
-	a.revokeOpened(sibling)
-	if list := a.openedForEditing(); len(list) != 0 {
-		t.Fatalf("grant survived revoke: %v", list)
-	}
-	code, _ = postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
-		"text/html", "<html><body>worm</body></html>")
-	if code != 401 {
-		t.Fatalf("save after revoke = %d, want 401", code)
+	if code, outSave := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
+		"text/html", "<html><body>week, edited</body></html>"); code != 200 {
+		t.Fatalf("the trusted sibling should save: %d %s", code, outSave)
 	}
 	if _, ok := s.sessions.LookupByPath(page); !ok {
-		t.Fatal("revoking the sibling killed the OS-opened page's session")
-	}
-	if code, body := fetchNav(t, target); code != 200 || strings.Contains(body, "htmlclaytoken") {
-		t.Fatal("revoked sibling should serve read-only again")
+		t.Fatal("trusting the folder killed the OS-opened page's session")
 	}
 }
 
@@ -1555,7 +1682,7 @@ func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
 	writeTestFile(t, cousin, "<html><body>codex</body></html>")
 
 	a := newTestApp(t, home)
-	a.rt.confirmOpen = func(string, string) (bool, error) { return true, nil }
+	a.rt.confirmTrust = func(string, string) (bool, error) { return true, nil }
 	granting, _ := a.openForTest(t, page)
 	if err := granting.sessions.GrantReadRoot(filepath.Join(home, "work")); err != nil {
 		t.Fatal(err)
@@ -1587,13 +1714,32 @@ func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
 		t.Fatalf("expected a fresh site for the cousin, have %d", len(a.sites))
 	}
 
-	// The granting origin still reads it token-free; the fresh origin serves it
-	// editable.
-	if _, body := fetch(t, fileURL(granting.port, relCousin)); strings.Contains(body, "htmlclaytoken") {
+	// The granting origin's OWN answer never carries the cousin's token; the
+	// fresh origin serves it editable. Redirects are deliberately not followed:
+	// the granting site answering "it lives on that other origin" is the correct
+	// behaviour, and following the hop would measure the fresh origin's response
+	// while pretending it came from the granting one. In a browser that hop is
+	// cross-origin, so the granting page cannot read it.
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	fromGranting, err := noRedirect.Get(fileURL(granting.port, relCousin))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantingBody, _ := io.ReadAll(fromGranting.Body)
+	fromGranting.Body.Close()
+	if strings.Contains(string(grantingBody), "htmlclaytoken") {
 		t.Fatal("granting origin received the cousin's token")
+	}
+	if _, ok := granting.sessions.LookupByPath(cousin); ok {
+		t.Fatal("granting origin received the cousin's token: it was minted there")
 	}
 	if code, body := fetch(t, resp.URL); code != 200 || !strings.Contains(body, "htmlclaytoken") {
 		t.Fatalf("fresh origin should serve editable: %d", code)
+	}
+	if !hasFolder(a.rt.cfg.TrustedFolderList(), filepath.Join(home, "work", "codex")) {
+		t.Fatalf("the banner's button must trust the cousin's own folder: %v", a.rt.cfg.TrustedFolderList())
 	}
 }
 
@@ -1611,10 +1757,12 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 	a := newTestApp(t, home)
 	var prompts int32
 	a.rt.confirm = countingDenyConfirm(&prompts)
-	a.rt.confirmOpen = func(string, string) (bool, error) { prompts++; return false, nil }
-	a.rt.confirmWorkspace = func(string, string) (bool, error) { prompts++; return false, nil }
+	a.rt.confirmTrust = func(string, string) (bool, error) {
+		atomic.AddInt32(&prompts, 1)
+		return false, nil
+	}
 
-	if err := a.addWorkspace(ws); err != nil {
+	if err := a.trustFolder(ws); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := a.openForTest(t, index)
@@ -1622,16 +1770,16 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 	relWeek := filepath.Join("thelaunch", "weeks", "week-02.htmlclay")
 	code, body := fetchNav(t, fileURL(s.port, relWeek))
 	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
-		t.Fatalf("workspace link should serve editable with no prompt: %d", code)
+		t.Fatalf("trusted-folder link should serve editable with no prompt: %d", code)
 	}
 	if strings.Contains(body, "htmlclay-banner") {
-		t.Fatal("a workspace page must not carry the read-only banner")
+		t.Fatal("a trusted-folder page must not carry the read-only banner")
 	}
 	if len(a.sites) != 1 {
-		t.Fatalf("workspace sibling created a site: %d", len(a.sites))
+		t.Fatalf("trusted-folder sibling created a site: %d", len(a.sites))
 	}
-	if via := s.sessions.Via(week); via != session.ViaWorkspace {
-		t.Fatalf("provenance = %v, want ViaWorkspace", via)
+	if via := s.sessions.Via(week); via != session.ViaTrusted {
+		t.Fatalf("provenance = %v, want ViaTrusted", via)
 	}
 
 	tok := tokenAttrRe.FindStringSubmatch(body)
@@ -1641,20 +1789,20 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
 		"text/html", "<html><body>week two, edited</body></html>")
 	if code != 200 {
-		t.Fatalf("workspace save = %d: %s", code, out)
+		t.Fatalf("trusted-folder save = %d: %s", code, out)
 	}
 	saved, _ := os.ReadFile(week)
 	if !strings.Contains(string(saved), "edited") {
 		t.Fatal("save did not reach disk")
 	}
 
-	// The worm bound: a silent fetch() of another workspace file gets bytes but
-	// no token and no registration.
+	// The worm bound: a silent fetch() of another file in the folder gets bytes
+	// but no token and no registration.
 	other := filepath.Join(ws, "notes.htmlclay")
 	writeTestFile(t, other, "<html><body>notes</body></html>")
 	code, body = fetchAsSubresource(t, fileURL(s.port, filepath.Join("thelaunch", "notes.htmlclay")))
 	if code != 200 {
-		t.Fatalf("workspace fetch = %d", code)
+		t.Fatalf("trusted-folder fetch = %d", code)
 	}
 	if strings.Contains(body, "htmlclaytoken") {
 		t.Fatal("a silent fetch() harvested a token")
@@ -1663,8 +1811,8 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 		t.Fatal("a silent fetch() auto-registered a file")
 	}
 
-	if atomic.LoadInt32(&prompts) != 0 {
-		t.Fatalf("%d prompt(s) fired inside a workspace", prompts)
+	if got := atomic.LoadInt32(&prompts); got != 0 {
+		t.Fatalf("%d prompt(s) fired inside a trusted folder", got)
 	}
 }
 
@@ -1685,9 +1833,9 @@ func TestWorkspaceFileNeverRegisteredInTwoSites(t *testing.T) {
 	siteA, _ := a.openForTest(t, pageA)
 	siteB, _ := a.openForTest(t, pageB)
 	if siteA == siteB {
-		t.Fatal("disjoint folders should be separate sites before the workspace exists")
+		t.Fatal("disjoint folders should be separate sites before the trusted folder exists")
 	}
-	if err := a.addWorkspace(ws); err != nil {
+	if err := a.trustFolder(ws); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1721,24 +1869,22 @@ func TestWorkspaceFileNeverRegisteredInTwoSites(t *testing.T) {
 		t.Fatalf("shared file registered in %d sites, want exactly 1", hosts)
 	}
 
-	// One of the two navigations served inline (200), the other redirected to
-	// the hosting origin.
+	// Neither navigation serves the shared file inline: the trusted folder owns
+	// its own origin, so both sites redirect there rather than one of them
+	// keeping the registration.
 	codes := []int{respA.StatusCode, respB.StatusCode}
-	sort.Ints(codes)
-	if codes[0] != 200 || codes[1] != 302 {
-		t.Fatalf("expected one 200 and one 302, got %v", codes)
+	if codes[0] != 302 || codes[1] != 302 {
+		t.Fatalf("both navigations should redirect to the trusted folder's origin, got %v", codes)
 	}
-	var redirected *http.Response
-	if respA.StatusCode == 302 {
-		redirected = respA
-	} else {
-		redirected = respB
-	}
-	loc := redirected.Header.Get("Location")
-	if loc == "" {
+	locA := respA.Header.Get("Location")
+	locB := respB.Header.Get("Location")
+	if locA == "" {
 		t.Fatal("redirect carried no Location")
 	}
-	if code, body := fetchNav(t, loc); code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if locA != locB {
+		t.Fatalf("both redirects must name the one hosting origin: %q vs %q", locA, locB)
+	}
+	if code, body := fetchNav(t, locA); code != 200 || !strings.Contains(body, "htmlclaytoken") {
 		t.Fatalf("hosting origin should serve editable: %d", code)
 	}
 }
@@ -1756,7 +1902,7 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 
 	a := newTestApp(t, home)
 	wsDialogs := 0
-	a.rt.confirmWorkspace = func(title, message string) (bool, error) {
+	a.rt.confirmTrust = func(title, message string) (bool, error) {
 		wsDialogs++
 		if !strings.Contains(message, index) || !strings.Contains(message, proj) {
 			t.Errorf("dialog must name the requesting file and the full folder: %q", message)
@@ -1779,38 +1925,164 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 		t.Fatalf("workspace-request = %d: %s", code, out)
 	}
 	if wsDialogs != 1 {
-		t.Fatalf("workspace dialog fired %d times", wsDialogs)
+		t.Fatalf("trust dialog fired %d times", wsDialogs)
 	}
 	found := false
-	for _, wf := range a.rt.cfg.WorkspaceFolderList() {
-		if wf.Path == proj {
+	for _, tf := range a.rt.cfg.TrustedFolderList() {
+		if tf.Path == proj {
 			found = true
-			if wf.Identity == "" {
-				t.Error("workspace stored without an identity fingerprint")
+			if tf.Identity == "" {
+				t.Error("trusted folder stored without an identity fingerprint")
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("workspace not recorded in config: %v", a.rt.cfg.WorkspaceFolderList())
+		t.Fatalf("trusted folder not recorded in config: %v", a.rt.cfg.TrustedFolderList())
 	}
 
-	// The promoted folder now auto-registers its files.
+	// The trusted folder now auto-registers its files.
 	code, body = fetchNav(t, fileURL(s.port, filepath.Join("proj", "week.htmlclay")))
 	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
-		t.Fatal("promoted workspace should auto-register its files")
+		t.Fatal("a trusted folder should auto-register its files")
 	}
 
-	// A Feature A token (ViaOpenRequest) cannot drive the workspace route.
+	// An auto-registered sibling is already covered, so its ask is answered
+	// from the declared list: 200, and no second dialog.
 	weekTok := tokenAttrRe.FindStringSubmatch(body)
-	if s.sessions.Via(week) != session.ViaWorkspace {
+	if s.sessions.Via(week) != session.ViaTrusted {
 		t.Fatalf("week provenance = %v", s.sessions.Via(week))
 	}
-	code, _ = postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, weekTok[1]), "", "")
-	if code != 403 {
-		t.Fatalf("non-OS-opened token drove workspace-request: %d", code)
+	code, out = postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, weekTok[1]), "", "")
+	if code != 200 || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("covered sibling ask = %d: %s", code, out)
 	}
 	if wsDialogs != 1 {
-		t.Fatal("a refused token still raised a dialog")
+		t.Fatal("a covered sibling raised a dialog")
+	}
+}
+
+// A trusted entry whose folder was deleted and recreated stops granting and
+// shows as dead in the tray. Approving the dialog again re-pins it to the folder
+// now on disk: without that, the entry stays dead forever and approving the
+// dialog never helps, so the page asks on every single load.
+//
+// FAILING, on purpose, at the re-pin half. handleTrustRequest answers a
+// covered file from Hooks.TrustedCovers, which is the app's deliberately
+// LEXICAL auto-registration gate and carries no identity check, so a dead entry
+// reports itself covered and the request returns {"ok":true} without ever
+// reaching Hooks.TrustRequest. The app's own trustFromPage would have asked,
+// because it goes through anchorFor and that does check the pin. The two halves
+// of the test are what they are today: the entry does stop granting and does
+// read as dead in the tray, and a page can no longer re-approve it.
+func TestWorkspaceRequestRepinsReplacedFolder(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	index := filepath.Join(proj, "index.htmlclay")
+	writeTestFile(t, index, "<html><body>index</body></html>")
+
+	a := newTestApp(t, home)
+	wsDialogs := 0
+	a.rt.confirmTrust = func(title, message string) (bool, error) {
+		wsDialogs++
+		return true, nil
+	}
+	s, _ := a.openForTest(t, index)
+
+	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
+	if code != 200 {
+		t.Fatal("index serve failed")
+	}
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("no token on the OS-opened page")
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, tok[1])
+
+	if code, out := postSameOrigin(t, url, "", ""); code != 200 {
+		t.Fatalf("first trust request = %d: %s", code, out)
+	}
+	if wsDialogs != 1 {
+		t.Fatalf("trust dialog fired %d times", wsDialogs)
+	}
+
+	// The folder is replaced on disk: the stored fingerprint no longer matches
+	// what is there, so the entry stops granting and reads as dead in the tray.
+	// The runtime root goes with it, the way a restart would simply never
+	// install a root for an entry that fails its identity check.
+	if _, ok := a.rt.cfg.SetTrustedIdentity(proj, "stale-identity"); !ok {
+		t.Fatal("no trusted entry to break")
+	}
+	s.sessions.RevokeTrustedRoot(proj)
+	if rows := a.trustedFolderRows(); len(rows) != 1 || !strings.HasSuffix(rows[0].Label, deadFolderSuffix) {
+		t.Fatalf("tray rows = %v, want the entry marked dead", rows)
+	}
+
+	if code, out := postSameOrigin(t, url, "", ""); code != 200 || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("re-approval trust request = %d: %s", code, out)
+	}
+	if wsDialogs != 2 {
+		t.Fatalf("trust dialog fired %d times; a dead entry must ask again", wsDialogs)
+	}
+	want := platform.DirIdentity(proj)
+	for _, tf := range a.rt.cfg.TrustedFolderList() {
+		if tf.Path == proj && tf.Identity != want {
+			t.Fatalf("identity = %q, want the folder now on disk (%q)", tf.Identity, want)
+		}
+	}
+	if rows := a.trustedFolderRows(); len(rows) != 1 || strings.HasSuffix(rows[0].Label, deadFolderSuffix) {
+		t.Fatalf("tray rows = %v, want the entry live again", rows)
+	}
+
+	// Live again, so the next ask is silent.
+	if code, out := postSameOrigin(t, url, "", ""); code != 200 || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("ask after the re-pin = %d: %s", code, out)
+	}
+	if wsDialogs != 2 {
+		t.Fatalf("trust dialog fired %d times; a re-pinned entry must not re-prompt", wsDialogs)
+	}
+}
+
+// deadFolderSuffix is the marker trustedFolderRows appends to an entry whose
+// directory is gone or whose identity pin no longer matches.
+const deadFolderSuffix = " (missing or replaced)"
+
+// Asking again for a folder that is already trusted grants nothing, so it is
+// answered without a dialog. A page that requests its folder on every load must
+// raise the prompt once, not once per reload.
+func TestWorkspaceRequestAlreadyCoveredSkipsDialog(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	index := filepath.Join(proj, "index.htmlclay")
+	writeTestFile(t, index, "<html><body>index</body></html>")
+
+	a := newTestApp(t, home)
+	wsDialogs := 0
+	a.rt.confirmTrust = func(title, message string) (bool, error) {
+		wsDialogs++
+		return true, nil
+	}
+	s, _ := a.openForTest(t, index)
+
+	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
+	if code != 200 {
+		t.Fatal("index serve failed")
+	}
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("no token on the OS-opened page")
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, tok[1])
+
+	if code, out := postSameOrigin(t, url, "", ""); code != 200 {
+		t.Fatalf("first trust request = %d: %s", code, out)
+	}
+	for i := 0; i < 3; i++ {
+		if code, out := postSameOrigin(t, url, "", ""); code != 200 || !strings.Contains(out, `"ok":true`) {
+			t.Fatalf("repeat trust request %d = %d: %s", i, code, out)
+		}
+	}
+	if wsDialogs != 1 {
+		t.Fatalf("trust dialog fired %d times; a repeat ask must not re-prompt", wsDialogs)
 	}
 }
 
@@ -1838,7 +2110,7 @@ func TestWorkspaceRefusalListByIdentity(t *testing.T) {
 		filepath.Join(home, "documents", "github"),
 	}
 	for _, dir := range refused {
-		if !a.isRefusedWorkspace(dir) {
+		if !a.rt.policy.RefuseOwnFolder(dir) {
 			t.Errorf("%s must be refused", dir)
 		}
 	}
@@ -1847,26 +2119,28 @@ func TestWorkspaceRefusalListByIdentity(t *testing.T) {
 		filepath.Join(home, "projects", "site"),
 	}
 	for _, dir := range allowed {
-		if a.isRefusedWorkspace(dir) {
+		if a.rt.policy.RefuseOwnFolder(dir) {
 			t.Errorf("%s must stay requestable", dir)
 		}
 	}
 
 	// The home root itself never reaches the list: canonicalization refuses it.
-	if _, err := a.canonicalTrusted(home); err == nil {
-		t.Error("home root must not canonicalize as a workspace candidate")
+	if _, err := a.rt.policy.Canonical(home); err == nil {
+		t.Error("home root must not canonicalize as a trust candidate")
 	}
 
 	// The tray route ignores the list: a deliberate picker choice of a
 	// protected folder still works.
-	if err := a.addWorkspace(filepath.Join(home, "Downloads")); err != nil {
+	if err := a.trustFolder(filepath.Join(home, "Downloads")); err != nil {
 		t.Errorf("tray route must not consult the refusal list: %v", err)
 	}
 }
 
-// Removing a workspace genuinely ends the capability: auto-registered tokens
-// die, files serve read-only again, and an OS-opened file in the same folder
-// keeps its session because its provenance survives.
+// Untrusting a folder genuinely ends the capability: auto-registered tokens
+// die and those files serve read-only again, while an OS-opened file in the
+// same folder keeps its session because a double-click is its own capability.
+// The origin closes, so the surviving file is re-homed and asked for by where
+// it lives now rather than where it lived before.
 func TestRemoveWorkspaceEndsCapability(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	ws := filepath.Join(home, "ws")
@@ -1876,7 +2150,7 @@ func TestRemoveWorkspaceEndsCapability(t *testing.T) {
 	writeTestFile(t, week, "<html><body>week</body></html>")
 
 	a := newTestApp(t, home)
-	if err := a.addWorkspace(ws); err != nil {
+	if err := a.trustFolder(ws); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := a.openForTest(t, index)
@@ -1885,48 +2159,118 @@ func TestRemoveWorkspaceEndsCapability(t *testing.T) {
 	_, body := fetchNav(t, fileURL(s.port, relWeek))
 	tok := tokenAttrRe.FindStringSubmatch(body)
 	if tok == nil {
-		t.Fatal("workspace file did not auto-register")
+		t.Fatal("trusted-folder file did not auto-register")
 	}
 
-	if err := a.removeWorkspace(ws); err != nil {
+	if err := a.untrustFolder(ws); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, ok := s.sessions.LookupByPath(week); ok {
-		t.Fatal("auto-registered file survived workspace removal")
+	// The OS-opened index keeps everything: its provenance is its own. It moves
+	// to the origin its own folder now anchors.
+	host := hostOf(t, a, index)
+	if _, ok := host.sessions.LookupByPath(week); ok {
+		t.Fatal("the auto-registered file survived the untrust")
 	}
-	code, _ := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
-		"text/html", "<html><body>worm</body></html>")
-	if code != 401 {
-		t.Fatalf("save after workspace removal = %d, want 401", code)
+	if code := postAllowingFailure(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", host.port, tok[1]),
+		"text/html", "<html><body>worm</body></html>"); code == 200 {
+		t.Fatal("a token minted under the trust must not save after the untrust")
 	}
-	if code, body := fetchNav(t, fileURL(s.port, relWeek)); code != 200 || strings.Contains(body, "htmlclaytoken") {
-		t.Fatal("removed workspace's file should serve read-only")
+	if code, body := fetchNav(t, fileURL(host.port, relWeek)); code != 200 || strings.Contains(body, "htmlclaytoken") {
+		t.Fatalf("the untrusted folder's file should serve read-only: %d", code)
 	}
-
-	// The OS-opened index keeps everything: its provenance is its own.
-	if _, ok := s.sessions.LookupByPath(index); !ok {
-		t.Fatal("OS-opened file lost its session on workspace removal")
-	}
-	if code, body := fetch(t, fileURL(s.port, filepath.Join("ws", "index.htmlclay"))); code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code, body := fetch(t, fileURL(host.port, filepath.Join("ws", "index.htmlclay"))); code != 200 || !strings.Contains(body, "htmlclaytoken") {
 		t.Fatal("OS-opened file should still serve editable")
 	}
 
-	// Accumulated provenance survives the partial revoke: a file both
-	// OS-opened and workspace-covered keeps its registration.
-	if err := a.addWorkspace(ws); err != nil {
+	// Accumulated provenance survives the untrust: a file both OS-opened and
+	// trusted-folder-covered keeps its registration.
+	if err := a.trustFolder(ws); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, ok := a.route(week, session.ViaOsOpen); !ok {
 		t.Fatal("explicit open failed")
 	}
-	if err := a.removeWorkspace(ws); err != nil {
+	if err := a.untrustFolder(ws); err != nil {
 		t.Fatal(err)
 	}
-	if via := s.sessions.Via(week); !via.Has(session.ViaOsOpen) {
-		t.Fatalf("OS-open provenance lost in workspace removal: %v", via)
+	host = hostOf(t, a, week)
+	if via := host.sessions.Via(week); !via.Has(session.ViaOsOpen) {
+		t.Fatalf("OS-open provenance lost when the folder was untrusted: %v", via)
 	}
-	if _, ok := s.sessions.LookupByPath(week); !ok {
-		t.Fatal("dual-provenance file lost its registration")
+}
+
+// Opening a file the site already holds must record that open on the existing
+// registration. A trusted-folder file the user then double-clicks is held two
+// ways, and untrusting the folder must not take away the open the user did.
+func TestOpeningAWorkspaceFileRecordsTheOpen(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	index := filepath.Join(proj, "index.htmlclay")
+	week := filepath.Join(proj, "week.htmlclay")
+	writeTestFile(t, index, "<html><body>index</body></html>")
+	writeTestFile(t, week, "<html><body>week</body></html>")
+
+	a := newTestApp(t, home)
+	a.rt.confirmTrust = func(string, string) (bool, error) { return true, nil }
+	s, _ := a.openForTest(t, index)
+
+	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
+	if code != 200 {
+		t.Fatal("index serve failed")
+	}
+	tok := tokenAttrRe.FindStringSubmatch(body)
+	if tok == nil {
+		t.Fatal("no token on the OS-opened page")
+	}
+	if code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, tok[1]), "", ""); code != 200 || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("trust request = %d: %s", code, out)
+	}
+
+	code, body = fetchNav(t, fileURL(s.port, filepath.Join("proj", "week.htmlclay")))
+	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+		t.Fatal("a trusted folder should auto-register its files")
+	}
+	weekTok := tokenAttrRe.FindStringSubmatch(body)
+	if weekTok == nil {
+		t.Fatal("no token on the auto-registered sibling")
+	}
+	if via := s.sessions.Via(week); via != session.ViaTrusted {
+		t.Fatalf("provenance = %v, want ViaTrusted alone", via)
+	}
+
+	// The user now double-clicks a file the site already holds.
+	a.openForTest(t, week)
+	via := s.sessions.Via(week)
+	if !via.Has(session.ViaTrusted) || !via.Has(session.ViaOsOpen) {
+		t.Fatalf("provenance = %v, want both ViaTrusted and ViaOsOpen", via)
+	}
+	f, ok := s.sessions.LookupByPath(week)
+	if !ok {
+		t.Fatal("the file lost its registration when it was opened again")
+	}
+	if f.Token != weekTok[1] {
+		t.Fatal("opening an already-open file minted a second token")
+	}
+
+	if err := a.untrustFolder(proj); err != nil {
+		t.Fatal(err)
+	}
+	// The untrust closes the folder's origin, so the file the user opened
+	// themselves is re-homed rather than left where it was. What must survive is
+	// the registration and the save, not the address.
+	host := hostOf(t, a, week)
+	f, ok = host.sessions.LookupByPath(week)
+	if !ok {
+		t.Fatal("untrusting the folder revoked a file the user had opened themselves: the open never accumulated onto the existing registration")
+	}
+	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", host.port, f.Token),
+		"text/html", "<html><body>week, edited</body></html>")
+	if code != 200 {
+		t.Fatalf("save after the untrust = %d: %s; the user's own open must keep the file saveable", code, out)
+	}
+	saved, _ := os.ReadFile(week)
+	if !strings.Contains(string(saved), "edited") {
+		t.Fatal("save did not reach disk")
 	}
 }

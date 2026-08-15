@@ -33,14 +33,31 @@ const (
 	brokerParkCap = 64
 )
 
-type brokerConfirm func(title, message string) (platform.ConfirmChoice, error)
+// brokerConfirm raises the read-permission dialog. allowTrust reports whether
+// the durable "Trust this folder" choice may be offered at all; the app decides
+// that from the candidate folder before the dialog is drawn.
+type brokerConfirm func(title, message string, allowTrust bool) (platform.ConfirmChoice, error)
 
 type trustFunc func(dir string) error
 
 // defaultConfirm is the confirm every new broker starts with. Production leaves
 // it as the real native dialog; the server test binary overrides it in an init()
 // so no test ever pops an actual dialog on the user's screen.
-var defaultConfirm brokerConfirm = platform.Confirm
+//
+// Suppressing the third button is a different dialog, not a disabled control:
+// two buttons is the platform's own two-button dialog, whose affirmative answer
+// can only ever be Allow Once. A platform that cannot draw three buttons already
+// folds Trust down to Allow Once, which errs toward less permission.
+var defaultConfirm brokerConfirm = func(title, message string, allowTrust bool) (platform.ConfirmChoice, error) {
+	if allowTrust {
+		return platform.Confirm(title, message)
+	}
+	ok, err := platform.ConfirmWithButtons(title, message, "Allow")
+	if err != nil || !ok {
+		return platform.ConfirmDeny, err
+	}
+	return platform.ConfirmAllowOnce, nil
+}
 
 type parkWaiter struct {
 	path string
@@ -57,6 +74,10 @@ type broker struct {
 	logger   *logging.Logger
 	confirm  brokerConfirm
 	trust    trustFunc
+	// mayTrust reports whether the trust option may be offered for a folder.
+	// Nil means never offer it, which is what a server with no app behind it
+	// wants: it has nowhere to record a durable decision.
+	mayTrust func(dir string) bool
 	home     string
 	label    string
 
@@ -83,7 +104,7 @@ func newBroker(sessions *session.Manager, logger *logging.Logger, confirm broker
 }
 
 // runPrompt runs fn — a native dialog raised outside the grant pipeline (the
-// open-request and workspace-request confirms) — under the broker's one
+// open-request and trust-request confirms) — under the broker's one
 // prompting flag, so no two native dialogs can ever be on screen at once. A
 // second dialog timed to appear under a click aimed at the first's Deny is the
 // attack this serializes away. It waits for any grant prompt in flight, and
@@ -237,10 +258,11 @@ func (b *broker) flush() {
 	b.waiters = rest
 	confirm := b.confirm
 	trust := b.trust
+	mayTrust := b.mayTrust
 	b.mu.Unlock()
 
 	denyAll(denied)
-	b.decide(group, lca, confirm, trust)
+	b.decide(group, lca, confirm, trust, mayTrust)
 
 	b.mu.Lock()
 	b.prompting = false
@@ -251,7 +273,7 @@ func (b *broker) flush() {
 
 // decide runs the native prompt (outside the lock) and resolves the group, plus
 // any waiter parked during the prompt that the grant now covers.
-func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm, trust trustFunc) {
+func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm, trust trustFunc, mayTrust func(string) bool) {
 	// Resolve the folder we are about to name and to grant, so the dialog, the log,
 	// the tray, and the installed capability all agree on one directory. Before
 	// this, a symlinked folder was named by the alias the page used and granted by
@@ -268,8 +290,14 @@ func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm, 
 		grantPath = filepath.Clean(resolved)
 	}
 
-	title, msg := b.dialogText(grantPath)
-	choice, err := confirm(title, msg)
+	// Decide whether the durable choice may be offered BEFORE drawing the
+	// dialog, and on the resolved path, so the button the user sees is one that
+	// can actually be honored. With no trust hook wired there is nowhere to
+	// record the decision, so the option is not offered either.
+	allowTrust := trust != nil && mayTrust != nil && mayTrust(grantPath)
+
+	title, msg := b.dialogText(grantPath, allowTrust)
+	choice, err := confirm(title, msg, allowTrust)
 	if err != nil {
 		b.logger.Printf("broker: confirm error for %s: %v", grantPath, err)
 		choice = platform.ConfirmDeny
@@ -304,19 +332,14 @@ func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm, 
 	// The durable half of "Trust this folder". The read root above is installed
 	// either way, so the page works even when this is refused: the folder simply
 	// asks again next launch. Trust is deliberately the second step, never a
-	// replacement for the grant, because a trusted folder only seeds sites whose
-	// opened file lives inside it, and the folder in this dialog is often a cousin
-	// of the opened page rather than an ancestor of it.
-	if choice == platform.ConfirmTrustFolder {
-		switch {
-		case trust == nil:
-			b.logger.Printf("broker: no trust hook wired, %s is granted for this session only", grantPath)
-		default:
-			if tErr := trust(grantPath); tErr != nil {
-				b.logger.Printf("broker: could not trust %s: %v", grantPath, tErr)
-			} else {
-				b.logger.Printf("broker: trusted folder added from prompt: %s", grantPath)
-			}
+	// replacement for the grant, because the folder in this dialog is often a
+	// cousin of the opened page rather than an ancestor of it, and the page must
+	// keep reading through the grant whatever the durable half does.
+	if choice == platform.ConfirmTrustFolder && allowTrust {
+		if tErr := trust(grantPath); tErr != nil {
+			b.logger.Printf("broker: could not trust %s: %v", grantPath, tErr)
+		} else {
+			b.logger.Printf("broker: trusted folder added from prompt: %s", grantPath)
 		}
 	}
 
@@ -341,13 +364,27 @@ func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm, 
 	}
 }
 
-func (b *broker) dialogText(lca string) (string, string) {
+// dialogText writes the prompt. The two-button wording is the honest one when
+// the only affirmative answer is a session-long read. The three-button wording
+// has to describe BOTH outcomes, because Trust is no longer a durable read: it
+// is the app's one write-granting permission, and this sentence is the only
+// place the user is told so.
+func (b *broker) dialogText(lca string, allowTrust bool) (string, string) {
 	who := b.label
 	if who == "" {
 		who = "A page you opened in HTML Clay"
 	}
-	msg := fmt.Sprintf("%s is trying to read files in:\n\n%s\n\nAllow read-only access to that folder and everything inside it?", who, lca)
-	return "HTML Clay", msg
+	if !allowTrust {
+		return "HTML Clay", fmt.Sprintf(
+			"%s is trying to read files in:\n\n%s\n\nAllow read-only access to that folder and everything inside it?",
+			who, lca)
+	}
+	return "HTML Clay", fmt.Sprintf(
+		"%s is trying to read files in:\n\n%s\n\n"+
+			"Allow Once gives it read-only access to that folder until you quit.\n\n"+
+			"Trust This Folder is permanent: every HTML Clay file in it opens editable with no prompts, "+
+			"including files added later, and any file in it can change any other.",
+		who, lca)
 }
 
 func (b *broker) suppress(root string) {

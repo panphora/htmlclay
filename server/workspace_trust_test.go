@@ -48,7 +48,7 @@ func TestSaveStripsBanner(t *testing.T) {
 	}
 }
 
-// A workspace registration's write capability dies with its workspace root,
+// A trusted-folder registration's write capability dies with its trusted root,
 // even for a token a page is still holding: the save-time recheck refuses the
 // write after the root is revoked. A file the user OS-opened is untouched.
 func TestWorkspaceSaveRecheckAfterRootRevoked(t *testing.T) {
@@ -66,12 +66,12 @@ func TestWorkspaceSaveRecheckAfterRootRevoked(t *testing.T) {
 	}
 
 	mgr := newTestManager(t, homeDir)
-	if err := mgr.InstallWorkspaceRoot(ws); err != nil {
-		t.Fatalf("install workspace: %v", err)
+	if err := mgr.InstallTrustedRoot(ws); err != nil {
+		t.Fatalf("install trusted root: %v", err)
 	}
-	wsReg, err := mgr.Register(wsFile, session.ViaWorkspace)
+	wsReg, err := mgr.Register(wsFile, session.ViaTrusted)
 	if err != nil {
-		t.Fatalf("register workspace file: %v", err)
+		t.Fatalf("register trusted-folder file: %v", err)
 	}
 	openedReg, err := mgr.Register(openedFile, session.ViaOsOpen)
 	if err != nil {
@@ -90,16 +90,16 @@ func TestWorkspaceSaveRecheckAfterRootRevoked(t *testing.T) {
 	}
 
 	if code := save(wsReg); code != 200 {
-		t.Fatalf("workspace save before revoke = %d", code)
+		t.Fatalf("trusted-folder save before revoke = %d", code)
 	}
 
-	mgr.RevokeWorkspaceRoot(ws)
+	mgr.RevokeTrustedRoot(ws)
 
 	if code := save(wsReg); code != 401 {
-		t.Fatalf("workspace save after revoke = %d, want 401", code)
+		t.Fatalf("trusted-folder save after revoke = %d, want 401", code)
 	}
 	if code := save(openedReg); code != 200 {
-		t.Fatalf("OS-opened save after workspace revoke = %d, want 200", code)
+		t.Fatalf("OS-opened save after trusted revoke = %d, want 200", code)
 	}
 }
 
@@ -137,7 +137,7 @@ func TestRunPromptSerializesWithGrantPrompt(t *testing.T) {
 		inPrompt.Add(-1)
 	}
 
-	b := newBroker(mgr, logging.NewStdout(), func(string, string) (platform.ConfirmChoice, error) {
+	b := newBroker(mgr, logging.NewStdout(), func(string, string, bool) (platform.ConfirmChoice, error) {
 		enter()
 		return platform.ConfirmDeny, nil
 	})
@@ -177,9 +177,11 @@ func TestOpenRequestEndpointFlow(t *testing.T) {
 
 	var opened []string
 	allow := true
-	srv.SetOpenRequest(func(absPath string) (string, bool) {
-		opened = append(opened, absPath)
-		return "http://127.0.0.1:1/opened", allow
+	srv.SetHooks(Hooks{
+		TrustRequest: func(absPath string, _ bool) (string, bool) {
+			opened = append(opened, absPath)
+			return "http://127.0.0.1:1/opened", allow
+		},
 	})
 
 	host := fmt.Sprintf("127.0.0.1:%d", srv.port)
@@ -275,9 +277,9 @@ func TestOpenRequestEndpointFlow(t *testing.T) {
 	}
 }
 
-// The endpoint-level Feature B gate: only a token whose file the human
-// personally opened may ask, the folder is derived server-side, and a deny
-// suppresses the folder.
+// The endpoint-level Feature B gate: only a file the user opened themselves may
+// ask; the folder is derived server-side; the dialog is told which way the file
+// was reached; and a deny suppresses the folder.
 func TestWorkspaceRequestEndpointGates(t *testing.T) {
 	srv, osOpened, _ := setupHandlerTest(t)
 	dir := registerSubdirPage(t, srv, "proj")
@@ -285,16 +287,20 @@ func TestWorkspaceRequestEndpointGates(t *testing.T) {
 	if err := os.WriteFile(pageOpened, []byte("<html></html>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	linkedReg, err := srv.sessions.Register(pageOpened, session.ViaOpenRequest)
+	linkedReg, err := srv.sessions.Register(pageOpened, session.ViaTrusted)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var asked []string
+	var openedFlags []bool
 	allow := true
-	srv.SetWorkspaceRequest(func(requestingFile string) bool {
-		asked = append(asked, requestingFile)
-		return allow
+	srv.SetHooks(Hooks{
+		TrustRequest: func(requestingFile string, openedByUser bool) (string, bool) {
+			asked = append(asked, requestingFile)
+			openedFlags = append(openedFlags, openedByUser)
+			return "", allow
+		},
 	})
 
 	host := fmt.Sprintf("127.0.0.1:%d", srv.port)
@@ -310,18 +316,27 @@ func TestWorkspaceRequestEndpointGates(t *testing.T) {
 	if w := post("not-a-token"); w.Code != 401 {
 		t.Fatalf("bad token = %d, want 401", w.Code)
 	}
+	// A file the user did NOT open themselves cannot declare trust. A token that
+	// was minted for any other reason must never reach the dialog, or a page
+	// could bootstrap a durable write grant out of a registration it did not ask
+	// a human for.
 	if w := post(linkedReg.Token); w.Code != 403 {
-		t.Fatalf("non-OS-opened token = %d, want 403", w.Code)
+		t.Fatalf("token for a file the user never opened = %d, want 403", w.Code)
 	}
 	if len(asked) != 0 {
-		t.Fatal("a non-OS-opened token reached the dialog")
+		t.Fatalf("a file the user never opened reached the dialog: %v", asked)
 	}
+	asked = nil
+	openedFlags = nil
 
 	if w := post(osOpened.Token); w.Code != 200 {
 		t.Fatalf("OS-opened token = %d", w.Code)
 	}
 	if len(asked) != 1 || asked[0] != osOpened.AbsPath {
 		t.Fatalf("dialog saw %v, want [%s]", asked, osOpened.AbsPath)
+	}
+	if len(openedFlags) != 1 || !openedFlags[0] {
+		t.Fatalf("OS-opened ask reported openedByUser = %v, want [true]", openedFlags)
 	}
 
 	// After a deny, the folder stops asking for the session.
@@ -334,6 +349,180 @@ func TestWorkspaceRequestEndpointGates(t *testing.T) {
 	}
 	if len(asked) != 2 {
 		t.Fatalf("dialog count = %d, want 2 (suppression must skip the third)", len(asked))
+	}
+}
+
+// A deny must answer the asks already queued behind the dialog. Selecting a
+// folder of files and opening them at once queues one workspace ask per file;
+// without the second refusal check inside the prompt lock, every ask that
+// cleared the outer check before the user said No goes on to raise its own
+// dialog.
+func TestWorkspaceRequestDenySuppressesQueuedAsks(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	dir := registerSubdirPage(t, srv, "proj")
+
+	var tokens []string
+	for _, name := range []string{"a.htmlclay", "b.htmlclay", "c.htmlclay"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("<html><body>doc</body></html>"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		f, err := srv.sessions.Register(p, session.ViaOsOpen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens = append(tokens, f.Token)
+	}
+
+	var asks atomic.Int32
+	release := make(chan struct{})
+	srv.SetHooks(Hooks{
+		TrustRequest: func(requestingFile string, openedByUser bool) (string, bool) {
+			if asks.Add(1) == 1 {
+				<-release
+				// The refusal the handler records a few instructions after this
+				// returns, recorded here instead so the interleaving under test is
+				// pinned rather than raced: the other asks are parked inside
+				// runPrompt right now, and what they do when they wake is the whole
+				// question.
+				srv.suppressTrustDenied(filepath.Dir(requestingFile))
+			}
+			return "", false
+		},
+	})
+
+	host := fmt.Sprintf("127.0.0.1:%d", srv.port)
+	codes := make(chan int, len(tokens))
+	post := func(token string) {
+		req := httptest.NewRequest("POST", "/_/workspace-request/"+token, nil)
+		req.Host = host
+		sameOriginHeaders(req)
+		w := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(w, req)
+		codes <- w.Code
+	}
+
+	go post(tokens[0])
+	deadline := time.Now().Add(2 * time.Second)
+	for asks.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if asks.Load() != 1 {
+		t.Fatal("the first ask never reached the dialog")
+	}
+	for _, tok := range tokens[1:] {
+		go post(tok)
+	}
+	// Generous margin for the queued asks to clear the outer refusal check and
+	// park inside runPrompt before the first one is answered.
+	time.Sleep(300 * time.Millisecond)
+	close(release)
+
+	for range tokens {
+		if code := <-codes; code != 403 {
+			t.Fatalf("queued ask = %d, want 403", code)
+		}
+	}
+	if n := asks.Load(); n != 1 {
+		t.Fatalf("dialog fired %d times; a deny must answer the asks queued behind it", n)
+	}
+}
+
+// A file already inside a LIVE trusted folder is answered from the app: no
+// dialog, and no refusal either. A page that asks on every load would otherwise
+// log a refusal for every sibling on every view — note the registration here is
+// ViaTrusted, so this silent answer has to come out ahead of the provenance
+// check that would refuse it.
+func TestWorkspaceRequestCoveredFileIsSilent(t *testing.T) {
+	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
+	ws := filepath.Join(homeDir, "ws")
+	auto := filepath.Join(ws, "auto.htmlclay")
+	if err := os.MkdirAll(ws, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(auto, []byte("<html><body>doc</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := newTestManager(t, homeDir)
+	if err := mgr.InstallTrustedRoot(ws); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := mgr.Register(auto, session.ViaTrusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(listen(t), mgr, logging.NewStdout(), versions.New(t.TempDir()))
+	asked := 0
+	srv.SetHooks(Hooks{
+		TrustedCovers: func(absPath string) bool { return session.EqualOrUnder(absPath, ws) },
+		TrustedLive:   func(absPath string) bool { return session.EqualOrUnder(absPath, ws) },
+		TrustRequest: func(string, bool) (string, bool) {
+			asked++
+			return "", false
+		},
+	})
+
+	req := httptest.NewRequest("POST", "/_/workspace-request/"+reg.Token, nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	sameOriginHeaders(req)
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("covered file ask = %d: %s", w.Code, w.Body.String())
+	}
+	if asked != 0 {
+		t.Fatalf("a covered file raised %d dialog(s)", asked)
+	}
+}
+
+// The silent answer above must come from the LIVE question, not the lexical one.
+// A trusted folder deleted and recreated still covers its files by path while
+// granting them nothing: answering yes from that would tell the page it is
+// already trusted and it would never reach the dialog that re-pins the folder now
+// on disk, leaving the one page route into trust permanently dead for that
+// folder. Only TrustedLive differs from the test above.
+func TestWorkspaceRequestBrokenPinStillAsks(t *testing.T) {
+	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
+	ws := filepath.Join(homeDir, "ws")
+	opened := filepath.Join(ws, "opened.htmlclay")
+	if err := os.MkdirAll(ws, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opened, []byte("<html><body>doc</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := newTestManager(t, homeDir)
+	reg, err := mgr.Register(opened, session.ViaOsOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(listen(t), mgr, logging.NewStdout(), versions.New(t.TempDir()))
+	asked := 0
+	srv.SetHooks(Hooks{
+		TrustedCovers: func(absPath string) bool { return session.EqualOrUnder(absPath, ws) },
+		TrustedLive:   func(string) bool { return false },
+		TrustRequest: func(string, bool) (string, bool) {
+			asked++
+			return "", true
+		},
+	})
+
+	req := httptest.NewRequest("POST", "/_/workspace-request/"+reg.Token, nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	sameOriginHeaders(req)
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+
+	if asked != 1 {
+		t.Fatalf("a folder whose pin no longer matches must still be able to ask: dialogs raised = %d", asked)
+	}
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("re-approval = %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -358,7 +547,7 @@ func TestWorkspaceAutoRegisterBranch(t *testing.T) {
 	}
 
 	mgr := newTestManager(t, homeDir)
-	if err := mgr.InstallWorkspaceRoot(ws); err != nil {
+	if err := mgr.InstallTrustedRoot(ws); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mgr.Register(anchor, session.ViaOsOpen); err != nil {
@@ -369,11 +558,14 @@ func TestWorkspaceAutoRegisterBranch(t *testing.T) {
 	srv := New(listen(t), mgr, logging.NewStdout(), versions.New(versionsDir))
 	// The seam registers into this same manager, standing in for route()
 	// landing the registration in this site.
-	srv.SetRegisterSeam(func(absPath string) (string, bool) {
-		if _, err := mgr.Register(absPath, session.ViaWorkspace); err != nil {
-			return "", false
-		}
-		return "http://" + fmt.Sprintf("127.0.0.1:%d", srv.port) + "/", true
+	srv.SetHooks(Hooks{
+		TrustedCovers: func(absPath string) bool { return session.EqualOrUnder(absPath, ws) },
+		Route: func(absPath string) (string, bool) {
+			if _, err := mgr.Register(absPath, session.ViaTrusted); err != nil {
+				return "", false
+			}
+			return "http://" + fmt.Sprintf("127.0.0.1:%d", srv.port) + "/", true
+		},
 	})
 
 	host := fmt.Sprintf("127.0.0.1:%d", srv.port)
@@ -388,12 +580,12 @@ func TestWorkspaceAutoRegisterBranch(t *testing.T) {
 		return w
 	}
 
-	// A document load of a workspace sibling auto-registers and serves a token.
+	// A document load of a trusted-folder sibling auto-registers and serves a token.
 	w := get("ws/week.htmlclay", "document")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "htmlclaytoken") {
-		t.Fatalf("workspace document load: %d, token=%v", w.Code, strings.Contains(w.Body.String(), "htmlclaytoken"))
+		t.Fatalf("trusted-folder document load: %d, token=%v", w.Code, strings.Contains(w.Body.String(), "htmlclaytoken"))
 	}
-	if mgr.Via(linked) != session.ViaWorkspace {
+	if mgr.Via(linked) != session.ViaTrusted {
 		t.Fatalf("linked file provenance = %v", mgr.Via(linked))
 	}
 

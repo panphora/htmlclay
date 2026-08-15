@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/panphora/htmlclay/session"
 )
 
 // get drives the handler the same way the mux would, but directly, so a test names the path value
@@ -393,11 +395,16 @@ func TestDataRequestDoesNotAutoRegister(t *testing.T) {
 	}
 	sibling := writeHome(t, srv, "ws/sibling.htmlclay", "<html><body><h1>S</h1></body></html>")
 
-	srv.registerSeam = func(string) (string, bool) {
-		t.Error("a data request reached the auto-registration seam")
-		return "", false
-	}
-	if err := srv.sessions.InstallWorkspaceRoot(ws); err != nil {
+	// Trusted scope and the routing seam are both wired, so the only thing left
+	// to stop the registration is the data-request branch itself.
+	srv.SetHooks(Hooks{
+		TrustedCovers: func(absPath string) bool { return session.EqualOrUnder(absPath, ws) },
+		Route: func(string) (string, bool) {
+			t.Error("a data request reached the auto-registration seam")
+			return "", false
+		},
+	})
+	if err := srv.sessions.InstallTrustedRoot(ws); err != nil {
 		t.Fatal(err)
 	}
 

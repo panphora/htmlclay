@@ -451,9 +451,12 @@ func TestAssetRootOpenedReportsProvenance(t *testing.T) {
 	}
 }
 
-// ReadRoots reports each installed root's provenance independently, so the tray
-// can show only the runtime grants, and returns them sorted by path.
-func TestReadRootsReportsProvenance(t *testing.T) {
+// Each installed root carries its provenance independently: an opened root and a
+// granted root are readable but NOT trusted (trust is the one write-granting
+// kind), and revoking the grant on a trusted-and-granted root leaves the trust
+// standing. Collapsing the flags into one kind is what let a grant revoke take
+// away a capability an open or a trust had created.
+func TestRootProvenanceFlagsAreIndependent(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	os.MkdirAll(filepath.Join(home, "opened"), 0755)
 	os.MkdirAll(filepath.Join(home, "granted"), 0755)
@@ -472,29 +475,43 @@ func TestReadRootsReportsProvenance(t *testing.T) {
 		t.Fatalf("trust: %v", err)
 	}
 
-	roots := m.ReadRoots()
-	if len(roots) != 3 {
-		t.Fatalf("ReadRoots = %d roots, want 3: %+v", len(roots), roots)
+	opened := filepath.Join(home, "opened", "x.css")
+	granted := filepath.Join(home, "granted", "x.css")
+	trusted := filepath.Join(home, "trusted", "x.css")
+
+	if _, _, isOpened, ok := m.AssetRootOpened(opened); !ok || !isOpened {
+		t.Errorf("opened root should report opened=true (ok=%v opened=%v)", ok, isOpened)
 	}
-	by := make(map[string]RootInfo, len(roots))
-	for _, r := range roots {
-		by[r.Path] = r
+	if m.TrustedCovers(opened) {
+		t.Error("an opened root must not be trusted: an open grants reads, never durable write scope")
 	}
 
-	if r := by[filepath.Join(home, "opened")]; !r.Opened || r.Granted || r.Trusted {
-		t.Errorf("opened root = %+v, want Opened only", r)
+	if _, _, isOpened, ok := m.AssetRootOpened(granted); !ok || isOpened {
+		t.Errorf("grant-only root should report opened=false (ok=%v opened=%v)", ok, isOpened)
 	}
-	if r := by[filepath.Join(home, "granted")]; !r.Granted || r.Opened || r.Trusted {
-		t.Errorf("granted root = %+v, want Granted only", r)
-	}
-	if r := by[filepath.Join(home, "trusted")]; !r.Trusted || r.Opened || r.Granted {
-		t.Errorf("trusted root = %+v, want Trusted only", r)
+	if m.TrustedCovers(granted) {
+		t.Error("a granted root must not be trusted: a read grant must never become write authority")
 	}
 
-	for i := 1; i < len(roots); i++ {
-		if roots[i-1].Path > roots[i].Path {
-			t.Errorf("ReadRoots not sorted by path: %q before %q", roots[i-1].Path, roots[i].Path)
-		}
+	if _, _, isOpened, ok := m.AssetRootOpened(trusted); !ok || isOpened {
+		t.Errorf("trusted root should be readable and report opened=false (ok=%v opened=%v)", ok, isOpened)
+	}
+	if !m.TrustedCovers(trusted) {
+		t.Error("a trusted root must report itself trusted")
+	}
+
+	// A grant revoke aimed at each root touches only the granted flag.
+	m.RevokeReadRoot(filepath.Join(home, "granted"))
+	if _, _, ok := m.AssetRoot(granted); ok {
+		t.Error("revoking a grant-only root must remove it")
+	}
+	m.RevokeReadRoot(filepath.Join(home, "opened"))
+	if _, _, ok := m.AssetRoot(opened); !ok {
+		t.Error("revoking a grant must not remove the opened file's own read root")
+	}
+	m.RevokeReadRoot(filepath.Join(home, "trusted"))
+	if !m.TrustedCovers(trusted) {
+		t.Error("revoking a grant must never take away a trusted root")
 	}
 }
 

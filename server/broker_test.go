@@ -29,13 +29,13 @@ func mustWrite(t *testing.T, path string) {
 // tests starts from defaultConfirm, so pinning it to deny here keeps osascript
 // off the screen even for tests that never touch the broker directly.
 func init() {
-	defaultConfirm = func(string, string) (platform.ConfirmChoice, error) {
+	defaultConfirm = func(string, string, bool) (platform.ConfirmChoice, error) {
 		return platform.ConfirmDeny, nil
 	}
 }
 
 func countingConfirm(choice platform.ConfirmChoice, n *int32) brokerConfirm {
-	return func(string, string) (platform.ConfirmChoice, error) {
+	return func(string, string, bool) (platform.ConfirmChoice, error) {
 		atomic.AddInt32(n, 1)
 		return choice, nil
 	}
@@ -130,7 +130,7 @@ func TestBrokerContextCancel(t *testing.T) {
 	mgr, home := brokerManager(t)
 	// A confirm that blocks forever would hold the prompt; use a slow deny so the
 	// waiter is parked when we cancel.
-	b := newBroker(mgr, logging.NewStdout(), func(string, string) (platform.ConfirmChoice, error) {
+	b := newBroker(mgr, logging.NewStdout(), func(string, string, bool) (platform.ConfirmChoice, error) {
 		time.Sleep(2 * time.Second)
 		return platform.ConfirmDeny, nil
 	})
@@ -207,7 +207,7 @@ func TestBrokerShutdownReleasesParkedWaiters(t *testing.T) {
 	mgr, home := brokerManager(t)
 	gate := make(chan struct{})
 	defer close(gate)
-	b := newBroker(mgr, logging.NewStdout(), func(string, string) (platform.ConfirmChoice, error) {
+	b := newBroker(mgr, logging.NewStdout(), func(string, string, bool) (platform.ConfirmChoice, error) {
 		<-gate
 		return platform.ConfirmDeny, nil
 	})
@@ -247,7 +247,7 @@ func TestBrokerParkCapDeniesOverflow(t *testing.T) {
 	mgr, home := brokerManager(t)
 	gate := make(chan struct{})
 	defer close(gate)
-	b := newBroker(mgr, logging.NewStdout(), func(string, string) (platform.ConfirmChoice, error) {
+	b := newBroker(mgr, logging.NewStdout(), func(string, string, bool) (platform.ConfirmChoice, error) {
 		<-gate
 		return platform.ConfirmDeny, nil
 	})
@@ -284,7 +284,7 @@ func TestBrokerSuppressionDuringPromptNoReprompt(t *testing.T) {
 	mgr, home := brokerManager(t)
 	var prompts int32
 	gate := make(chan struct{})
-	b := newBroker(mgr, logging.NewStdout(), func(string, string) (platform.ConfirmChoice, error) {
+	b := newBroker(mgr, logging.NewStdout(), func(string, string, bool) (platform.ConfirmChoice, error) {
 		atomic.AddInt32(&prompts, 1)
 		<-gate
 		return platform.ConfirmDeny, nil
@@ -324,7 +324,7 @@ func TestBrokerWakesWaiterParkedDuringPrompt(t *testing.T) {
 	mustWrite(t, filepath.Join(proj, "sub", "y.js"))
 
 	gate := make(chan struct{})
-	b := newBroker(mgr, logging.NewStdout(), func(string, string) (platform.ConfirmChoice, error) {
+	b := newBroker(mgr, logging.NewStdout(), func(string, string, bool) (platform.ConfirmChoice, error) {
 		<-gate
 		return platform.ConfirmAllowOnce, nil
 	})
@@ -366,6 +366,7 @@ func TestTrustFolderChoiceGrantsAndTrusts(t *testing.T) {
 
 	var prompts int32
 	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
+	b.mayTrust = func(string) bool { return true }
 	// The waiter is woken before the trust hook runs, so the trusted folder arrives
 	// on its own goroutine and is collected through a channel.
 	trusted := make(chan string, 4)
@@ -404,6 +405,7 @@ func TestTrustFolderChoiceStillGrantsWhenTrustFails(t *testing.T) {
 
 	var prompts int32
 	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
+	b.mayTrust = func(string) bool { return true }
 	b.trust = func(string) error { return fmt.Errorf("refused") }
 
 	if !b.await(context.Background(), asset) {
@@ -422,6 +424,9 @@ func TestAllowOnceDoesNotTrust(t *testing.T) {
 
 	var prompts int32
 	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmAllowOnce, &prompts))
+	// The durable choice is offered, so the refusal under test is the answer
+	// itself rather than a suppressed button.
+	b.mayTrust = func(string) bool { return true }
 	var trustCalls int32
 	b.trust = func(string) error {
 		atomic.AddInt32(&trustCalls, 1)
@@ -433,6 +438,49 @@ func TestAllowOnceDoesNotTrust(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&trustCalls); got != 0 {
 		t.Errorf("allow-once must never trust the folder: got %d trust calls", got)
+	}
+}
+
+// The durable choice is decided BEFORE the dialog is drawn: a folder mayTrust
+// refuses is never offered, and an answer of ConfirmTrustFolder from a dialog
+// that could not have offered it grants the read without recording anything.
+// Drawing the button always and refusing afterwards asked the user for a choice
+// that could not be honored.
+func TestMayTrustFalseSuppressesTheChoiceAndTheTrust(t *testing.T) {
+	mgr, home := brokerManager(t)
+	asset := filepath.Join(home, "Downloads", "sketchy", "x.js")
+	mustWrite(t, asset)
+
+	var offered atomic.Bool
+	offered.Store(true)
+	b := newBroker(mgr, logging.NewStdout(), func(_, _ string, allowTrust bool) (platform.ConfirmChoice, error) {
+		offered.Store(allowTrust)
+		return platform.ConfirmTrustFolder, nil
+	})
+	var mayTrustCalls, trustCalls int32
+	b.mayTrust = func(string) bool {
+		atomic.AddInt32(&mayTrustCalls, 1)
+		return false
+	}
+	b.trust = func(string) error {
+		atomic.AddInt32(&trustCalls, 1)
+		return nil
+	}
+
+	if !b.await(context.Background(), asset) {
+		t.Fatal("a refused durable choice must still allow the read")
+	}
+	if atomic.LoadInt32(&mayTrustCalls) == 0 {
+		t.Error("the durable choice must be gated by mayTrust before the dialog")
+	}
+	if offered.Load() {
+		t.Error("the dialog was offered the trust choice for a folder mayTrust refused")
+	}
+	if got := atomic.LoadInt32(&trustCalls); got != 0 {
+		t.Errorf("a trust answer from a dialog that could not offer it must record nothing: got %d trust calls", got)
+	}
+	if _, _, ok := mgr.AssetRoot(asset); !ok {
+		t.Error("the read root must still be installed")
 	}
 }
 

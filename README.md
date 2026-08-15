@@ -41,7 +41,7 @@ No cloud. No accounts. No build step. The file is just HTML.
 2. **True portability** — A `.htmlclay` file works offline, locally, with no infrastructure. Email it, Dropbox it, AirDrop it, git it.
 3. **Low barrier for developers** — Write HTML + a small JS save call + rename to `.htmlclay`. That's it.
 4. **One-click OS integration** — File extension associates with the app. Double-click to open. No registration, no login.
-5. **App-like experience** — Opens in a chromeless window that looks and feels like a native app, not a browser tab.
+5. **A project is one place** — Trust a folder and every `.htmlclay` file in it opens editable at a stable local address that survives a restart, so links between them work and a bookmark keeps working.
 6. **Platform potential** — The same `.htmlclay` file could eventually run both locally and on a web hosting platform.
 
 ## What does a `.htmlclay` file look like?
@@ -129,7 +129,7 @@ For a deeper exploration of the problem and the landscape of existing solutions,
 
 ## Security
 
-HTML Clay only saves files you chose: a file you opened yourself, a file you approved from its read-only banner, or a file inside a folder you declared a workspace. A page can only read inside the folder you opened it from; anything outside that pauses and asks. [`SECURITY.md`](SECURITY.md) explains the model, what each protection covers, and the current known limitations.
+HTML Clay only saves files you chose: a file you opened yourself, or a file inside a folder you have trusted. A page can only read inside the folder you opened it from; anything outside that pauses and asks. [`SECURITY.md`](SECURITY.md) explains the model, what each protection covers, and the current known limitations.
 
 ## Technical deep dive
 
@@ -140,13 +140,18 @@ HTML Clay is a Go application with a simple architecture: a localhost HTTP serve
 ```
 User double-clicks .htmlclay file
   → OS launches HTML Clay (registered handler for .htmlclay)
-    → App generates a cryptographic session token for the file
-      → App opens Chrome in app mode (chromeless window) or default browser
-        → Browser loads file from localhost server
-          → User edits, hits save
-            → JS reads htmlclaytoken, calls POST /_/save/{token}
-              → Server writes changes back to disk
+    → App picks the file's origin: the trusted folder containing it, else its own folder
+      → App binds that origin's remembered port and mints a session token for the file
+        → App opens the default browser
+          → Browser loads file from localhost server
+            → User edits, hits save
+              → JS reads htmlclaytoken, calls POST /_/save/{token}
+                → Server writes changes back to disk
 ```
+
+Every trusted folder's port is bound again at startup, before any file is opened, so an address
+bookmarked before the last quit still answers. An address HTML Clay remembers but is not serving
+answers with a fixed recovery page that holds no permissions at all.
 
 ### Server endpoints
 
@@ -216,10 +221,15 @@ of the refusal is written down rather than guessed at.
 ### Package structure
 
 ```
-main.go              CLI entry point, orchestration
+main.go              CLI entry point, startup, shutdown
+sites.go             The site registry: which origin owns a file, and its lifecycle
+folders.go           The declared trusted-folder list and the flows that change it
+recovery.go          A remembered port bound with no capability at all
+open.go              Opening a file and handing it to the browser
 server/              HTTP server, request handlers, security middleware
-session/             Cryptographic token generation, file↔token mapping
-browser/             Chrome/Chromium detection, app-mode and browser-mode launch
+session/             Cryptographic token generation, file↔token mapping, held read roots
+trust/               The rules about which folders may be trusted, and on whose say-so
+browser/             Opening a URL in the system's default browser
 htmlutil/            Inject/strip htmlclaytoken and htmlclayid attributes in <html> tag
 config/              Persist settings to OS config dir (~/Library/Application Support, ~/.config, %APPDATA%)
 platform/            Single-instance enforcement (Unix socket / TCP on Windows), Start on Login
@@ -234,17 +244,12 @@ dist/windows/        File association registration script
 ### Security model
 
 - **Localhost only** — The server binds to `127.0.0.1`, validates the `Host` header, and rejects cross-site requests (`Sec-Fetch-Site: cross-site`). Mutating routes (save, restore, live sync, permission requests) additionally require `Sec-Fetch-Site: same-origin` and a matching `Origin`.
-- **Read-only by default, three ways to editable** — A linked or typed `.htmlclay` file serves read-only with a banner offering to open it for editing (a single-use server-minted nonce plus a native dialog). Folders declared as workspaces auto-register their `.htmlclay` files as editable on real navigations, with no prompts. Save tokens are injected only into document navigations, never into background fetches.
+- **Read-only by default, two ways to editable** — A linked or typed `.htmlclay` file serves read-only with a banner offering to trust its folder (a single-use server-minted nonce plus a native dialog). A trusted folder auto-registers its `.htmlclay` files as editable on real navigations, with no prompts. Save tokens are injected only into document navigations, never into background fetches.
 - **256-bit session tokens** — Each opened file gets a cryptographically random token. The read, save, and meta endpoints (under `/_/`) require a valid token; the top-level file-serving route only resolves paths that match an already-open file. Tokens are redacted from the log and live for the lifetime of the process (there is no per-file expiry); on a single-user desktop this is fine, since they never leave loopback.
 - **Path traversal prevention** — All file paths are validated as relative and within the user's home directory. Symlinks are resolved before validation.
 - **Atomic writes** — Files are written to a temp file first, then renamed into place, preventing corruption on crash.
 - **Single instance** — A Unix socket (or TCP on Windows) ensures only one server runs at a time. Additional launches forward their file paths to the running instance.
 - **Local trust boundary** — The bridge listens on loopback, so any process running as your user can reach `127.0.0.1:<port>`. Saving requires the per-file token, but the top-level serve route returns a currently-open file by path with no token, so a malicious local process (or a page you already have open) can read other open documents. This is inherent to the localhost-bridge model: htmlclay only serves files you have explicitly opened, and nothing is exposed off the machine.
-
-### Browser modes
-
-- **App mode** (default): Opens in Chrome/Chromium with `--app` flag — a chromeless window that looks like a native app, with an isolated user profile.
-- **Browser mode** (fallback): Opens in the system's default browser if Chromium isn't available.
 
 ### Configuration
 
@@ -252,18 +257,29 @@ Stored at `<os-config-dir>/htmlclay/config.json` (`~/Library/Application Support
 
 ```json
 {
-  "mode": "app",
   "startOnLogin": false,
-  "port": 54321
+  "sitePorts": {
+    "/Users/you/projects/notes": 54321
+  },
+  "workspaceFolders": [
+    { "path": "/Users/you/projects/notes", "identity": "16777229:224754543" }
+  ]
 }
 ```
 
-The port is auto-selected if the saved one isn't available.
+`sitePorts` remembers the port each origin was served on, keyed by its anchor folder, so an address
+survives a restart. A port that is taken at startup is given up and the new one recorded instead.
+
+The trusted-folder list keeps the on-disk key `workspaceFolders` from the version that introduced it.
+Renaming the key would make older configs fail to parse, and the corrupt-config path would then reset
+every other setting. `identity` is the folder's device and inode fingerprint at the moment you trusted
+it; a folder replaced since then stops granting anything rather than covering the newcomer.
 
 ### System tray
 
 The app lives in the system tray with controls for:
-- Switching between app mode and browser mode
+- Trusted Folders: trust one through a folder picker, or click a row to stop trusting it
+- Opening the example file and the backups folder
 - Toggling Start on Login (LaunchAgent on macOS, autostart desktop entry on Linux, registry key on Windows)
 - A notification when a new version is available (click to open the download page)
 

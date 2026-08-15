@@ -107,9 +107,9 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A restore writes to disk, so it re-checks workspace coverage the same way
+	// A restore writes to disk, so it re-checks trusted coverage the same way
 	// a save does.
-	if s.workspaceWriteRevoked(f) {
+	if s.trustedWriteRevoked(f) {
 		s.writeError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}

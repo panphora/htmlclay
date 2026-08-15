@@ -1,8 +1,8 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,45 +11,45 @@ import (
 	"testing"
 )
 
+// noIdentity stands in for a platform that cannot fingerprint a directory, which
+// is what most of these tests want: the pin is irrelevant to what they assert.
+func noIdentity(string) string { return "" }
+
 func TestLoadDefaults(t *testing.T) {
 	baseDir := t.TempDir()
-	cfg, err := LoadFrom(baseDir)
+	cfg, res, err := LoadFrom(baseDir, noIdentity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Mode != "app" {
-		t.Errorf("expected mode 'app', got %q", cfg.Mode)
 	}
 	if cfg.StartOnLogin != false {
 		t.Error("expected StartOnLogin false")
 	}
-	if cfg.Port != 0 {
-		t.Errorf("expected port 0, got %d", cfg.Port)
+	if got := cfg.TrustedFolderList(); len(got) != 0 {
+		t.Errorf("expected no trusted folders, got %v", got)
+	}
+	if res.HadAppMode || res.PromotedLegacy {
+		t.Errorf("a fresh config should need no migration, got %+v", res)
 	}
 }
 
 func TestSaveAndLoad(t *testing.T) {
 	baseDir := t.TempDir()
-	cfg, _ := LoadFrom(baseDir)
-	cfg.Mode = "browser"
-	cfg.StartOnLogin = true
-	cfg.Port = 12345
+	cfg, _, _ := LoadFrom(baseDir, noIdentity)
+	cfg.SetStartOnLogin(true)
+	cfg.RememberSitePort("/root/sites", 12345)
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save error: %v", err)
 	}
 
-	loaded, err := LoadFrom(baseDir)
+	loaded, _, err := LoadFrom(baseDir, noIdentity)
 	if err != nil {
 		t.Fatalf("load error: %v", err)
-	}
-	if loaded.Mode != "browser" {
-		t.Errorf("expected mode 'browser', got %q", loaded.Mode)
 	}
 	if loaded.StartOnLogin != true {
 		t.Error("expected StartOnLogin true")
 	}
-	if loaded.Port != 12345 {
-		t.Errorf("expected port 12345, got %d", loaded.Port)
+	if got := loaded.SitePort("/root/sites"); got != 12345 {
+		t.Errorf("expected remembered port 12345, got %d", got)
 	}
 }
 
@@ -63,19 +63,52 @@ func TestLoadCorruptRecoversToDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := LoadFrom(baseDir)
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
 	if err != nil {
 		t.Fatalf("a corrupt config should not error, got: %v", err)
 	}
-	if cfg.Mode != "app" {
-		t.Errorf("expected default mode 'app', got %q", cfg.Mode)
+	if cfg.StartOnLogin != false {
+		t.Error("expected the default StartOnLogin false")
+	}
+	if got := cfg.TrustedFolderList(); len(got) != 0 {
+		t.Errorf("expected the default empty trusted list, got %v", got)
+	}
+}
+
+// A corrupt config must not brick startup, and it must not silently erase what
+// the user granted either: the bad file is moved aside, so it is recoverable and
+// so the user can be told, rather than overwritten by the next Save.
+func TestCorruptConfigIsQuarantinedNotErased(t *testing.T) {
+	baseDir := t.TempDir()
+	dir := DirFrom(baseDir)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"trustedFolders": "not-an-array"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := LoadFrom(baseDir, noIdentity); err != nil {
+		t.Fatalf("a corrupt config should not error, got: %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "config.json.corrupt-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly one quarantined copy, got %v", matches)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the corrupt config.json must be moved aside, not left in place (stat err = %v)", err)
 	}
 }
 
 func TestSaveIsAtomicNoTempLeft(t *testing.T) {
 	baseDir := t.TempDir()
-	cfg, _ := LoadFrom(baseDir)
-	cfg.Port = 4321
+	cfg, _, _ := LoadFrom(baseDir, noIdentity)
+	cfg.SetStartOnLogin(true)
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save error: %v", err)
 	}
@@ -116,7 +149,7 @@ func TestEnsureDir(t *testing.T) {
 
 func TestTrustedFolderAddRemoveRoundTrip(t *testing.T) {
 	baseDir := t.TempDir()
-	cfg, _ := LoadFrom(baseDir)
+	cfg, _, _ := LoadFrom(baseDir, noIdentity)
 
 	dirA := filepath.Join(baseDir, "sites")
 	dirB := filepath.Join(baseDir, "projects")
@@ -127,23 +160,23 @@ func TestTrustedFolderAddRemoveRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !cfg.AddTrustedFolder(dirA) {
+	if !cfg.AddTrustedFolder(dirA, "") {
 		t.Error("adding a new folder should report added")
 	}
-	if cfg.AddTrustedFolder(dirA) {
+	if cfg.AddTrustedFolder(dirA, "") {
 		t.Error("adding a duplicate should report not-added")
 	}
-	cfg.AddTrustedFolder(dirB)
+	cfg.AddTrustedFolder(dirB, "")
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	loaded, err := LoadFrom(baseDir)
+	loaded, _, err := LoadFrom(baseDir, noIdentity)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(loaded.TrustedFolders) != 2 {
-		t.Fatalf("expected 2 trusted folders after reload, got %v", loaded.TrustedFolders)
+	if len(loaded.TrustedFolderList()) != 2 {
+		t.Fatalf("expected 2 trusted folders after reload, got %v", loaded.TrustedFolderList())
 	}
 
 	if !loaded.RemoveTrustedFolder(dirA) {
@@ -156,33 +189,46 @@ func TestTrustedFolderAddRemoveRoundTrip(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	reloaded, _ := LoadFrom(baseDir)
-	if len(reloaded.TrustedFolders) != 1 || reloaded.TrustedFolders[0] != dirB {
-		t.Errorf("expected only %q to remain, got %v", dirB, reloaded.TrustedFolders)
+	reloaded, _, _ := LoadFrom(baseDir, noIdentity)
+	list := reloaded.TrustedFolderList()
+	if len(list) != 1 || list[0].Path != dirB {
+		t.Errorf("expected only %q to remain, got %v", dirB, list)
 	}
 }
 
-func TestPruneTrustedFoldersDropsMissing(t *testing.T) {
+// A trusted folder whose directory is gone SURVIVES a save/load round trip. The
+// entry is the record of a standing write grant, so it must surface as dead in
+// the tray rather than silently vanish; pruning it on load erased what the user
+// granted the moment a volume was unmounted.
+func TestMissingTrustedFolderSurvivesLoad(t *testing.T) {
 	baseDir := t.TempDir()
-	cfg, _ := LoadFrom(baseDir)
+	cfg, _, _ := LoadFrom(baseDir, noIdentity)
 
 	real := filepath.Join(baseDir, "real")
 	if err := os.MkdirAll(real, 0755); err != nil {
 		t.Fatal(err)
 	}
 	gone := filepath.Join(baseDir, "deleted")
-	cfg.AddTrustedFolder(real)
-	cfg.AddTrustedFolder(gone)
+	cfg.AddTrustedFolder(real, "")
+	cfg.AddTrustedFolder(gone, "")
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	loaded, err := LoadFrom(baseDir)
+	loaded, _, err := LoadFrom(baseDir, noIdentity)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(loaded.TrustedFolders) != 1 || loaded.TrustedFolders[0] != real {
-		t.Errorf("load should prune the missing folder, got %v", loaded.TrustedFolders)
+	list := loaded.TrustedFolderList()
+	if len(list) != 2 {
+		t.Fatalf("load must not prune the missing folder, got %v", list)
+	}
+	byPath := map[string]bool{}
+	for _, tf := range list {
+		byPath[tf.Path] = true
+	}
+	if !byPath[real] || !byPath[gone] {
+		t.Errorf("both entries must survive, got %v", list)
 	}
 }
 
@@ -192,7 +238,7 @@ func TestPruneTrustedFoldersDropsMissing(t *testing.T) {
 // marshal. Run under -race; it must be clean and must not panic.
 func TestConcurrentMutatorsAndSaveAreRaceFree(t *testing.T) {
 	baseDir := t.TempDir()
-	cfg, _ := LoadFrom(baseDir)
+	cfg, _, _ := LoadFrom(baseDir, noIdentity)
 
 	const iters = 300
 	var wg sync.WaitGroup
@@ -212,69 +258,32 @@ func TestConcurrentMutatorsAndSaveAreRaceFree(t *testing.T) {
 	})
 	run(func(i int) {
 		d := fmt.Sprintf("/trusted/%d", i%8)
-		if !cfg.AddTrustedFolder(d) {
+		if !cfg.AddTrustedFolder(d, fmt.Sprintf("id:%d", i)) {
 			cfg.RemoveTrustedFolder(d)
 		}
 		_ = cfg.Save()
 	})
 	run(func(i int) {
-		cfg.SetMode([]string{"app", "browser"}[i%2])
 		cfg.SetStartOnLogin(i%2 == 0)
+		cfg.SetTrustedIdentity(fmt.Sprintf("/trusted/%d", i%8), fmt.Sprintf("re:%d", i))
 		_ = cfg.Save()
 	})
 	run(func(i int) {
-		_ = cfg.CurrentMode()
 		_ = cfg.StartOnLoginEnabled()
 		_ = cfg.SitePort("/root/1")
+		_ = cfg.SitePortList()
 		_ = cfg.TrustedFolderList()
 	})
 
 	wg.Wait()
 }
 
-func TestResolvePortPicksAvailable(t *testing.T) {
-	baseDir := t.TempDir()
-	cfg, _ := LoadFrom(baseDir)
-	ln, err := cfg.ResolvePort()
-	if err != nil {
-		t.Fatalf("ResolvePort error: %v", err)
-	}
-	defer ln.Close()
-	port := ln.Addr().(*net.TCPAddr).Port
-	if port == 0 {
-		t.Error("expected non-zero port")
-	}
-}
-
-func TestResolvePortReusesSaved(t *testing.T) {
-	baseDir := t.TempDir()
-	cfg, _ := LoadFrom(baseDir)
-	ln1, err := cfg.ResolvePort()
-	if err != nil {
-		t.Fatal(err)
-	}
-	port1 := ln1.Addr().(*net.TCPAddr).Port
-	ln1.Close()
-
-	ln2, err := cfg.ResolvePort()
-	if err != nil {
-		t.Fatal(err)
-	}
-	port2 := ln2.Addr().(*net.TCPAddr).Port
-	ln2.Close()
-
-	if port1 != port2 {
-		t.Errorf("expected same port %d, got %d", port1, port2)
-	}
-}
-
-// Workspace folders round-trip with their identity fingerprints, and — unlike
-// trusted folders — dead entries survive Load: a workspace is a standing write
-// grant, and the record of it must not silently vanish because the directory
-// is momentarily missing.
-func TestWorkspaceFoldersRoundTripAndNoPrune(t *testing.T) {
+// Trusted folders round-trip with their identity fingerprints, and dead entries
+// survive Load: a trusted folder is a standing write grant, and the record of it
+// must not silently vanish because the directory is momentarily missing.
+func TestTrustedFoldersRoundTripAndNoPrune(t *testing.T) {
 	base := t.TempDir()
-	cfg, err := LoadFrom(base)
+	cfg, _, err := LoadFrom(base, noIdentity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,42 +291,146 @@ func TestWorkspaceFoldersRoundTripAndNoPrune(t *testing.T) {
 	live := t.TempDir()
 	dead := filepath.Join(t.TempDir(), "gone")
 
-	if !cfg.AddWorkspaceFolder(live, "1:42") {
+	if !cfg.AddTrustedFolder(live, "1:42") {
 		t.Fatal("first add reported already-present")
 	}
-	if cfg.AddWorkspaceFolder(live, "1:42") {
+	if cfg.AddTrustedFolder(live, "1:42") {
 		t.Fatal("duplicate add reported success")
 	}
-	if !cfg.AddWorkspaceFolder(dead, "9:99") {
+	if !cfg.AddTrustedFolder(dead, "9:99") {
 		t.Fatal("second add failed")
 	}
 	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, err := LoadFrom(base)
+	loaded, _, err := LoadFrom(base, noIdentity)
 	if err != nil {
 		t.Fatal(err)
 	}
-	list := loaded.WorkspaceFolderList()
+	list := loaded.TrustedFolderList()
 	if len(list) != 2 {
-		t.Fatalf("got %d workspace folders after load, want 2 (dead entries must NOT be pruned)", len(list))
+		t.Fatalf("got %d trusted folders after load, want 2 (dead entries must NOT be pruned)", len(list))
 	}
 	byPath := map[string]string{}
-	for _, wf := range list {
-		byPath[wf.Path] = wf.Identity
+	for _, tf := range list {
+		byPath[tf.Path] = tf.Identity
 	}
 	if byPath[live] != "1:42" || byPath[dead] != "9:99" {
 		t.Fatalf("identities did not round-trip: %v", byPath)
 	}
 
-	if !loaded.RemoveWorkspaceFolder(dead) {
+	if !loaded.RemoveTrustedFolder(dead) {
 		t.Fatal("remove reported not-present")
 	}
-	if loaded.RemoveWorkspaceFolder(dead) {
+	if loaded.RemoveTrustedFolder(dead) {
 		t.Fatal("second remove reported success")
 	}
-	if got := len(loaded.WorkspaceFolderList()); got != 1 {
+	if got := len(loaded.TrustedFolderList()); got != 1 {
 		t.Fatalf("got %d after remove, want 1", got)
+	}
+}
+
+// A 1.2.0 config's read-only trusted folders are widened into trusted folders
+// once, on Load, and the key is dropped by the next Save. The regression that
+// matters is the rest of the file: a migration that rebuilt the config from
+// defaults promoted the folders and reset every unrelated setting with them.
+func TestLegacyTrustedFoldersArePromoted(t *testing.T) {
+	base := t.TempDir()
+	dir := DirFrom(base)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := t.TempDir()
+
+	raw, err := json.Marshal(map[string]any{
+		"mode":           "app",
+		"startOnLogin":   true,
+		"port":           0,
+		"trustedFolders": []string{legacy},
+		"sitePorts":      map[string]int{legacy: 51000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, res, err := LoadFrom(base, func(d string) string { return "id:" + d })
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	list := cfg.TrustedFolderList()
+	if len(list) != 1 || list[0].Path != legacy {
+		t.Fatalf("legacy folder was not promoted: %v", list)
+	}
+	if list[0].Identity != "id:"+legacy {
+		t.Errorf("a promoted folder must be pinned to the directory that is there now, got %q", list[0].Identity)
+	}
+	if !res.PromotedLegacy {
+		t.Error("Result.PromotedLegacy must report the one-time widening")
+	}
+	if !res.HadAppMode {
+		t.Error("Result.HadAppMode must report a config that still carried App Mode")
+	}
+	if !cfg.StartOnLoginEnabled() {
+		t.Error("the migration reset StartOnLogin")
+	}
+	if got := cfg.SitePort(legacy); got != 51000 {
+		t.Errorf("the migration dropped the remembered port: got %d, want 51000", got)
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk map[string]json.RawMessage
+	if err := json.Unmarshal(data, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := onDisk["trustedFolders"]; ok {
+		t.Errorf("the legacy key must be gone after Save: %s", data)
+	}
+	if _, ok := onDisk["workspaceFolders"]; !ok {
+		t.Errorf("the promoted folders must be written under the merged key: %s", data)
+	}
+}
+
+// Every remembered port becomes a bound listener at startup, so the map is
+// capped. A trusted folder's entry is never evicted: it is the bookmark
+// contract, and losing it moves an origin the user has bookmarked.
+func TestSitePortsAreCappedButTrustedFoldersSurvive(t *testing.T) {
+	base := t.TempDir()
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trusted := t.TempDir()
+	cfg.AddTrustedFolder(trusted, "")
+	cfg.RememberSitePort(trusted, 51000)
+	for i := 0; i < 40; i++ {
+		cfg.RememberSitePort(filepath.Join(base, fmt.Sprintf("adhoc-%02d", i)), 40000+i)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ports := loaded.SitePortList()
+	if len(ports) > sitePortCap {
+		t.Errorf("remembered ports = %d, want at most %d", len(ports), sitePortCap)
+	}
+	if got := ports[trusted]; got != 51000 {
+		t.Errorf("a trusted folder's port must never be evicted: got %d, want 51000", got)
 	}
 }
