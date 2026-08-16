@@ -178,9 +178,13 @@ func TestVersionsPathIsContainedButStillDenied(t *testing.T) {
 
 // The same-origin gate admits only a browser-attested request from this site's
 // own page: Sec-Fetch-Site must be literally same-origin (same-site means any
-// other loopback port) and Origin must name this origin, port included. Absent
-// headers are what an old browser's no-cors request and a bare local process
-// send, and both are refused.
+// other loopback port), and Origin, when present, must name this origin, port
+// included. Origin cannot be REQUIRED: Chrome omits it on same-origin GETs,
+// including EventSource's stream GET — the one GET route the gate wraps — so
+// requiring it 403'd every live-sync stream while every POST passed (POSTs
+// always carry Origin). Verified live against Chrome 147. Absent Sec-Fetch-Site
+// is what an old browser's no-cors request and a bare local process send, and
+// both are refused.
 func TestSameOriginGate(t *testing.T) {
 	handled := false
 	h := sameOrigin(func(w http.ResponseWriter, r *http.Request) {
@@ -200,7 +204,7 @@ func TestSameOriginGate(t *testing.T) {
 		{"none (direct navigation)", "none", "http://127.0.0.1:7777", 403},
 		{"absent headers", "", "", 403},
 		{"origin names a different port", "same-origin", "http://127.0.0.1:9999", 403},
-		{"origin absent", "same-origin", "", 403},
+		{"origin absent (Chrome same-origin GET / EventSource)", "same-origin", "", 200},
 		{"origin is https", "same-origin", "https://127.0.0.1:7777", 403},
 	}
 	for _, tc := range cases {

@@ -141,9 +141,11 @@ func TestRelayGoesToLiveLaneOnly(t *testing.T) {
 	expectNoFrame(t, saved, 100*time.Millisecond)
 }
 
-// An external change notifies the live lane and does not push content there,
-// because after B0 every tab holds unsaved DOM state. The stable disk HTML goes
-// to the saved lane.
+// An external change notifies the live lane with the disk HTML riding the
+// notification's data field — never a top-level livePayload, which an old
+// client would full-morph over unsaved DOM state. New clients route the data
+// through dirty-region protection; old clients forward `data` inertly and just
+// toast. The stable disk HTML still goes to the saved lane.
 func TestExternalChangeNotifiesLiveAndBroadcastsSaved(t *testing.T) {
 	h := newHub("")
 	live := newSubscriber("/tmp/a.html", laneLive)
@@ -158,13 +160,67 @@ func TestExternalChangeNotifiesLiveAndBroadcastsSaved(t *testing.T) {
 		t.Fatalf("live lane did not receive a warning notification: %v", notice)
 	}
 	if _, ok := notice["html"]; ok {
-		t.Fatal("live lane received content, which would discard unsaved DOM state")
+		t.Fatal("live lane received top-level content, which an old client would morph over unsaved DOM state")
+	}
+	data, ok := notice["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("notification carries no data object: %v", notice)
+	}
+	if data["kind"] != "external-change" || data["html"] != "<html>disk</html>" || data["sender"] != "file-system" {
+		t.Fatalf("external-change data wrong: %v", data)
 	}
 	expectNoFrame(t, live, 100*time.Millisecond)
 
 	content := waitFrame(t, saved, time.Second)
 	if content["html"] != "<html>disk</html>" || content["sender"] != "file-system" {
 		t.Fatalf("saved lane payload wrong: %v", content)
+	}
+}
+
+// The data payload is built with an escape-off encoder: json.Marshal would
+// pre-escape every angle bracket into six bytes, tripling a document of tags,
+// and the outer frame encoder cannot undo escaping baked into a RawMessage.
+func TestExternalChangeEmbedsDiskHTMLUnescaped(t *testing.T) {
+	h := newHub("")
+	live := newSubscriber("/tmp/a.html", laneLive)
+	h.add(live)
+
+	h.publishExternalChange("/tmp/a.html", "changed", "<html><body>disk</body></html>")
+
+	select {
+	case raw := <-live.ch:
+		if !strings.Contains(string(raw), "<html><body>disk</body></html>") {
+			t.Fatalf("frame does not carry literal HTML (escaped?): %q", raw)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the notification frame")
+	}
+}
+
+// HTML over maxLiveSyncSize falls back to a bare notification (no data field);
+// the new client recovers the content with a token-free fetch of the served
+// page. The saved lane still gets the full document either way.
+func TestOversizedExternalChangeFallsBackToBareNotification(t *testing.T) {
+	h := newHub("")
+	live := newSubscriber("/tmp/a.html", laneLive)
+	saved := newSubscriber("/tmp/a.html", laneSaved)
+	h.add(live)
+	h.add(saved)
+
+	big := "<html>" + strings.Repeat("a", maxLiveSyncSize) + "</html>"
+	h.publishExternalChange("/tmp/a.html", "changed", big)
+
+	notice := waitFrame(t, live, time.Second)
+	if notice["type"] != "notification" {
+		t.Fatalf("live lane did not receive a notification: %v", notice)
+	}
+	if _, ok := notice["data"]; ok {
+		t.Fatal("oversized external change still embedded content in the notification")
+	}
+
+	content := waitFrame(t, saved, 5*time.Second)
+	if content["html"] != big {
+		t.Fatal("saved lane did not receive the full oversized document")
 	}
 }
 

@@ -827,10 +827,11 @@ type livePayload struct {
 }
 
 type notifyPayload struct {
-	Type    string `json:"type"`
-	MsgType string `json:"msgType"`
-	Msg     string `json:"msg"`
-	Seq     int64  `json:"seq"`
+	Type    string          `json:"type"`
+	MsgType string          `json:"msgType"`
+	Msg     string          `json:"msg"`
+	Seq     int64           `json:"seq"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // frame serializes one SSE frame, carrying the shared sequence as the SSE id so a
@@ -854,6 +855,26 @@ func frame(seq int64, v interface{}) []byte {
 	// Encode appends one newline; an SSE frame ends with a blank line.
 	buf.WriteByte('\n')
 	return buf.Bytes()
+}
+
+// encodeExternalChangeData builds the notification data payload that carries
+// on-disk HTML to edit-mode tabs. It needs its own encoder because escaping
+// must be off at THIS level: json.Marshal pre-escapes every angle bracket into
+// six bytes, and the outer frame encoder cannot undo escaping already baked
+// into a RawMessage. Encode appends one newline, which a RawMessage must not
+// carry.
+func encodeExternalChangeData(html string) json.RawMessage {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(struct {
+		Kind   string `json:"kind"`
+		HTML   string `json:"html"`
+		Sender string `json:"sender"`
+	}{Kind: "external-change", HTML: html, Sender: "file-system"}); err != nil {
+		return nil
+	}
+	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n"))
 }
 
 // cursorFrame is a named SSE event carrying the resume baseline as its id. It
@@ -897,13 +918,16 @@ func (h *hub) broadcastSaved(key, html, sender string) []*subscriber {
 }
 
 // publishExternalChange is what an external edit produces: a notification on the
-// live lane, and the stable on-disk HTML on the saved lane. It observes identity
-// first, so an external replacement rolls the generation before the new frame is
-// retained.
+// live lane carrying the on-disk HTML as first-class content, and the stable
+// on-disk HTML on the saved lane. It observes identity first, so an external
+// replacement rolls the generation before the new frame is retained.
 //
-// The live lane gets a notice and not content on purpose. After B0 every htmlclay
-// tab is an edit-mode tab holding unsaved DOM state, and pushing content there
-// would silently discard it.
+// The live-lane content rides the notification's data field rather than a
+// livePayload: old clients destructure `data` and only forward it (inert), and
+// new clients route it through dirty-region protection before morphing, so an
+// edit-mode tab's unsaved DOM state is never silently discarded. HTML larger
+// than maxLiveSyncSize falls back to a bare notification; the new client
+// recovers the content with a token-free fetch of the served page.
 //
 // Sequence allocation and enqueue happen together under one lock so the watcher
 // and the relay leg share a single ordering.
@@ -924,9 +948,14 @@ func (h *hub) publishExternalChange(key, msg, html string) []*subscriber {
 
 	h.observeIdentityLocked(key, probe)
 
+	var data json.RawMessage
+	if len(html) <= maxLiveSyncSize {
+		data = encodeExternalChangeData(html)
+	}
+
 	var evicted []*subscriber
 	nSeq := h.nextSeq()
-	if n := frame(nSeq, notifyPayload{Type: "notification", MsgType: "warning", Msg: msg, Seq: nSeq}); n != nil {
+	if n := frame(nSeq, notifyPayload{Type: "notification", MsgType: "warning", Msg: msg, Seq: nSeq, Data: data}); n != nil {
 		evicted = append(evicted, h.enqueue(key, laneLive, nSeq, n)...)
 	}
 	bSeq := h.nextSeq()
