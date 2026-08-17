@@ -29,6 +29,10 @@ type Server struct {
 	hub          *hub
 	watcher      *watcher
 	coord        *streamCoordinator
+	// wire is per-server, unlike the shared live-sync runtime above: a site is
+	// the lifetime boundary for an instruction channel, so untrusting a folder
+	// (which closes the site) cannot leave a live wire into it.
+	wire *wireHub
 
 	// hooks are the app-level decisions this server cannot make itself. A nil
 	// field disables that route; a zero Hooks (tests, standalone servers)
@@ -52,7 +56,7 @@ func SeqPath(store *versions.Store) string {
 // New builds a server that owns its own live-sync runtime and tears it down on
 // Shutdown/Close. Used by tests and any single-server caller.
 func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store) *Server {
-	s := newServer(ln, sessions, logger, store, NewLiveSync(SeqPath(store), logger))
+	s := newServer(ln, sessions, logger, store, NewLiveSync(store, logger))
 	s.ownsLiveSync = true
 	return s
 }
@@ -77,6 +81,7 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 		hub:      ls.hub,
 		watcher:  ls.watcher,
 		coord:    ls.coord,
+		wire:     newWireHub(),
 	}
 
 	mux := http.NewServeMux()
@@ -107,6 +112,19 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	// This shadows any real user file at ~/_/api/…, which is the one behavior change.
 	mux.HandleFunc("GET /_/api", s.handleDataAPI)
 	mux.HandleFunc("GET /_/api/{path...}", s.handleDataAPI)
+
+	// The whole wire subtree mounts behind one guard, so a route cannot be added
+	// to it without the guard in front. Its guard is deliberately NOT sameOrigin:
+	// the wire admits local processes, which attest no browser headers at all.
+	//
+	// Registered per method rather than as a bare "/_/wire/": ServeMux refuses a
+	// method-agnostic subtree alongside the method-specific catch-all below
+	// ("matches fewer methods but has a more general path pattern") and panics at
+	// registration. Listing the two methods the wire uses keeps one guard while
+	// leaving anything else on the subtree to fall through as it would anyway.
+	wire := s.wireMux()
+	mux.Handle("GET /_/wire/", wire)
+	mux.Handle("POST /_/wire/", wire)
 
 	mux.HandleFunc("GET /{path...}", s.handleServeFile)
 
@@ -160,6 +178,7 @@ func (s *Server) Start() error {
 // runtime down once, before the per-site HTTP servers).
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.broker.shutdown()
+	s.wire.shutdown()
 	if s.ownsLiveSync {
 		s.ls.Shutdown()
 	}
@@ -168,6 +187,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) Close() error {
 	s.broker.shutdown()
+	s.wire.shutdown()
 	if s.ownsLiveSync {
 		s.ls.Shutdown()
 	}

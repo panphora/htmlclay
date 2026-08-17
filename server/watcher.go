@@ -28,9 +28,10 @@ const (
 // landing between the final revalidation and the enqueue is an unavoidable
 // residual race.
 
-// statKey is the metadata fingerprint checked before and after each read. Size
-// and modtime alone can miss a same-size write with a preserved timestamp, so
-// file identity is included where the platform reports it.
+// statKey is the metadata fingerprint checked before and after each read, and
+// the one compared against the previous read to decide whether to read at all.
+// Size and modtime alone can miss a same-size write with a preserved timestamp,
+// so file identity is included where the platform reports it.
 type statKey struct {
 	size    int64
 	modTime time.Time
@@ -46,18 +47,36 @@ type watchEntry struct {
 	refs int
 
 	// Watcher-internal tracking, not a per-file record: the candidate awaiting a
-	// quiet interval, and whether the file is currently missing.
+	// quiet interval, whether the file is currently missing, and the fingerprint
+	// of the last read that revalidated cleanly.
 	pendingHash string
 	pendingData []byte
 	pendingAt   time.Time
 	absent      bool
+	lastStat    statKey
+	haveStat    bool
 
 	// removed is set under the watcher lock when the last subscriber leaves. tick
 	// copies entry pointers outside that lock, so without this an unwatch could
 	// land mid-check and the orphaned check would still record its hash into
 	// lastStableObservation and publish into an empty hub. That change was then
 	// suppressed forever, and the user never saw it.
+	//
+	// rearm is set under the same lock when a subscriber joins an entry that
+	// already existed, and consumed by the next poll. Every other field here
+	// belongs to the poll goroutine alone; these two are the only ones another
+	// goroutine writes, which is why they travel together through entryState.
 	removed bool
+	rearm   bool
+}
+
+// forget drops the candidate and the read fingerprint together, so a poll that
+// could not get a coherent look at the file reads it unconditionally next time
+// rather than trusting metadata it never validated. Called on the poll goroutine.
+func (e *watchEntry) forget() {
+	e.pendingHash = ""
+	e.pendingData = nil
+	e.haveStat = false
 }
 
 // watcher polls currently-subscribed files only. It starts on the first
@@ -75,15 +94,20 @@ type watcher struct {
 	poll   time.Duration
 	quiet  time.Duration
 
+	// versions is the backup store. The watcher writes to it and never resolves an
+	// identity in it: see publishConfirmed.
+	versions *versions.Store
+
 	wg sync.WaitGroup
 }
 
-func newWatcher(logger *logging.Logger) *watcher {
+func newWatcher(store *versions.Store, logger *logging.Logger) *watcher {
 	return &watcher{
-		entries: make(map[string]*watchEntry),
-		logger:  logger,
-		poll:    watchPoll,
-		quiet:   watchQuiet,
+		entries:  make(map[string]*watchEntry),
+		logger:   logger,
+		poll:     watchPoll,
+		quiet:    watchQuiet,
+		versions: store,
 	}
 }
 
@@ -101,6 +125,12 @@ func (wt *watcher) watch(f *session.File) {
 
 	if e, ok := wt.entries[f.AbsPath]; ok {
 		e.refs++
+		// An entry that already existed may have armed its read fingerprint while
+		// nobody was subscribed, which a wire handler's lease makes ordinary, and a
+		// change published to nobody is never recorded. Re-reading for the arriving
+		// subscriber is what turns that unrecorded change into one it hears about.
+		// An entry created below starts unarmed and reads on its first poll anyway.
+		e.rearm = true
 		return
 	}
 	wt.entries[f.AbsPath] = &watchEntry{file: f, refs: 1}
@@ -194,8 +224,12 @@ func (wt *watcher) tick() {
 // watcher; the two per-file records are read and written only under the file
 // lock, at the very end.
 func (wt *watcher) check(e *watchEntry) {
-	if wt.isRemoved(e) {
+	removed, rearm := wt.entryState(e)
+	if removed {
 		return
+	}
+	if rearm {
+		e.haveStat = false
 	}
 	path := e.file.AbsPath
 
@@ -210,26 +244,42 @@ func (wt *watcher) check(e *watchEntry) {
 			e.absent = true
 			wt.coord.markAbsent(path)
 		}
-		e.pendingHash = ""
-		e.pendingData = nil
+		e.forget()
 		return
 	}
 
-	// Reread the pending candidate even when stat metadata is unchanged, and check
-	// metadata before and after each read.
+	// With no candidate pending, an unchanged fingerprint means an unchanged file
+	// and the read is skipped. This is what makes a wire handler's watch lease
+	// affordable: the lease keeps a file polled with no tab open, and reading a
+	// whole document four times a second for as long as an agent is attached is not
+	// something to do in the background.
+	//
+	// The residual is a write that lands with the same size, modtime and file
+	// identity as the last one read, which takes a filesystem whose timestamp
+	// resolution is coarser than the gap between two writes. The next write visible
+	// in metadata surfaces both.
+	//
+	// A pending candidate is still always re-read, unconditionally, because the
+	// quiet interval is a claim about content rather than about metadata.
+	fingerprint := statOf(before)
+	if e.pendingHash == "" && e.haveStat && fingerprint == e.lastStat {
+		return
+	}
+
+	// Metadata is checked before and after each read.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		e.pendingHash = ""
-		e.pendingData = nil
+		e.forget()
 		return
 	}
 	after, err := os.Lstat(path)
-	if err != nil || statOf(before) != statOf(after) {
-		e.pendingHash = ""
-		e.pendingData = nil
+	if err != nil || fingerprint != statOf(after) {
+		e.forget()
 		return
 	}
 
+	e.lastStat = fingerprint
+	e.haveStat = true
 	e.absent = false
 	hash := versions.Hash(data)
 
@@ -246,32 +296,58 @@ func (wt *watcher) check(e *watchEntry) {
 	wt.publish(e, hash, data)
 }
 
-func (wt *watcher) isRemoved(e *watchEntry) bool {
+// entryState reads the two fields another goroutine may write, in one
+// acquisition, and consumes the rearm request.
+func (wt *watcher) entryState(e *watchEntry) (removed, rearm bool) {
 	wt.mu.Lock()
 	defer wt.mu.Unlock()
-	return e.removed
+	removed, rearm = e.removed, e.rearm
+	e.rearm = false
+	return removed, rearm
 }
 
-// isWatched reports whether this file still has a live watch lease. The
-// coordinator checks it before delivering an external change, so a change with no
-// audience never advances suppression.
-func (wt *watcher) isWatched(f *session.File) bool {
-	wt.mu.Lock()
-	defer wt.mu.Unlock()
-	e, ok := wt.entries[f.AbsPath]
-	return ok && !e.removed
+// publish versions and broadcasts a confirmed change, then prunes.
+//
+// Pruning takes the store lock, and the documented order is file lock before
+// store lock, so it runs only once publishConfirmed has released f.Lock. Inside
+// the file lock it would stall that file's saves behind a directory sweep.
+func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
+	if key := wt.publishConfirmed(e, hash, data); key != "" {
+		wt.versions.MaybePrune(key, e.file.AbsPath)
+	}
 }
 
-// publish reacquires the file lock, revalidates that the candidate is still the
-// current disk content, and asks the coordinator to retain and deliver the change.
+// publishConfirmed reacquires the file lock, revalidates that the candidate is
+// still the current disk content, versions it, and asks the coordinator to retain
+// and deliver the change. It returns the history key to prune, or "" for nothing.
+//
 // It advances lastStableObservation only after the coordinator confirms the change
-// was secured: publish before record, so a change that could not be delivered is
-// rediscovered on the next poll rather than suppressed forever.
+// reached an audience: publish before record, so a change that could not be
+// delivered is never marked as reported.
+//
+// What rediscovers it is a subscriber arriving, not the next poll. The read gate in
+// check would otherwise skip the file as metadata-unchanged, and clearing the gate
+// here instead would put the watcher into a permanent 4-reads-a-second loop for
+// exactly the case the lease makes ordinary: an agent editing a file with no tab
+// open. So the entry keeps the change unrecorded and quiet, and watch rearms the
+// read when someone joins.
+//
+// The backup runs BEFORE the broadcast and regardless of its outcome. An external
+// edit is the one write to this file that no other path versions, and whether a
+// browser happened to be listening has nothing to do with whether the bytes are
+// worth keeping. It stores the raw disk bytes, matching the first-open snapshot, so
+// it dedups against a save's pre-write backup instead of doubling every file.
+//
+// The key is READ and never resolved. Resolving one here would let the watcher
+// mint a durable identity for a file nobody has opened, which is the rule that
+// keeps identity a decision of the handlers; a file with no key yet simply is not
+// versioned, and a wire handler's lease is what gives an unopened file one (see
+// leaseForHandler). A backup failure logs and never suppresses the broadcast.
 //
 // The watcher lock is released before the coordinator call, so the coordinator can
 // take the watcher lock again to evict watcher-first without a self-deadlock. Lock
 // order is file lock, then coordinator, then watcher, then hub.
-func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
+func (wt *watcher) publishConfirmed(e *watchEntry, hash string, data []byte) string {
 	f := e.file
 
 	f.Lock()
@@ -287,7 +363,7 @@ func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
 	// advance lastStableObservation for a change nobody received, and that change
 	// would then be suppressed forever on reconnect.
 	if removed {
-		return
+		return ""
 	}
 
 	// Suppression is by hash and stays valid until disk content diverges, rather
@@ -295,12 +371,24 @@ func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
 	// change, so there is no window in which the browser's own write resurfaces as
 	// foreign.
 	if f.LastStableObservation() == hash {
-		return
+		return ""
 	}
 
 	fresh, err := os.ReadFile(f.AbsPath)
 	if err != nil || versions.Hash(fresh) != hash {
-		return
+		// The candidate could not be confirmed, so the fingerprint that came with it
+		// is worthless: a transient read failure leaves size, modtime and identity
+		// untouched, and without this the gate would skip the file on every later
+		// poll while the subscriber holds content the server knows is stale.
+		e.haveStat = false
+		return ""
+	}
+
+	key := f.HistoryKey()
+	if key != "" {
+		if _, bErr := wt.versions.Backup(key, f.AbsPath, data); bErr != nil {
+			wt.logger.Printf("Backup of external change to %s failed: %v", f.RelPath, bErr)
+		}
 	}
 
 	msg := fmt.Sprintf("%s changed on disk outside this tab", f.Name)
@@ -308,4 +396,5 @@ func (wt *watcher) publish(e *watchEntry, hash string, data []byte) {
 		f.RecordStableObservation(hash)
 		wt.logger.Printf("External change detected in %s", f.RelPath)
 	}
+	return key
 }

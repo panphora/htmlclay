@@ -255,7 +255,7 @@ func (a *app) startRuntime() {
 	// Prune once at startup; every later pass is opportunistic after a backup.
 	go a.rt.versions.PruneAll()
 
-	a.rt.ls = server.NewLiveSync(server.SeqPath(a.rt.versions), a.rt.logger)
+	a.rt.ls = server.NewLiveSync(a.rt.versions, a.rt.logger)
 
 	// A grant must not cover htmlclay's own config tree in either direction: not
 	// a grant inside it, and not a grant of an ancestor that swallows it. The

@@ -68,7 +68,7 @@ func newTestAppWithConfigDir(t *testing.T, home, cfgBase string) *app {
 	t.Helper()
 	logger := logging.NewStdout()
 	store := versions.New(t.TempDir())
-	ls := server.NewLiveSync(server.SeqPath(store), logger)
+	ls := server.NewLiveSync(store, logger)
 	cfg, _, err := config.LoadFrom(cfgBase, platform.DirIdentity)
 	if err != nil {
 		t.Fatalf("config: %v", err)

@@ -25,14 +25,37 @@ func newStreamCoordinator(h *hub, wt *watcher) *streamCoordinator {
 }
 
 // add registers the subscriber, observes the current incarnation, and raises the
-// watcher reference in one critical section, returning the resume baseline and the
-// replay slice the writer sends first. Caller holds f.Lock.
-func (co *streamCoordinator) add(sub *subscriber, f *session.File) (int64, [][]byte) {
+// watcher reference in one critical section, returning the resume baseline, the
+// replay slice the writer sends first, and whether replay leaves a gap. Caller
+// holds f.Lock.
+func (co *streamCoordinator) add(sub *subscriber, f *session.File) (int64, [][]byte, bool) {
 	co.mu.Lock()
 	defer co.mu.Unlock()
-	baseline, replay := co.hub.add(sub)
+	baseline, replay, resync := co.hub.add(sub)
 	co.watcher.watch(f)
-	return baseline, replay
+	return baseline, replay, resync
+}
+
+// lease raises a watch reference with no hub subscription behind it, so a wire
+// handler attached to a file keeps that file polled while no tab is open. It goes
+// through the coordinator rather than straight to the watcher so every watch
+// reference in the process is taken under one lock, and it is refcounted by the
+// same watch/unwatch pair, so a handler reconnecting before the previous stream
+// has finished tearing down never drops the entry.
+//
+// Unlike add, it takes no file lock and needs none: it touches no per-file record,
+// and holding nothing above the coordinator lock cannot invert the order.
+func (co *streamCoordinator) lease(f *session.File) {
+	co.mu.Lock()
+	defer co.mu.Unlock()
+	co.watcher.watch(f)
+}
+
+// unlease drops a lease raised by lease.
+func (co *streamCoordinator) unlease(f *session.File) {
+	co.mu.Lock()
+	defer co.mu.Unlock()
+	co.watcher.unwatch(f)
 }
 
 // remove drops the watcher reference first, then the hub membership, then stops
@@ -70,16 +93,19 @@ func (co *streamCoordinator) notifyWarning(f *session.File, msg string) {
 	co.evict(f, co.hub.notifyWarning(f.AbsPath, msg))
 }
 
-// publishExternalChange retains and delivers a watcher-detected change, but only
-// while the file is still watched. It reports whether the change was secured, so
-// the watcher advances suppression only on a durable receipt (publish before
-// record). Caller holds f.Lock.
+// publishExternalChange retains and delivers a watcher-detected change and reports
+// whether it reached an audience, so the watcher advances suppression only on a
+// durable receipt (publish before record).
+//
+// The receipt is delivery, not the watch. Those used to be the same thing, because
+// a live-sync subscription was the only thing that raised a watch reference. A wire
+// handler's lease makes a file watched with no subscribers at all, and a watch-based
+// receipt there would record the hash of a change nobody received, leaving it
+// suppressed forever once the retained frame aged out. Caller holds f.Lock.
 func (co *streamCoordinator) publishExternalChange(f *session.File, msg, html string) bool {
-	if !co.watcher.isWatched(f) {
-		return false
-	}
-	co.evict(f, co.hub.publishExternalChange(f.AbsPath, msg, html))
-	return true
+	delivered, evicted := co.hub.publishExternalChange(f.AbsPath, msg, html)
+	co.evict(f, evicted)
+	return delivered
 }
 
 // acceptServerReplacement re-anchors the incarnation after a server-authorized

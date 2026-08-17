@@ -688,7 +688,7 @@ func TestExternalReplacementDropsTheOldDocumentsReplay(t *testing.T) {
 	same := newSubscriber(path, laneSaved)
 	same.resumeID = "r1"
 	same.lastEventID = mark
-	if _, replay := h.add(same); len(replay) != 1 {
+	if _, replay, _ := h.add(same); len(replay) != 1 {
 		t.Fatalf("an ordinary reconnect should replay the retained frame, got %d", len(replay))
 	}
 	h.remove(same)
@@ -705,7 +705,7 @@ func TestExternalReplacementDropsTheOldDocumentsReplay(t *testing.T) {
 	after := newSubscriber(path, laneSaved)
 	after.resumeID = "r1"
 	after.lastEventID = mark
-	_, replay := h.add(after)
+	_, replay, _ := h.add(after)
 
 	if h.incs[path].generation == generation {
 		t.Fatal("a file replaced from outside did not roll the generation")
@@ -742,7 +742,7 @@ func resume(t *testing.T, h *hub, path string, mark int64) (generation int64, re
 	sub := newSubscriber(path, laneSaved)
 	sub.resumeID = "r1"
 	sub.lastEventID = mark
-	_, replay := h.add(sub)
+	_, replay, _ := h.add(sub)
 	h.remove(sub)
 	return h.incs[path].generation, len(replay)
 }
@@ -957,4 +957,118 @@ func waitFor(t *testing.T, within time.Duration, what string, cond func() bool) 
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// The cursor frame was a named event nobody listened for, and droppedThrough was
+// written in two places and read nowhere. Together they answer the one question a
+// reconnecting client cannot answer for itself: is what I am holding still
+// repairable by replay.
+func TestCursorFrameFlagsAnUnrecoverableGap(t *testing.T) {
+	h := newHub("")
+	t.Cleanup(h.shutdown)
+	path := "/tmp/gap.htmlclay"
+
+	seed := newSubscriber(path, laneSaved)
+	h.add(seed)
+	mark := h.seq
+	// One more frame than the bucket retains, so the oldest is dropped and the
+	// drop high-water rises above mark.
+	for i := 0; i < perIncarnationMaxFrames+1; i++ {
+		h.broadcastSaved(path, fmt.Sprintf("<html>%d</html>", i), "file-system")
+	}
+	h.remove(seed)
+
+	stale := newSubscriber(path, laneSaved)
+	stale.lastEventID = mark
+	if _, _, resync := h.add(stale); !resync {
+		t.Fatal("a resume below the drop high-water was not told to resync")
+	}
+	if !strings.Contains(string(cursorFrame(mark, true)), `"resync":true`) {
+		t.Fatal("the resync flag never reaches the frame")
+	}
+
+	// A first connection resumes at the current sequence and has nothing to
+	// recover, so it must not be sent chasing a fetch it does not need.
+	fresh := newSubscriber(path, laneSaved)
+	if _, _, resync := h.add(fresh); resync {
+		t.Fatal("a first connection was told to resync")
+	}
+	if strings.Contains(string(cursorFrame(h.seq, false)), "resync") {
+		t.Fatal("resync appears on a frame that does not need it")
+	}
+}
+
+// Delivery means a subscriber took the frame. A resume cursor does not count: the
+// argument for counting it, that its reconnect replays what was retained, holds
+// only inside the frame and cursor TTLs, and past them the incarnation is reaped
+// and the client comes back to an empty replay against a change already recorded
+// as reported.
+func TestExternalChangeDeliveryMeansSomeoneTookTheFrame(t *testing.T) {
+	h := newHub("")
+	t.Cleanup(h.shutdown)
+	path := "/tmp/receipt.htmlclay"
+
+	if delivered, _ := h.publishExternalChange(path, "changed", "<html>a</html>"); delivered {
+		t.Fatal("an empty hub reported a delivery")
+	}
+
+	live := newSubscriber(path, laneLive)
+	h.add(live)
+	if delivered, _ := h.publishExternalChange(path, "changed", "<html>b</html>"); !delivered {
+		t.Fatal("a live subscriber did not count as a delivery")
+	}
+
+	resuming := newSubscriber(path, laneLive)
+	resuming.resumeID = "r1"
+	h.add(resuming)
+	h.remove(live)
+	h.remove(resuming)
+	if delivered, _ := h.publishExternalChange(path, "changed", "<html>c</html>"); delivered {
+		t.Fatal("a disconnected resume cursor was counted as a delivery")
+	}
+
+	// A subscriber whose bounded queue is full took nothing either, whatever the
+	// hub retained on its behalf.
+	slow := &subscriber{key: path, lane: laneLive, ch: make(chan []byte, 1), done: make(chan struct{})}
+	h.add(slow)
+	h.publishExternalChange(path, "changed", "<html>d</html>")
+	delivered, evicted := h.publishExternalChange(path, "changed", "<html>e</html>")
+	if delivered || len(evicted) == 0 {
+		t.Fatalf("a full queue counted as a delivery: delivered=%v evicted=%d", delivered, len(evicted))
+	}
+}
+
+// The marker the flag reads lives ON the incarnation, and an idle incarnation is
+// reaped once its frames and its cursor expire, taking the marker with it. Without
+// noticing that the record itself is gone, the reconnect that most needs the flag
+// is exactly the one that would not get it.
+func TestCursorFrameFlagsAReapedIncarnation(t *testing.T) {
+	h := newHub("")
+	t.Cleanup(h.shutdown)
+	path := "/tmp/reaped.htmlclay"
+
+	now := time.Now()
+	h.now = func() time.Time { return now }
+
+	seed := newSubscriber(path, laneSaved)
+	seed.resumeID = "r1"
+	h.add(seed)
+	mark := h.seq
+	h.broadcastSaved(path, "<html>one</html>", "file-system")
+	h.remove(seed)
+
+	// Past both TTLs: the frames age out, the cursor expires, and the incarnation
+	// itself is dropped.
+	now = now.Add(2 * (replayFrameTTL + cursorTTL))
+
+	back := newSubscriber(path, laneSaved)
+	back.resumeID = "r1"
+	back.lastEventID = mark
+	from, replay, resync := h.add(back)
+	if len(replay) != 0 {
+		t.Fatalf("expected an empty replay after the reap, got %d frames", len(replay))
+	}
+	if !resync {
+		t.Fatalf("a reconnect into a reaped incarnation was not told to resync (from=%d)", from)
+	}
 }

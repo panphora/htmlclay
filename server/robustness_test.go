@@ -590,7 +590,7 @@ func TestReplayDeliversFramesMissedWhileDisconnected(t *testing.T) {
 	// the live queue, so replay never touches sub.ch.
 	sub := newSubscriber("/tmp/a.html", laneLive)
 	sub.lastEventID = resumeFrom
-	_, replay := h.add(sub)
+	_, replay, _ := h.add(sub)
 
 	if len(replay) != 1 {
 		t.Fatalf("replay returned %d frames, want 1 (the frame after the resume point)", len(replay))
@@ -607,7 +607,7 @@ func TestFreshSubscriberIsNotReplayedTo(t *testing.T) {
 	h.relay("/tmp/a.html", "<html>old</html>", "c1", nil)
 
 	sub := newSubscriber("/tmp/a.html", laneLive)
-	_, replay := h.add(sub)
+	_, replay, _ := h.add(sub)
 	if len(replay) != 0 {
 		t.Fatalf("a fresh subscriber was replayed %d frames, want 0", len(replay))
 	}
@@ -642,7 +642,7 @@ func TestEvictedSubscriberRecoversItsEventsOnReconnect(t *testing.T) {
 
 	next := newSubscriber("/tmp/a.html", laneLive)
 	next.lastEventID = lastSeen
-	_, replay := h.add(next)
+	_, replay, _ := h.add(next)
 
 	if len(replay) == 0 {
 		t.Fatal("reconnecting after an eviction replayed nothing")

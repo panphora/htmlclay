@@ -2,6 +2,7 @@ package server
 
 import (
 	"github.com/panphora/htmlclay/logging"
+	"github.com/panphora/htmlclay/versions"
 )
 
 // LiveSync bundles the process-wide live-sync machinery: the pub/sub hub, the
@@ -15,12 +16,13 @@ type LiveSync struct {
 	coord   *streamCoordinator
 }
 
-// NewLiveSync builds the shared live-sync runtime. seqPath is the persisted
-// sequence high-water mark, which lives beside the backups in a private 0700
-// directory the server refuses to serve.
-func NewLiveSync(seqPath string, logger *logging.Logger) *LiveSync {
-	h := newHub(seqPath)
-	wt := newWatcher(logger)
+// NewLiveSync builds the shared live-sync runtime. It takes the backup store
+// rather than a path because both halves need it: the hub persists its sequence
+// high-water mark beside the backups, and the watcher versions the external
+// changes it confirms.
+func NewLiveSync(store *versions.Store, logger *logging.Logger) *LiveSync {
+	h := newHub(SeqPath(store))
+	wt := newWatcher(store, logger)
 	co := newStreamCoordinator(h, wt)
 	wt.coord = co
 	h.startJanitor()

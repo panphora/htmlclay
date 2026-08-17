@@ -40,6 +40,14 @@ func removeWatched(t *testing.T, path string) {
 
 func setupWatchTest(t *testing.T, initial string) *watchHarness {
 	t.Helper()
+	return newWatchHarness(t, initial, true)
+}
+
+// newWatchHarness watches a file with or without live subscribers behind the
+// watch. Without them it is the shape a wire handler's lease produces: a watched
+// file with nobody listening.
+func newWatchHarness(t *testing.T, initial string, subscribe bool) *watchHarness {
+	t.Helper()
 	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
 	filePath := filepath.Join(homeDir, "watched.htmlclay")
 	if err := os.WriteFile(filePath, []byte(initial), 0644); err != nil {
@@ -67,8 +75,10 @@ func setupWatchTest(t *testing.T, initial string) *watchHarness {
 		live:  newSubscriber(f.AbsPath, laneLive),
 		saved: newSubscriber(f.AbsPath, laneSaved),
 	}
-	srv.hub.add(h.live)
-	srv.hub.add(h.saved)
+	if subscribe {
+		srv.hub.add(h.live)
+		srv.hub.add(h.saved)
+	}
 	srv.watcher.watch(f)
 
 	t.Cleanup(func() {
@@ -261,5 +271,188 @@ func TestWatcherLifecycleFollowsSubscribers(t *testing.T) {
 	wt.mu.Unlock()
 	if running || entries != 0 {
 		t.Fatalf("watcher did not stop on the last unwatch: running=%v entries=%d", running, entries)
+	}
+}
+
+// watchedPath is the test's own probe for a live watch entry. The production
+// code no longer asks the question: publishing gates on delivery now, not on the
+// watch, and the lease is the whole reason those are different.
+func watchedPath(wt *watcher, path string) bool {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+	e, ok := wt.entries[path]
+	return ok && !e.removed
+}
+
+// A change published into an empty hub must not advance suppression. A wire
+// handler's watch lease is the first thing that makes a file watched with nobody
+// subscribed, and recording the hash there would hide the change: the retained
+// frame ages out, and every later poll sees content the watcher believes it has
+// already reported.
+func TestExternalChangeWithNoAudienceIsNotRecorded(t *testing.T) {
+	h := newWatchHarness(t, "<!DOCTYPE html>\n<html><body>one</body></html>", false)
+
+	h.file.Lock()
+	data, _ := os.ReadFile(h.file.AbsPath)
+	h.file.RecordServerWrite(versions.Hash(data))
+	h.file.Unlock()
+
+	changed := "<!DOCTYPE html>\n<html><body>the agent wrote this</body></html>"
+	if err := os.WriteFile(h.file.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Well past the 40ms quiet interval and many 10ms polls.
+	time.Sleep(300 * time.Millisecond)
+
+	h.file.Lock()
+	stable := h.file.LastStableObservation()
+	h.file.Unlock()
+	if stable == versions.Hash([]byte(changed)) {
+		t.Fatal("suppression advanced for a change nobody received")
+	}
+
+	// A tab arriving afterwards rearms the read, so it learns about the change
+	// instead of inheriting a file the watcher has quietly written off.
+	live := newSubscriber(h.file.AbsPath, laneLive)
+	h.srv.hub.add(live)
+	h.srv.watcher.watch(h.file)
+
+	notice := waitFrame(t, live, 2*time.Second)
+	if notice["type"] != "notification" {
+		t.Fatalf("late subscriber got %v, want a notification", notice)
+	}
+	h.file.Lock()
+	stable = h.file.LastStableObservation()
+	h.file.Unlock()
+	if stable != versions.Hash([]byte(changed)) {
+		t.Fatal("delivery to a real subscriber did not advance suppression")
+	}
+}
+
+// The gate is what makes a lease affordable, and this is the honest statement of
+// its cost: a write that lands with the same size, modtime and file identity is
+// invisible until the next write metadata can see.
+//
+// The poll is driven by hand here rather than by the loop. With a ticker running
+// there is a window between writing the same-length bytes and putting the
+// timestamp back in which a tick can arm a candidate, and a pending candidate
+// bypasses the gate on every later poll, so the test fails for a reason that has
+// nothing to do with what it checks.
+func TestWatcherReadGateSkipsAnIdenticalFingerprint(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	wt := srv.watcher
+	wt.quiet = 0
+
+	live := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(live)
+
+	original, err := os.ReadFile(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Lock()
+	f.RecordServerWrite(versions.Hash(original))
+	f.Unlock()
+
+	// Nothing has called watch, so no poll loop exists and this entry is the only
+	// thing touching the file.
+	e := &watchEntry{file: f, refs: 1}
+	wt.check(e) // reads, and arms the fingerprint
+	wt.check(e) // clears the candidate: the content is already known
+
+	before, err := os.Stat(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sneaky := []byte("<!DOCTYPE html>\n<html><body>ho</body></html>")
+	if len(sneaky) != int(before.Size()) {
+		t.Fatalf("fixture lengths diverged: %d vs %d", len(sneaky), before.Size())
+	}
+	if err := os.WriteFile(f.AbsPath, sneaky, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(f.AbsPath, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	wt.check(e)
+	wt.check(e)
+	expectNoFrame(t, live, 50*time.Millisecond)
+
+	// The next write metadata can see surfaces the current content, which is the
+	// bound on how long the miss lasts.
+	repaired := "<!DOCTYPE html>\n<html><body>three, and longer</body></html>"
+	if err := os.WriteFile(f.AbsPath, []byte(repaired), 0644); err != nil {
+		t.Fatal(err)
+	}
+	wt.check(e)
+	wt.check(e)
+	if notice := waitFrame(t, live, time.Second); notice["type"] != "notification" {
+		t.Fatalf("live lane got %v, want a notification", notice)
+	}
+}
+
+// An external edit is the one write to a file that no other path versions.
+func TestWatcherVersionsAnExternalChange(t *testing.T) {
+	h := setupWatchTest(t, "<!DOCTYPE html>\n<html><body>one</body></html>")
+
+	// Resolve a history key the way a serve would, then record the starting
+	// content as known.
+	h.file.Lock()
+	data, _ := os.ReadFile(h.file.AbsPath)
+	key, _ := h.srv.ensureHistoryKeyLocked(h.file, data)
+	h.file.RecordServerWrite(versions.Hash(data))
+	h.file.Unlock()
+
+	changed := "<!DOCTYPE html>\n<html><body>edited elsewhere</body></html>"
+	if err := os.WriteFile(h.file.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	waitFrame(t, h.saved, 2*time.Second)
+
+	entries, err := h.srv.versions.List(key, h.file.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("external change was broadcast but never versioned")
+	}
+	// List is newest-first.
+	newest, err := h.srv.versions.Read(key, h.file.AbsPath, entries[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(newest) != changed {
+		t.Fatalf("newest version is %q, want the external bytes", newest)
+	}
+}
+
+// A file with no resolved identity is not versioned by the watcher: minting one
+// here would claim a durable id for a file nobody has opened.
+func TestWatcherDoesNotVersionAFileWithNoHistoryKey(t *testing.T) {
+	h := setupWatchTest(t, "<!DOCTYPE html>\n<html><body>one</body></html>")
+
+	h.file.Lock()
+	data, _ := os.ReadFile(h.file.AbsPath)
+	h.file.RecordServerWrite(versions.Hash(data))
+	hadKey := h.file.HistoryKey()
+	h.file.Unlock()
+	if hadKey != "" {
+		t.Fatalf("fixture already has a history key: %q", hadKey)
+	}
+
+	changed := "<!DOCTYPE html>\n<html><body>edited elsewhere</body></html>"
+	if err := os.WriteFile(h.file.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// The broadcast still happens; only the backup is skipped.
+	waitFrame(t, h.saved, 2*time.Second)
+
+	h.file.Lock()
+	key := h.file.HistoryKey()
+	h.file.Unlock()
+	if key != "" {
+		t.Fatalf("the watcher resolved an identity: %q", key)
 	}
 }

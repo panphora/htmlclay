@@ -183,6 +183,35 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, rawPath strin
 	s.serveRegistered(w, r, f, mode)
 }
 
+// ensureHistoryKeyLocked resolves this file's durable backup identity exactly
+// once and returns it, along with whether that identity was freshly minted and so
+// is still provisional until something makes it durable. data is the file's
+// current disk bytes: they are read for an existing htmlclayid, and hashed into a
+// path key on every other route through here. Nothing is written to disk.
+//
+// This is the one seam where a key is allowed to come into existence, which is
+// what keeps the watcher structurally unable to mint one. Serving, saving, and a
+// wire handler's lease all resolve through here. Deriving a key anywhere else is
+// how a first-save backup once ended up under a path hash while everything later
+// keyed by id, orphaning it. Caller holds f.Lock.
+func (s *Server) ensureHistoryKeyLocked(f *session.File, data []byte) (key string, provisional bool) {
+	if k := f.HistoryKey(); k != "" {
+		return k, false
+	}
+	if !strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
+		f.SetHistoryKey(versions.Key(f.AbsPath, data))
+		return f.HistoryKey(), false
+	}
+	id, prov, err := s.versions.ResolveIdentity(f.AbsPath, htmlutil.ReadHTMLClayID(data))
+	if err != nil {
+		s.logger.Printf("Could not resolve identity for %s: %v", f.RelPath, err)
+		f.SetHistoryKey(versions.Key(f.AbsPath, data))
+		return f.HistoryKey(), false
+	}
+	f.SetHistoryKey("id:" + id)
+	return f.HistoryKey(), prov
+}
+
 // serveRegistered serves a registered file with its identity and, on a real
 // document load, its save token.
 func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *session.File, mode dataMode) {
@@ -228,22 +257,7 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 	// disk. The id rides only in the bytes served (below); it reaches the file
 	// only when the client's own save carries it back. Every later list, read,
 	// restore and save reads this stored key.
-	provisional := false
-	if f.HistoryKey() == "" {
-		if strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
-			id, prov, rErr := s.versions.ResolveIdentity(f.AbsPath, htmlutil.ReadHTMLClayID(data))
-			if rErr != nil {
-				s.logger.Printf("Could not resolve identity for %s: %v", f.RelPath, rErr)
-				f.SetHistoryKey(versions.Key(f.AbsPath, data))
-			} else {
-				f.SetHistoryKey("id:" + id)
-				provisional = prov
-			}
-		} else {
-			f.SetHistoryKey(versions.Key(f.AbsPath, data))
-		}
-	}
-	key := f.HistoryKey()
+	key, provisional := s.ensureHistoryKeyLocked(f, data)
 
 	// served carries the durable id; the bytes on disk never do. Injecting the
 	// tracked id over whatever disk holds is also model B′'s self-heal: a file
@@ -713,18 +727,7 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	// A save that somehow precedes a serve resolves identity the same way serving
 	// does; the body's own id is never adopted, so a pasted-in foreign id cannot
 	// move the history (model B′).
-	if f.HistoryKey() == "" {
-		if strings.EqualFold(filepath.Ext(f.AbsPath), ".htmlclay") {
-			if id, _, rErr := s.versions.ResolveIdentity(f.AbsPath, htmlutil.ReadHTMLClayID(body)); rErr == nil {
-				f.SetHistoryKey("id:" + id)
-			} else {
-				f.SetHistoryKey(versions.Key(f.AbsPath, body))
-			}
-		} else {
-			f.SetHistoryKey(versions.Key(f.AbsPath, body))
-		}
-	}
-	key := f.HistoryKey()
+	key, _ := s.ensureHistoryKeyLocked(f, body)
 
 	// B5: compare the on-disk hash against lastServerWrite. Hashing the on-disk
 	// bytes on both sides sidesteps the token inject/strip round-trip entirely.
