@@ -117,6 +117,18 @@ A `.htmlclay` file can be anything you'd build as a web page that benefits from 
 - Moving checklist
 - Interactive fiction editor
 
+## Let a program edit the file you're looking at
+
+A page open in HTML Clay can ask a program on your machine to change the file it is running from, and watch the change arrive. You point at a paragraph and say "make this shorter", and an AI agent, a script, or a formatter running in your own terminal does it.
+
+```bash
+htmlclay wire serve ~/notes/page.htmlclay -- ./my-agent.sh
+```
+
+No HTML travels between the two: the page sends a small request, your program edits the file, and the edit reaches the page as an ordinary file change. The file is the only thing they share, so nothing needs an account, a service, or a protocol you have to trust.
+
+See [`docs/wire.md`](docs/wire.md) for the page API, the handler contract, the CLI, and the security model.
+
 ## Why does this need to exist?
 
 Every other document format has self-saving figured out. Photoshop files open, edit, save. Word documents open, edit, save. Even macro-laden Excel spreadsheets — which execute arbitrary code — open, edit, save.
