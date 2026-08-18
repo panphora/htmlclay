@@ -120,6 +120,14 @@ func migrateConfigDir() {
 }
 
 func main() {
+	// The wire CLI is a client of a running app, so it must return before
+	// anything below: initConfig takes the single-instance lock, and flag.Parse
+	// stops at the first non-flag argument, which would leave a subcommand's own
+	// flags unparsed and forward "wire" to openFile as a path.
+	if code, handled := wireDispatch(os.Args); handled {
+		os.Exit(code)
+	}
+
 	noTray := flag.Bool("no-tray", false, "Run without system tray (signal-based shutdown)")
 	flag.Parse()
 
