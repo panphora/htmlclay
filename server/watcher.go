@@ -63,11 +63,15 @@ type watchEntry struct {
 	// suppressed forever, and the user never saw it.
 	//
 	// rearm is set under the same lock when a subscriber joins an entry that
-	// already existed, and consumed by the next poll. Every other field here
-	// belongs to the poll goroutine alone; these two are the only ones another
-	// goroutine writes, which is why they travel together through entryState.
+	// already existed, and consumed by the next poll.
+	//
+	// poke is set the same way when a wire handler reports it finished writing
+	// this file. Every other field here belongs to the poll goroutine alone;
+	// these three are the only ones another goroutine writes, which is why they
+	// travel together through entryState.
 	removed bool
 	rearm   bool
+	poke    bool
 }
 
 // forget drops the candidate and the read fingerprint together, so a poll that
@@ -172,6 +176,27 @@ func (wt *watcher) unwatch(f *session.File) {
 	}
 }
 
+// poke asks the next poll to stop waiting out this file's quiet interval. A wire
+// handler that reports it finished has finished writing, and the page's spinner
+// ends on that same frame, so without this the text arrives a poll plus a quiet
+// interval later.
+//
+// It is a hint and never an authorization. The candidate still faces two reads a
+// poll apart (see check), then the re-read and hash revalidation in
+// publishConfirmed, so a poke on a half-written file publishes nothing.
+//
+// Its validity is one poll. check consumes it whether or not it had a candidate
+// to spend it on, exactly as it consumes rearm, because a poke that outlived its
+// request would shorten an unrelated later write's quiet interval, which is the
+// one thing that interval exists to prevent.
+func (wt *watcher) poke(path string) {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+	if e, ok := wt.entries[path]; ok {
+		e.poke = true
+	}
+}
+
 func (wt *watcher) shutdown() {
 	wt.mu.Lock()
 	wt.closed = true
@@ -224,7 +249,7 @@ func (wt *watcher) tick() {
 // watcher; the two per-file records are read and written only under the file
 // lock, at the very end.
 func (wt *watcher) check(e *watchEntry) {
-	removed, rearm := wt.entryState(e)
+	removed, rearm, poke := wt.entryState(e)
 	if removed {
 		return
 	}
@@ -287,23 +312,38 @@ func (wt *watcher) check(e *watchEntry) {
 		e.pendingHash = hash
 		e.pendingData = data
 		e.pendingAt = time.Now()
+		// A poke says the write is finished, so this candidate does not have to
+		// wait the interval out. It does not get to skip the interval entirely:
+		// a candidate this poll saw for the first time has been read exactly
+		// once, and publishing on a single read is what the interval exists to
+		// prevent. Leaving half a poll on the clock buys the confirming read and
+		// nothing else. Half rather than a whole poll so that ticker jitter and
+		// the read itself cannot push it into a third poll; never forward, so a
+		// watcher polling slower than its own interval is unaffected. A file
+		// still being written hashes differently next poll and starts over.
+		if poke {
+			if wait := wt.quiet - wt.poll/2; wait > 0 {
+				e.pendingAt = e.pendingAt.Add(-wait)
+			}
+		}
 		return
 	}
-	if time.Since(e.pendingAt) < wt.quiet {
+	if !poke && time.Since(e.pendingAt) < wt.quiet {
 		return
 	}
 
 	wt.publish(e, hash, data)
 }
 
-// entryState reads the two fields another goroutine may write, in one
-// acquisition, and consumes the rearm request.
-func (wt *watcher) entryState(e *watchEntry) (removed, rearm bool) {
+// entryState reads the three fields another goroutine may write, in one
+// acquisition, and consumes the rearm and poke requests.
+func (wt *watcher) entryState(e *watchEntry) (removed, rearm, poke bool) {
 	wt.mu.Lock()
 	defer wt.mu.Unlock()
-	removed, rearm = e.removed, e.rearm
+	removed, rearm, poke = e.removed, e.rearm, e.poke
 	e.rearm = false
-	return removed, rearm
+	e.poke = false
+	return removed, rearm, poke
 }
 
 // publish versions and broadcasts a confirmed change, then prunes.

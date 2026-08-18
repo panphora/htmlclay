@@ -46,7 +46,10 @@ func setupWatchTest(t *testing.T, initial string) *watchHarness {
 // newWatchHarness watches a file with or without live subscribers behind the
 // watch. Without them it is the shape a wire handler's lease produces: a watched
 // file with nobody listening.
-func newWatchHarness(t *testing.T, initial string, subscribe bool) *watchHarness {
+//
+// tune runs before the polling goroutine starts, which is the only safe moment to
+// change the intervals: the loop reads them from the watcher itself.
+func newWatchHarness(t *testing.T, initial string, subscribe bool, tune ...func(*watcher)) *watchHarness {
 	t.Helper()
 	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
 	filePath := filepath.Join(homeDir, "watched.htmlclay")
@@ -68,6 +71,9 @@ func newWatchHarness(t *testing.T, initial string, subscribe bool) *watchHarness
 	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
 	srv.watcher.poll = 10 * time.Millisecond
 	srv.watcher.quiet = 40 * time.Millisecond
+	for _, fn := range tune {
+		fn(srv.watcher)
+	}
 
 	h := &watchHarness{
 		srv:   srv,
@@ -455,4 +461,122 @@ func TestWatcherDoesNotVersionAFileWithNoHistoryKey(t *testing.T) {
 	if key != "" {
 		t.Fatalf("the watcher resolved an identity: %q", key)
 	}
+}
+
+// The poke: a wire handler that reports it finished writing publishes its change
+// on the next poll instead of waiting out the quiet interval. The interval here is
+// long enough that nothing below can publish by waiting, so every publish is the
+// poke's doing.
+func TestWatcherPokePublishesWithoutTheQuietInterval(t *testing.T) {
+	initial := "<!DOCTYPE html>\n<html><body>one</body></html>"
+	h := newWatchHarness(t, initial, true, func(wt *watcher) {
+		wt.quiet = 30 * time.Second
+	})
+
+	h.file.Lock()
+	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
+	h.file.Unlock()
+
+	changed := "<!DOCTYPE html>\n<html><body>the agent wrote this</body></html>"
+	if err := os.WriteFile(h.file.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	expectNoFrame(t, h.live, 200*time.Millisecond)
+
+	h.srv.watcher.poke(h.file.AbsPath)
+
+	notice := waitFrame(t, h.live, 2*time.Second)
+	if notice["type"] != "notification" {
+		t.Fatalf("live lane got %v, want a notification", notice)
+	}
+	content := waitFrame(t, h.saved, 2*time.Second)
+	if content["html"] != changed {
+		t.Fatalf("saved lane html = %v", content["html"])
+	}
+}
+
+// One poll of validity. A poke that outlived its request would shorten an
+// unrelated later write's quiet interval, which is the one thing that interval
+// exists to prevent.
+func TestWatcherPokeDoesNotOutliveItsPoll(t *testing.T) {
+	initial := "<!DOCTYPE html>\n<html><body>one</body></html>"
+	h := newWatchHarness(t, initial, true, func(wt *watcher) {
+		wt.quiet = 30 * time.Second
+	})
+
+	h.file.Lock()
+	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
+	h.file.Unlock()
+
+	if err := os.WriteFile(h.file.AbsPath, []byte("<html><body>the agent wrote this</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	h.srv.watcher.poke(h.file.AbsPath)
+	waitFrame(t, h.live, 2*time.Second)
+
+	if err := os.WriteFile(h.file.AbsPath, []byte("<html><body>a later, unrelated write</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	expectNoFrame(t, h.live, 300*time.Millisecond)
+}
+
+// A poke for a file nobody is watching is a no-op, not a panic: a handler can
+// report done after its own lease has been released.
+func TestWatcherPokeForAnUnwatchedFileIsHarmless(t *testing.T) {
+	h := setupWatchTest(t, "<!DOCTYPE html>\n<html><body>one</body></html>")
+	h.srv.watcher.poke(filepath.Join(filepath.Dir(h.file.AbsPath), "never-watched.htmlclay"))
+}
+
+// A poke arriving before the write is first seen still takes a confirming read.
+// Publishing on a single read is what the quiet interval exists to prevent, and
+// the poke shortens that interval rather than replacing it.
+func TestWatcherPokeStillTakesAConfirmingRead(t *testing.T) {
+	initial := "<!DOCTYPE html>\n<html><body>one</body></html>"
+	h := newWatchHarness(t, initial, true, func(wt *watcher) {
+		// Slow polls and an interval nothing here can wait out: the only route to
+		// a publish is the poke, and the polls are far enough apart to count.
+		wt.poll = 500 * time.Millisecond
+		wt.quiet = 10 * time.Second
+	})
+
+	h.file.Lock()
+	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
+	h.file.Unlock()
+
+	changed := "<!DOCTYPE html>\n<html><body>the agent wrote this</body></html>"
+	if err := os.WriteFile(h.file.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	h.srv.watcher.poke(h.file.AbsPath)
+
+	// The first poll is this candidate's first and only look at the file.
+	expectNoFrame(t, h.live, 600*time.Millisecond)
+
+	// The second poll finds the same bytes and publishes.
+	content := waitFrame(t, h.saved, 3*time.Second)
+	if content["html"] != changed {
+		t.Fatalf("saved lane html = %v", content["html"])
+	}
+}
+
+// A poke that finds nothing to publish is spent all the same. Retaining it until
+// something arrived would let a terminal frame shorten the quiet interval of a
+// write it has nothing to do with.
+func TestWatcherPokeWithNoChangeIsStillSpent(t *testing.T) {
+	initial := "<!DOCTYPE html>\n<html><body>one</body></html>"
+	h := newWatchHarness(t, initial, true, func(wt *watcher) {
+		wt.quiet = 30 * time.Second
+	})
+
+	h.file.Lock()
+	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
+	h.file.Unlock()
+
+	h.srv.watcher.poke(h.file.AbsPath)
+	expectNoFrame(t, h.live, 200*time.Millisecond) // several polls, nothing to publish
+
+	if err := os.WriteFile(h.file.AbsPath, []byte("<html><body>a later, unrelated write</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	expectNoFrame(t, h.live, 400*time.Millisecond)
 }

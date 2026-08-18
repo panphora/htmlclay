@@ -58,6 +58,16 @@ func (co *streamCoordinator) unlease(f *session.File) {
 	co.watcher.unwatch(f)
 }
 
+// pokeWatcher forwards a handler's "I finished writing" hint to the file's watch
+// entry, and does nothing for a file nobody is watching. Through the coordinator
+// for the same reason lease is: every touch of the watcher goes under one lock,
+// in the documented order.
+func (co *streamCoordinator) pokeWatcher(f *session.File) {
+	co.mu.Lock()
+	defer co.mu.Unlock()
+	co.watcher.poke(f.AbsPath)
+}
+
 // remove drops the watcher reference first, then the hub membership, then stops
 // the writer. It is idempotent for one subscriber, so an eviction and the
 // handler's own defer cannot double-count the watcher reference.

@@ -646,3 +646,56 @@ func TestWireTerminalRetentionIsBoundedAcrossChannels(t *testing.T) {
 		t.Fatalf("running total %d disagrees with what is actually held, %d", total, counted)
 	}
 }
+
+// The poke, end to end over the route: a process's terminal frame publishes the
+// change it just wrote without waiting out the quiet interval, and a page's
+// identical frame does not. The interval here is long enough that nothing below
+// can publish by waiting.
+func TestWireTerminalFrameFromAProcessPokesTheWatcher(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	t.Cleanup(func() { srv.wire.shutdown() })
+	srv.watcher.poll = 10 * time.Millisecond
+	srv.watcher.quiet = 30 * time.Second
+
+	disk, err := os.ReadFile(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Lock()
+	f.RecordServerWrite(versions.Hash(disk))
+	f.Unlock()
+
+	sub := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(sub)
+	srv.coord.lease(f) // the shape a wire handler holds: watched, no tab open
+	t.Cleanup(func() { srv.coord.unlease(f) })
+
+	changed := "<!DOCTYPE html>\n<html><body>the agent wrote this</body></html>"
+	if err := os.WriteFile(f.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	expectNoFrame(t, sub, 200*time.Millisecond)
+
+	// A page cannot claim a write finished, so its terminal frame changes nothing.
+	req := httptest.NewRequest("POST", "/_/wire/send", strings.NewReader(`{"type":"wire/done","id":"a1"}`))
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Page-URL", fmt.Sprintf("http://127.0.0.1:%d/%s", srv.port, filepath.Base(f.AbsPath)))
+	w := httptest.NewRecorder()
+	srv.wireMux().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("page send failed: %d %s", w.Code, w.Body.String())
+	}
+	expectNoFrame(t, sub, 200*time.Millisecond)
+
+	body := fmt.Sprintf(`{"type":"wire/done","id":"a2","file":%q}`, f.AbsPath)
+	if w := wireSendReq(t, srv, body); w.Code != 200 {
+		t.Fatalf("process send failed: %d %s", w.Code, w.Body.String())
+	}
+
+	frame := waitFrame(t, sub, 2*time.Second)
+	if frame["html"] != changed {
+		t.Fatalf("saved lane html = %v", frame["html"])
+	}
+}

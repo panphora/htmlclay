@@ -763,6 +763,18 @@ func (s *Server) handleWireSend(w http.ResponseWriter, r *http.Request) {
 		env.From = "page"
 	}
 
+	// A handler that reports a request finished has finished writing the file, so
+	// the change is already on disk and the quiet interval has nothing left to
+	// wait for. Without the poke the page's spinner ends on this frame and the
+	// text arrives up to a poll plus a quiet interval later.
+	//
+	// Only from a process: a page has no way to know a write finished, and a
+	// terminal frame is the one thing it could send to claim so. An error is
+	// terminal too, and a handler that gave up has also stopped writing.
+	if env.isTerminal() && !isBrowser {
+		s.coord.pokeWatcher(f)
+	}
+
 	handlers, observers := s.wire.publish(f.AbsPath, env)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
