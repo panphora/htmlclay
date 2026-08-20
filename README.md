@@ -1,4 +1,12 @@
-# HTML Clay
+# HTML Clay™
+
+> **License: Clay License.** Free for almost everyone: unless products and services that contain this software, derive from it, or provide its functionality by running it bring you more than $1M in a calendar year, you owe nothing, sign nothing, register nowhere.
+>
+> | Free under | Above it | Becomes MIT |
+> |---|---|---|
+> | $1M/year covered revenue | 3% of the excess | 2028-02-20 (this version) |
+>
+> Plain answers: [hyperclay.com/host-program](https://hyperclay.com/host-program) · binding text in [LICENSE](LICENSE) · questions: license@hyperclay.com
 
 A desktop app that makes self-saving HTML files a native OS feature.
 
