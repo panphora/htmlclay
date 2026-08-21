@@ -705,7 +705,10 @@ func (s *Server) handleWireSend(w http.ResponseWriter, r *http.Request) {
 
 	// application/json is load-bearing rather than hygiene: it is not a
 	// CORS-simple content type, so a cross-origin POST is forced into a preflight
-	// that this mux answers with a bare 405 and no allow-origin header.
+	// that this mux answers with a bare 405 and no allow-origin header. The matcher
+	// also accepts the `+json` suffix, which costs nothing here: the three simple
+	// content types are form-urlencoded, multipart, and text/plain, so every type it
+	// accepts is still preflighted.
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		s.writeError(w, http.StatusUnsupportedMediaType, "expected application/json")
 		return

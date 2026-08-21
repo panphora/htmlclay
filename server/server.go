@@ -88,6 +88,7 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 
 	mux.HandleFunc("GET /_/read/{token}", s.handleRead)
 	mux.HandleFunc("POST /_/save/{token}", sameOrigin(s.handleSave))
+	mux.HandleFunc("POST /_/upload/{token}", sameOrigin(s.handleUpload))
 	mux.HandleFunc("GET /_/meta/{token}", s.handleMeta)
 	mux.HandleFunc("GET /_/versions/{token}", s.handleListVersions)
 	mux.HandleFunc("GET /_/version/{token}/{name}", s.handleReadVersion)

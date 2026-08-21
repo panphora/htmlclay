@@ -231,12 +231,14 @@ func TestSaveThroughMux(t *testing.T) {
 	}
 }
 
-// TestSaveJSONBody verifies that an application/json body {content, snapshotHtml}
-// persists only content, mirroring hyperclayjs's live-sync save shape.
-func TestSaveJSONBody(t *testing.T) {
-	srv, f, _ := setupHandlerTest(t)
+// TestSaveJSONBodyRefused verifies spec §3: /_/save has exactly one body shape,
+// so a JSON envelope is refused with 415 and nothing reaches the file. Writing
+// such an envelope's `content` would be inventing a second shape for the one
+// route the spec says has only one.
+func TestSaveJSONBodyRefused(t *testing.T) {
+	srv, f, content := setupHandlerTest(t)
 
-	jsonBody := `{"content":"<!DOCTYPE html><html htmlclaytoken=\"x\"><body>From JSON</body></html>","snapshotHtml":"<html>snap</html>"}`
+	jsonBody := `{"content":"<!DOCTYPE html><html><body>From JSON</body></html>","snapshotHtml":"<html>snap</html>"}`
 	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(jsonBody))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.Header.Set("Content-Type", "application/json")
@@ -245,24 +247,86 @@ func TestSaveJSONBody(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleSave(w, req)
 
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415, got %d", w.Code)
 	}
-	saved := string(mustRead(t, f.AbsPath))
-	if !strings.Contains(saved, "From JSON") {
-		t.Error("content from JSON body not persisted")
+	if !strings.Contains(w.Body.String(), "unsupported-media-type") {
+		t.Errorf("expected the spec error code in the body, got %s", w.Body.String())
 	}
-	if strings.Contains(saved, "snap") {
-		t.Error("snapshotHtml wrapper leaked to disk")
-	}
-	if strings.Contains(saved, "htmlclaytoken") {
-		t.Error("token should be stripped from JSON content")
+	if string(mustRead(t, f.AbsPath)) != content {
+		t.Error("a refused save must leave the file untouched")
 	}
 }
 
-// TestSaveInvalidJSONBody rejects a malformed application/json body without
-// touching the file.
-func TestSaveInvalidJSONBody(t *testing.T) {
+// TestSaveJSONVariantsRefused covers the two content types the old matcher missed.
+// It compared for exactly "application/json" and treated a mime.ParseMediaType
+// failure as "not JSON", so a `+json` suffix or a malformed parameter list walked
+// straight past the refusal — and then past HasHTMLTag, because the escaped
+// document inside the envelope contains the characters "<html". The raw envelope
+// was written to the file and answered 200.
+func TestSaveJSONVariantsRefused(t *testing.T) {
+	for _, ct := range []string{
+		"application/hal+json",
+		"application/vnd.api+json",
+		"APPLICATION/JSON",
+		"application/json;;",
+		"  application/json ; charset=utf-8",
+	} {
+		t.Run(ct, func(t *testing.T) {
+			srv, f, content := setupHandlerTest(t)
+
+			jsonBody := `{"content":"<!DOCTYPE html><html><body>From JSON</body></html>"}`
+			req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(jsonBody))
+			req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+			req.Header.Set("Content-Type", ct)
+			req.SetPathValue("token", f.Token)
+
+			w := httptest.NewRecorder()
+			srv.handleSave(w, req)
+
+			if w.Code != http.StatusUnsupportedMediaType {
+				t.Errorf("expected 415, got %d", w.Code)
+			}
+			if string(mustRead(t, f.AbsPath)) != content {
+				t.Error("a refused save must leave the file untouched")
+			}
+		})
+	}
+}
+
+// TestSaveTextIsStillAccepted guards the refusal against overreach: text/plain,
+// an absent Content-Type, and text/html are all the one body shape this route
+// takes, and none of them may be caught by the JSON matcher.
+func TestSaveTextIsStillAccepted(t *testing.T) {
+	for _, ct := range []string{"text/plain", "text/plain;charset=utf-8", "text/html", ""} {
+		t.Run("ct="+ct, func(t *testing.T) {
+			srv, f, _ := setupHandlerTest(t)
+
+			doc := "<!DOCTYPE html><html><body>Written</body></html>"
+			req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(doc))
+			req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+			if ct != "" {
+				req.Header.Set("Content-Type", ct)
+			}
+			req.SetPathValue("token", f.Token)
+
+			w := httptest.NewRecorder()
+			srv.handleSave(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(string(mustRead(t, f.AbsPath)), "Written") {
+				t.Error("the document should have reached the file")
+			}
+		})
+	}
+}
+
+// TestSaveMalformedJSONBodyRefused pins the refusal to the declared content type
+// rather than to whether the body happens to parse. Both are the same answer,
+// which is what makes the rule one a client can rely on.
+func TestSaveMalformedJSONBodyRefused(t *testing.T) {
 	srv, f, content := setupHandlerTest(t)
 
 	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader("{not json"))
@@ -273,11 +337,37 @@ func TestSaveInvalidJSONBody(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleSave(w, req)
 
-	if w.Code != 400 {
-		t.Errorf("expected 400 for invalid json, got %d", w.Code)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("expected 415, got %d", w.Code)
 	}
 	if string(mustRead(t, f.AbsPath)) != content {
-		t.Error("file should be unchanged after a rejected invalid-json save")
+		t.Error("file should be unchanged after a refused save")
+	}
+}
+
+// TestSaveTextBodyAccepted is the other half: the one shape the route does take,
+// with the ephemeral token stripped on the way to disk.
+func TestSaveTextBodyAccepted(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	body := `<!DOCTYPE html><html htmlclaytoken="x"><body>From text</body></html>`
+	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(body))
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.Header.Set("Content-Type", "text/plain")
+	req.SetPathValue("token", f.Token)
+
+	w := httptest.NewRecorder()
+	srv.handleSave(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	saved := string(mustRead(t, f.AbsPath))
+	if !strings.Contains(saved, "From text") {
+		t.Error("text body not persisted")
+	}
+	if strings.Contains(saved, "htmlclaytoken") {
+		t.Error("token should be stripped on save")
 	}
 }
 

@@ -65,12 +65,18 @@ func (s *Server) readRegisteredFile(absPath string) ([]byte, error) {
 const maxSaveSize = 50 * 1024 * 1024
 
 type fileMeta struct {
-	Path         string `json:"path"`
-	AbsolutePath string `json:"absolutePath"`
-	Name         string `json:"name"`
-	Size         int64  `json:"size"`
-	LastModified string `json:"lastModified"`
-	HTMLClayID   string `json:"htmlclayid,omitempty"`
+	// Spec and Extensions describe the HOST, not this document, and are the same
+	// for every file it serves. Added to the existing shape rather than replacing
+	// it: the body carried no `spec` before, so a spec client already read
+	// htmlclay as a bare core host, and every existing field still answers.
+	Spec         int      `json:"spec"`
+	Extensions   []string `json:"extensions"`
+	Path         string   `json:"path"`
+	AbsolutePath string   `json:"absolutePath"`
+	Name         string   `json:"name"`
+	Size         int64    `json:"size"`
+	LastModified string   `json:"lastModified"`
+	HTMLClayID   string   `json:"htmlclayid,omitempty"`
 }
 
 func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) (*session.File, bool) {
@@ -482,6 +488,17 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 
 	name := filepath.Base(absPath)
 
+	// An SVG is a document: it can carry <script>, and served inline from this
+	// origin it runs with the same authority as the page beside it. Uploads accept
+	// SVG precisely BECAUSE serving it inert is possible, so this header is what
+	// makes that decision safe. Unconditional, because provenance is not knowable
+	// here: a file that arrived through /_/upload and one the person saved into
+	// the folder themselves look identical at serve time.
+	if ext := strings.ToLower(filepath.Ext(name)); ext == ".svg" || ext == ".svgz" {
+		w.Header().Set("Content-Disposition", "attachment")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+	}
+
 	// B8: assets always revalidate. Detailed failure causes go in the log; the
 	// response bodies above stay coarse.
 	etag, err := assetETag(file, info)
@@ -675,23 +692,16 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// hyperclayjs sends a JSON {content, snapshotHtml} body when a live-sync
-	// snapshot is present (it treats 127.0.0.1 as a local host). Persist only
-	// content; snapshotHtml is for a future live-sync broadcast htmlclay does
-	// not yet implement. Any non-JSON body is the raw HTML, written as-is.
+	// Spec §3: /_/save takes the document as text, and this route has exactly one
+	// body shape. A JSON body is refused rather than guessed at, because a host
+	// that quietly wrote an envelope's `content` would be inventing a second shape
+	// for the one route the spec says has only one. Anything a save needs to say
+	// beyond the document travels in a header, and an unstripped snapshot belongs
+	// to the §10 relay, never to a save.
 	if isJSONContentType(r.Header.Get("Content-Type")) {
-		var payload struct {
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal(body, &payload); err != nil {
-			s.writeError(w, http.StatusBadRequest, "invalid json body")
-			return
-		}
-		if payload.Content == "" {
-			s.writeError(w, http.StatusBadRequest, "empty content")
-			return
-		}
-		body = []byte(payload.Content)
+		uploadError(w, http.StatusUnsupportedMediaType, "unsupported-media-type",
+			"/_/save takes the document as text, not JSON.")
+		return
 	}
 
 	body = htmlutil.StripToken(body)
@@ -799,15 +809,18 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"ok":true,"msg":"Saved","msgType":"success"}`))
 }
 
+// isJSONContentType reports whether a Content-Type declares JSON, including the
+// `+json` structured suffix.
+//
+// It splits on ';' rather than going through mime.ParseMediaType. A header this
+// route REFUSES does not have to be well formed, and ParseMediaType fails on
+// something like `application/json;;` — treating that failure as "not JSON" is the
+// most permissive possible reading of bytes we could not understand, and it let the
+// old envelope through to be written to the file verbatim.
 func isJSONContentType(ct string) bool {
-	if ct == "" {
-		return false
-	}
-	mediaType, _, err := mime.ParseMediaType(ct)
-	if err != nil {
-		return false
-	}
-	return mediaType == "application/json"
+	mediaType, _, _ := strings.Cut(ct, ";")
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
 // replaceFile renames tmp over target, retrying briefly before giving up.
@@ -922,6 +935,8 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meta := fileMeta{
+		Spec:         specVersion,
+		Extensions:   []string{"upload"},
 		Path:         f.RelPath,
 		AbsolutePath: f.AbsPath,
 		Name:         f.Name,

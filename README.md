@@ -184,7 +184,7 @@ answers with a fixed recovery page that holds no permissions at all.
 | `GET` | `/{path}?data={…}` | Extract JSON from the file using rules you supply |
 | `GET` | `/_/api/{path}` | Extract JSON using rules the file publishes itself |
 
-Content is served at the top level; actions live under the `/_/` marker, matching the [Hyperclay](https://hyperclay.com) platform convention. The save endpoint accepts either a plain-text HTML body or a JSON `{content, snapshotHtml}` body (it persists `content`), so the same [hyperclayjs](https://www.npmjs.com/package/hyperclayjs) save client works against both htmlclay and the platform.
+Content is served at the top level; actions live under the `/_/` marker, matching the [Hyperclay](https://hyperclay.com) platform convention. The save endpoint takes the document as a plain-text body. That is the one shape the format defines for it, so a JSON body is refused with `415` rather than guessed at, and anything a save needs to say beyond the document travels in a header.
 
 ### Reading a file as JSON
 
