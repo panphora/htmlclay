@@ -1105,7 +1105,15 @@ func (s *Server) resolvePageURL(r *http.Request, raw string) (*session.File, boo
 }
 
 func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.resolvePageURL(r, r.URL.Query().Get("page-url"))
+	// Spec §10 names the parameter document-url, matching the Document-URL
+	// header the save lane already uses. page-url is the pre-spec spelling and
+	// is still read, because a host being lenient about how it is addressed
+	// costs nothing and a stream that silently 404s is hard to diagnose.
+	href := r.URL.Query().Get("document-url")
+	if href == "" {
+		href = r.URL.Query().Get("page-url")
+	}
+	f, ok := s.resolvePageURL(r, href)
 	if !ok {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
@@ -1245,7 +1253,13 @@ func writeSSE(rc *http.ResponseController, w http.ResponseWriter, msg []byte) bo
 // writes it to disk, or advances either per-file record, and it broadcasts to the
 // live lane only.
 func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.resolvePageURL(r, r.Header.Get("Page-URL"))
+	// Spec §10 addresses the relay with Document-URL, the same header the save
+	// lane uses. Page-URL is the pre-spec spelling and is still read.
+	href := r.Header.Get("Document-URL")
+	if href == "" {
+		href = r.Header.Get("Page-URL")
+	}
+	f, ok := s.resolvePageURL(r, href)
 	if !ok {
 		s.writeError(w, http.StatusNotFound, "unknown page")
 		return
@@ -1264,6 +1278,8 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload struct {
+		Snapshot    string          `json:"snapshot"`
+		Document    string          `json:"document"`
 		HTML        string          `json:"html"`
 		Sender      string          `json:"sender"`
 		IdentityMap json.RawMessage `json:"identityMap"`
@@ -1272,8 +1288,21 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	if payload.HTML == "" {
-		s.writeError(w, http.StatusBadRequest, "missing html")
+	// §10 names the field for its audience: a snapshot goes to the other
+	// editors, a document to the viewers. This host relays the editor lane
+	// only, so it takes a snapshot (`html` is the pre-spec spelling of the same
+	// thing) and refuses a document outright rather than quietly delivering one
+	// to the wrong audience. Viewers here are updated by the save itself.
+	if payload.Document != "" {
+		s.writeError(w, http.StatusBadRequest, "this host relays snapshots only; viewers are updated by saving")
+		return
+	}
+	relayHTML := payload.Snapshot
+	if relayHTML == "" {
+		relayHTML = payload.HTML
+	}
+	if relayHTML == "" {
+		s.writeError(w, http.StatusBadRequest, "missing snapshot")
 		return
 	}
 	if payload.Sender == "" || len(payload.Sender) > maxSenderLen {
@@ -1293,7 +1322,7 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.coord.relay(f, payload.HTML, payload.Sender, identityMap)
+	s.coord.relay(f, relayHTML, payload.Sender, identityMap)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

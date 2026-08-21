@@ -96,8 +96,13 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	// Registered ahead of the catch-all. The stream is a read, but it joins the
 	// gate: live-sync authorizes by registered path rather than by token, so
 	// without the gate it is reachable by any page the user's browser has open.
-	mux.HandleFunc("GET /_/live-sync/stream", sameOrigin(s.handleLiveSyncStream))
-	mux.HandleFunc("POST /_/live-sync/save", sameOrigin(s.handleLiveSyncSave))
+	// Spec §10: one address, GET to receive and POST to send. The old
+	// /_/live-sync/* paths are gone rather than aliased, per David 2026-08-21,
+	// since nothing outside our own clients speaks this yet. Both handlers now
+	// take the spec's spelling and still accept the pre-spec one, so the move
+	// is a rename for a caller that was already correct.
+	mux.HandleFunc("GET /_/sync", sameOrigin(s.handleLiveSyncStream))
+	mux.HandleFunc("POST /_/sync", sameOrigin(s.handleLiveSyncSave))
 	// Both endpoints keep their 1.2.0 URLs. User HTML calls
 	// /_/workspace-request/{token} directly, so the concept renames in Go and
 	// not on the wire; /_/open-request is only ever called by bytes this server

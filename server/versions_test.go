@@ -975,7 +975,7 @@ func TestRedactPathHidesTokensOnVersionRoutes(t *testing.T) {
 		"/_/restore/SECRET/2026.html": "/_/restore/<redacted>",
 		"/_/save/SECRET":              "/_/save/<redacted>",
 		"/_/workspace-request/SECRET": "/_/workspace-request/<redacted>",
-		"/_/live-sync/stream":         "/_/live-sync/stream",
+		"/_/sync":                     "/_/sync",
 		"/_/open-request":             "/_/open-request",
 		"/notes.htmlclay":             "/notes.htmlclay",
 	}

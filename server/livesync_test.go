@@ -287,7 +287,7 @@ func setupLiveSyncTest(t *testing.T) (*Server, *session.File) {
 
 func postLiveSync(t *testing.T, srv *Server, pageURL, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest("POST", "/_/live-sync/save", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/_/sync", strings.NewReader(body))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.Header.Set("Content-Type", "application/json")
 	if pageURL != "" {
@@ -444,7 +444,7 @@ func TestSSEStreamFlushesOverARealConnection(t *testing.T) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", srv.port)
 	pageURL := base + "/page.htmlclay"
 
-	req, _ := http.NewRequest("GET", base+"/_/live-sync/stream?page-url="+url.QueryEscape(pageURL)+"&lane=live", nil)
+	req, _ := http.NewRequest("GET", base+"/_/sync?document-url="+url.QueryEscape(pageURL)+"&lane=live", nil)
 	sameOriginHeaders(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -541,7 +541,7 @@ func TestShutdownClosesActiveStreamsPromptly(t *testing.T) {
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", srv.port)
 	pageURL := base + "/page.htmlclay"
-	streamReq, _ := http.NewRequest("GET", base+"/_/live-sync/stream?page-url="+url.QueryEscape(pageURL), nil)
+	streamReq, _ := http.NewRequest("GET", base+"/_/sync?document-url="+url.QueryEscape(pageURL), nil)
 	resp, err := http.DefaultClient.Do(sameOriginHeaders(streamReq))
 	if err != nil {
 		t.Fatal(err)
@@ -601,7 +601,7 @@ func TestLiveSyncRejectsSymlinkEscape(t *testing.T) {
 	}
 
 	// GET leg, through resolvePageURL directly since a recorder cannot stream.
-	req := httptest.NewRequest("GET", "/_/live-sync/stream", nil)
+	req := httptest.NewRequest("GET", "/_/sync", nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	if f, ok := srv.resolvePageURL(req, pageURL); ok {
 		t.Errorf("GET leg resolved a symlink escape to %s", f.AbsPath)
@@ -612,7 +612,7 @@ func TestLiveSyncRejectsSymlinkEscape(t *testing.T) {
 func TestLiveSyncRoutesRejectForeignHost(t *testing.T) {
 	srv, _ := setupLiveSyncTest(t)
 
-	for _, target := range []string{"/_/live-sync/stream", "/_/live-sync/save"} {
+	for _, target := range []string{"/_/sync", "/_/sync"} {
 		req := httptest.NewRequest("GET", target, nil)
 		req.Host = "evil.com:1234"
 		w := httptest.NewRecorder()
@@ -913,7 +913,7 @@ func TestClosedStreamStopsTheWatcher(t *testing.T) {
 	})
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", srv.port)
-	streamReq, _ := http.NewRequest("GET", base+"/_/live-sync/stream?page-url="+url.QueryEscape(base+"/page.htmlclay"), nil)
+	streamReq, _ := http.NewRequest("GET", base+"/_/sync?document-url="+url.QueryEscape(base+"/page.htmlclay"), nil)
 	resp, err := http.DefaultClient.Do(sameOriginHeaders(streamReq))
 	if err != nil {
 		t.Fatal(err)

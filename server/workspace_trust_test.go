@@ -640,7 +640,7 @@ func TestDropSubscribersEndsStreams(t *testing.T) {
 	t.Cleanup(func() { srv.Close() })
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", srv.port)
-	req, _ := http.NewRequest("GET", base+"/_/live-sync/stream?page-url="+url.QueryEscape(base+"/"+f.RelPath), nil)
+	req, _ := http.NewRequest("GET", base+"/_/sync?document-url="+url.QueryEscape(base+"/"+f.RelPath), nil)
 	resp, err := http.DefaultClient.Do(sameOriginHeaders(req))
 	if err != nil {
 		t.Fatal(err)

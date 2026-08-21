@@ -24,9 +24,18 @@ jobs:
         env:
           CGO_ENABLED: ${{ runner.os == 'macOS' && '1' || '0' }}
 
+  # ── License gate: the LICENSE must still ablate to plain MIT ──
+  # The Clay License converts by deleting a labelled clause list, so a release
+  # whose residue is no longer MIT would ship a promise it cannot keep.
+  license:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/ablation-check.py LICENSE
+
   # ── Linux: build binary, package as tar.gz ──
   build-linux:
-    needs: test
+    needs: [test, license]
     strategy:
       matrix:
         goarch: [amd64, arm64]
@@ -68,7 +77,7 @@ jobs:
 
   # ── Windows: build, sign with Azure Trusted Signing ──
   build-windows:
-    needs: test
+    needs: [test, license]
     runs-on: windows-latest
 
     steps:
@@ -142,7 +151,7 @@ jobs:
 
   # ── macOS: build universal binary, sign + notarize with Apple ──
   build-macos:
-    needs: test
+    needs: [test, license]
     runs-on: macos-14
 
     steps:
