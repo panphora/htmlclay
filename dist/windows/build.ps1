@@ -4,21 +4,22 @@ if (-not $env:VERSION) {
     $env:VERSION = (Select-String -Path "main.go" -Pattern 'var version = "(.+)"' | ForEach-Object { $_.Matches.Groups[1].Value })
 }
 
-# Embed the app icon + version metadata into the .exe via a Windows resource.
-# goversioninfo writes resource_windows_amd64.syso, which `go build` links automatically.
-$nums = [regex]::Matches($env:VERSION, '\d+') | ForEach-Object { $_.Value }
-$maj = if ($nums.Count -gt 0) { $nums[0] } else { "0" }
-$min = if ($nums.Count -gt 1) { $nums[1] } else { "0" }
-$pat = if ($nums.Count -gt 2) { $nums[2] } else { "0" }
-go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1 `
-    -64 -o resource_windows_amd64.syso `
-    -icon dist/windows/htmlclay.ico `
-    -file-version $env:VERSION -product-version $env:VERSION `
-    -ver-major $maj -ver-minor $min -ver-patch $pat `
-    -product-ver-major $maj -product-ver-minor $min -product-ver-patch $pat `
-    dist/windows/versioninfo.json
+# Embed the icons + version metadata into the .exe via a Windows resource.
+# go-winres writes resource_windows_<arch>.syso, which `go build` links
+# automatically for the matching GOARCH; both are written so a build on Windows
+# on ARM works from the same command.
+#
+# go-winres rather than goversioninfo because the exe carries TWO icon groups.
+# goversioninfo takes one -icon and numbers it itself; winres.json names the
+# resource IDs, and the document icon's ID is what the DefaultIcon registry value
+# points at (see docIconIndex in platform/register_windows.go).
+go run github.com/tc-hib/go-winres@v0.3.1 make `
+    --in dist/windows/winres.json `
+    --out resource `
+    --arch amd64,arm64 `
+    --file-version $env:VERSION --product-version $env:VERSION
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "goversioninfo failed"
+    Write-Error "go-winres failed"
     exit $LASTEXITCODE
 }
 

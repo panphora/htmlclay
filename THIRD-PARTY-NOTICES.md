@@ -323,7 +323,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 - Module: `github.com/godbus/dbus/v5` `v5.2.2`
 - Upstream: https://github.com/godbus/dbus
 - License: BSD-2-Clause, full text below.
-- Note: Indirect dependency, statically linked in Linux builds.
+- Note: Statically linked in Linux builds, used by the system tray and by the desktop portal folder picker.
 
 ```
 Copyright (c) 2013, Georg Reinke (<guelfey at gmail dot com>), Google

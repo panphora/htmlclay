@@ -14,3 +14,9 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 	return false, errors.New("native confirm dialog not implemented on this platform")
 }
+
+// missingDialogAdvice says so plainly, because confirmDialog above can only
+// deny on this platform and the tray row is the only place that shows.
+func missingDialogAdvice() string {
+	return "HTML Clay cannot show permission dialogs on this platform, so files outside a trusted folder will not open."
+}

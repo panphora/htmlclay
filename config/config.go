@@ -162,6 +162,47 @@ func (c *Config) promoteLegacyTrusted(identity func(string) string) bool {
 	return true
 }
 
+// backfillIdentities pins entries that were stored without a fingerprint, and
+// reports whether it pinned any.
+//
+// Windows had no directory fingerprint until DirIdentity learned to read the
+// file id, so every trusted folder a Windows build recorded before that carries
+// an empty pin. An empty pin means the path is the entry's whole identity
+// (trust.IdentityOK), which keeps those folders working, and must: they are
+// standing write grants the user made, and turning them dead on upgrade would
+// silently revoke them. Pinning them to the directory that is there now is the
+// same trade promoteLegacyTrusted makes for the same reason, and it is not a
+// weakening: a folder already swapped before the upgrade was granting to the
+// newcomer anyway, and after this any later swap is caught.
+//
+// A folder that is gone, or that stats as something other than a directory, is
+// left alone. Its entry is the record of a grant and has to stay visible in the
+// tray as dead rather than gain a pin for whatever now sits at its path.
+//
+// Nothing is written to disk here. Load reports the change through its Result and
+// the caller saves, exactly as the legacy promotion's does; until that Save lands
+// the pin is re-derived on every Load.
+func (c *Config) backfillIdentities(identity func(string) string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pinned := false
+	for i, w := range c.TrustedFolders {
+		if w.Identity != "" {
+			continue
+		}
+		if info, err := os.Stat(w.Path); err != nil || !info.IsDir() {
+			continue
+		}
+		id := identity(w.Path)
+		if id == "" {
+			continue
+		}
+		c.TrustedFolders[i].Identity = id
+		pinned = true
+	}
+	return pinned
+}
+
 // dedupeTrustedFolders drops entries that name a directory an earlier entry
 // already names, keeping the first and its pin.
 //
@@ -347,6 +388,10 @@ type Result struct {
 	// PromotedLegacy is true when 1.2.0 read-only trusted folders were widened
 	// into trusted folders.
 	PromotedLegacy bool
+	// PinnedIdentities is true when trusted folders that carried no fingerprint
+	// gained one, which is what a config written by a Windows build from before
+	// DirIdentity answered there looks like.
+	PinnedIdentities bool
 }
 
 func Load(identity func(string) string) (*Config, Result, error) {
@@ -400,6 +445,9 @@ func LoadFrom(baseDir string, identity func(string) string) (*Config, Result, er
 	// After the promotion, which appends straight to the list with a byte-exact
 	// dedupe of its own and so can add an alias of an entry already there.
 	cfg.dedupeTrustedFolders()
+	// After the dedupe, so a pin is never derived for an entry that is about to
+	// be dropped as an alias of one already kept.
+	res.PinnedIdentities = cfg.backfillIdentities(identity)
 	cfg.capSitePorts()
 	return cfg, res, nil
 }

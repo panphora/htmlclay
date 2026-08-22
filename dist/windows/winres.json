@@ -1,0 +1,26 @@
+{
+  "RT_GROUP_ICON": {
+    "#1": {
+      "0000": "htmlclay.ico"
+    },
+    "#2": {
+      "0000": "doc.ico"
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0409": {
+        "info": {
+          "0409": {
+            "CompanyName": "Hyperspace Systems LLC",
+            "FileDescription": "HTML Clay — edit and save .htmlclay files",
+            "InternalName": "htmlclay.exe",
+            "LegalCopyright": "© Hyperspace Systems LLC",
+            "OriginalFilename": "htmlclay.exe",
+            "ProductName": "HTML Clay"
+          }
+        }
+      }
+    }
+  }
+}

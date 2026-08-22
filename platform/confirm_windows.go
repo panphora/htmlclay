@@ -161,3 +161,7 @@ func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 	}
 	return strings.TrimSpace(string(out)) == "Yes", nil
 }
+
+// missingDialogAdvice always answers "nothing is missing": the prompt is a
+// PowerShell WinForms window, and PowerShell ships with Windows.
+func missingDialogAdvice() string { return "" }

@@ -506,3 +506,84 @@ func TestDeadTrustedEntriesAreNotMergedOnLoad(t *testing.T) {
 		t.Errorf("two missing folders are two dead entries, got %d", got)
 	}
 }
+
+// A Windows config written before DirIdentity answered there carries trusted
+// folders with no pin. They must keep working and quietly gain one, because an
+// unpinned entry is a standing write grant the user made and turning it dead on
+// upgrade would revoke it without telling them.
+func TestLoadPinsTrustedFoldersThatHaveNone(t *testing.T) {
+	base := t.TempDir()
+	project := filepath.Join(base, "project")
+	if err := os.MkdirAll(project, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigJSON(t, base, fmt.Sprintf(`{"workspaceFolders":[{"path":%q}]}`, project))
+
+	cfg, res, err := LoadFrom(base, func(d string) string { return "id:" + d })
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if !res.PinnedIdentities {
+		t.Error("Load should report that it pinned an entry that had no fingerprint")
+	}
+	list := cfg.TrustedFolderList()
+	if len(list) != 1 {
+		t.Fatalf("expected the entry to survive, got %v", list)
+	}
+	if list[0].Identity != "id:"+project {
+		t.Errorf("entry pinned to %q, want the directory that is there now", list[0].Identity)
+	}
+}
+
+// A dead entry has to stay dead. Pinning it to whatever now sits at its path is
+// the one outcome the pin exists to prevent, reached through the upgrade path.
+func TestLoadLeavesAMissingFolderUnpinned(t *testing.T) {
+	base := t.TempDir()
+	gone := filepath.Join(base, "deleted-project")
+	writeConfigJSON(t, base, fmt.Sprintf(`{"workspaceFolders":[{"path":%q}]}`, gone))
+
+	cfg, res, err := LoadFrom(base, func(d string) string { return "id:" + d })
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if res.PinnedIdentities {
+		t.Error("a folder that is not on disk must not be pinned")
+	}
+	list := cfg.TrustedFolderList()
+	if len(list) != 1 || list[0].Identity != "" {
+		t.Errorf("expected one entry with no pin, got %v", list)
+	}
+}
+
+// An entry that already has a pin is never re-pinned. Re-deriving it on every
+// load would hand a replaced folder's grant to the newcomer at the next launch.
+func TestLoadDoesNotRepinAnEntryThatHasOne(t *testing.T) {
+	base := t.TempDir()
+	project := filepath.Join(base, "project")
+	if err := os.MkdirAll(project, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigJSON(t, base, fmt.Sprintf(`{"workspaceFolders":[{"path":%q,"identity":"pin-from-when-it-was-trusted"}]}`, project))
+
+	cfg, res, err := LoadFrom(base, func(d string) string { return "id:" + d })
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if res.PinnedIdentities {
+		t.Error("nothing needed pinning, so Load should not report that it pinned")
+	}
+	if list := cfg.TrustedFolderList(); len(list) != 1 || list[0].Identity != "pin-from-when-it-was-trusted" {
+		t.Errorf("the stored pin was replaced: %v", list)
+	}
+}
+
+func writeConfigJSON(t *testing.T, baseDir, body string) {
+	t.Helper()
+	dir := DirFrom(baseDir)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+}

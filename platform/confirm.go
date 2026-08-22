@@ -44,3 +44,18 @@ func Confirm(title, message string) (ConfirmChoice, error) {
 func ConfirmWithButtons(title, message, allowLabel string) (bool, error) {
 	return confirmTwoButtons(title, message, allowLabel)
 }
+
+// MissingDialogAdvice returns a sentence naming what to install when this
+// machine has no way to raise a permission dialog at all, and "" when it has
+// one. It is a startup check, not a per-prompt one: the answer is a property of
+// what is installed, and asking once is what lets the app say so up front
+// instead of failing a prompt the user is waiting on.
+//
+// Failing closed is correct and is what Confirm already does, but a permission
+// dialog that can never appear turns every out-of-folder open into a file that
+// does not open with nothing on screen explaining it. Only Linux can be in that
+// state: macOS and Windows raise their prompts through components that are part
+// of the operating system.
+func MissingDialogAdvice() string {
+	return missingDialogAdvice()
+}

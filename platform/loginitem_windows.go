@@ -2,25 +2,43 @@
 
 package platform
 
-import "os/exec"
+import (
+	"errors"
+
+	"golang.org/x/sys/windows/registry"
+)
+
+const loginItemKey = `Software\Microsoft\Windows\CurrentVersion\Run`
 
 func SetLoginItem(enabled bool, executablePath string) error {
 	if enabled {
-		return exec.Command("reg", "add",
-			`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-			"/v", "HTMLClay",
-			"/d", `"`+executablePath+`"`,
-			"/f").Run()
+		key, _, err := registry.CreateKey(registry.CURRENT_USER, loginItemKey, registry.SET_VALUE)
+		if err != nil {
+			return err
+		}
+		defer key.Close()
+		return key.SetStringValue("HTMLClay", `"`+executablePath+`"`)
 	}
-	return exec.Command("reg", "delete",
-		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-		"/v", "HTMLClay",
-		"/f").Run()
+	key, err := registry.OpenKey(registry.CURRENT_USER, loginItemKey, registry.SET_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	if err := key.DeleteValue("HTMLClay"); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func IsLoginItem() bool {
-	err := exec.Command("reg", "query",
-		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-		"/v", "HTMLClay").Run()
+	key, err := registry.OpenKey(registry.CURRENT_USER, loginItemKey, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer key.Close()
+	_, _, err = key.GetStringValue("HTMLClay")
 	return err == nil
 }

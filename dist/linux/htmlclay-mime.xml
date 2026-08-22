@@ -2,6 +2,11 @@
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-htmlclay">
     <comment>HTML Clay File</comment>
+    <!-- The type's own icon is looked up as application-x-htmlclay, which
+         install-icon.sh puts under icons/hicolor/*/mimetypes/. This is what a
+         desktop falls back to when it has no theme icon by that name: an HTML
+         document, which is exactly what a .htmlclay file is. -->
+    <generic-icon name="text-html"/>
     <glob pattern="*.htmlclay"/>
   </mime-type>
 </mime-info>

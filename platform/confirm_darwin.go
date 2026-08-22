@@ -48,3 +48,7 @@ func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 	// text cannot register as a click.
 	return strings.Contains(string(out), "button returned:"+allowLabel), nil
 }
+
+// missingDialogAdvice always answers "nothing is missing": the prompt is an
+// osascript dialog, and osascript is part of macOS.
+func missingDialogAdvice() string { return "" }

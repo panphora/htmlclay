@@ -14,6 +14,13 @@
 #   dist/linux/htmlclay.png      app icon, 256px (install-icon.sh)
 #   dist/linux/htmlclay.svg      app icon, scalable
 #   dist/windows/htmlclay.ico    app icon, multi-size
+#   dist/windows/doc.ico         document icon, embedded as resource 2 (winres.json)
+#   dist/linux/application-x-htmlclay.png   document icon, 256px, mimetypes/
+#   dist/linux/application-x-htmlclay.svg   document icon, scalable, mimetypes/
+#
+# The two document-icon filenames on Linux are not decoration: freedesktop looks
+# up a MIME type's icon by the type name with the slash turned into a dash, so
+# application/x-htmlclay resolves to application-x-htmlclay and nothing else.
 #
 # Requires: rsvg-convert, ImageMagick (magick or convert), python3.
 # macOS .icns uses iconutil when present (falls back to ImageMagick otherwise).
@@ -99,6 +106,36 @@ open(f"{build}/tray-template.svg", "w").write(tray_tpl)
 print("  app.svg  doc.svg  tray-template.svg")
 PY
 
+# write_ico <out.ico> <png dir> <prefix>  — build a Windows .ico from rendered PNGs.
+#
+# Every frame is stored PNG-compressed rather than as the raw BMP ImageMagick's icon
+# writer emits. The 256px frame alone is 256KB uncompressed, and these icons are linked
+# into the .exe, so the raw form costs about 260KB per icon in every Windows download.
+# Windows has read PNG frames at any size since Vista and Go 1.26 already requires
+# Windows 10, so nothing that can run this build can be confused by them.
+#
+# ImageMagick 7 cannot produce PNG frames at all: icon:auto-resize, an explicit frame
+# list and a png: prefix all emit BMP. The committed htmlclay.ico had a PNG 256 frame
+# only because a much older ImageMagick built it, which is why this is done here.
+write_ico() {
+  python3 - "$1" "$2" "$3" <<'ICO'
+import struct, sys
+out, build, prefix = sys.argv[1], sys.argv[2], sys.argv[3]
+sizes = [16, 32, 48, 64, 128, 256]
+frames = [open(f"{build}/{prefix}-{s}.png", "rb").read() for s in sizes]
+
+# A width or height byte of 0 means 256, which is why the size is stored mod 256.
+header = struct.pack("<HHH", 0, 1, len(sizes))
+offset = len(header) + 16 * len(sizes)
+entries, data = b"", b""
+for size, png in zip(sizes, frames):
+    entries += struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(png), offset)
+    data += png
+    offset += len(png)
+open(out, "wb").write(header + entries + data)
+ICO
+}
+
 ICNS_SIZES=(16 32 64 128 256 512 1024)
 echo "Rendering app icon..."
 for s in "${ICNS_SIZES[@]}"; do render "$BUILD/app.svg" "$s" "$BUILD/app-$s.png"; done
@@ -124,7 +161,8 @@ else
 fi
 
 echo "  -> dist/windows/htmlclay.ico"
-"$MAGICK" "$BUILD/app-256.png" -define icon:auto-resize=256,128,64,48,32,16 "$ROOT_DIR/dist/windows/htmlclay.ico"
+render "$BUILD/app.svg" 48 "$BUILD/app-48.png"   # 48 is an ICO size but not an ICNS one
+write_ico "$ROOT_DIR/dist/windows/htmlclay.ico" "$BUILD" app
 
 echo "  -> dist/linux/htmlclay.png (256) + htmlclay.svg"
 cp "$BUILD/app-256.png" "$ROOT_DIR/dist/linux/htmlclay.png"
@@ -150,6 +188,14 @@ else
     "$BUILD/doc-256.png" "$BUILD/doc-512.png" "$BUILD/doc-1024.png" "$ROOT_DIR/dist/macos/doc.icns"
 fi
 
+echo "  -> dist/windows/doc.ico"
+render "$BUILD/doc.svg" 48 "$BUILD/doc-48.png"
+write_ico "$ROOT_DIR/dist/windows/doc.ico" "$BUILD" doc
+
+echo "  -> dist/linux/application-x-htmlclay.png (256) + .svg"
+cp "$BUILD/doc-256.png" "$ROOT_DIR/dist/linux/application-x-htmlclay.png"
+cp "$BUILD/doc.svg"     "$ROOT_DIR/dist/linux/application-x-htmlclay.svg"
+
 echo "Rendering tray icons -> tray/icon.png + tray/icon-template.png"
 # Colored grin (Windows/Linux systray + current SetIcon fallback): trim and pad to a square.
 rsvg-convert -w 256 -h 261 "$ICONS_DIR/blob-grin.svg" -o "$BUILD/grin.png"
@@ -165,6 +211,7 @@ echo "Done. Generated:"
 for f in tray/icon.png tray/icon-template.png \
          dist/macos/htmlclay.icns dist/macos/doc.icns \
          dist/linux/htmlclay.png dist/linux/htmlclay.svg \
-         dist/windows/htmlclay.ico; do
+         dist/linux/application-x-htmlclay.png dist/linux/application-x-htmlclay.svg \
+         dist/windows/htmlclay.ico dist/windows/doc.ico; do
   printf "  %-32s %s\n" "$f" "$(cd "$ROOT_DIR" && du -h "$f" 2>/dev/null | cut -f1)"
 done

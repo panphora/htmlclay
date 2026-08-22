@@ -2,6 +2,7 @@ package tray
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,5 +101,26 @@ func TestGrowingThePoolLeavesPlacedEntriesWhereTheyAre(t *testing.T) {
 		if lm.slots[i].path != path {
 			t.Errorf("slot %d moved from %q to %q; a queued click would land on the wrong folder", i, path, lm.slots[i].path)
 		}
+	}
+}
+
+// The notice row is how a Linux desktop with no permission dialogs says so, and
+// it is also the row that must not appear anywhere else. An empty notice adding
+// a blank disabled row would put one at the top of every menu on every platform.
+func TestNoticeRowAppearsOnlyWhenThereIsSomethingToSay(t *testing.T) {
+	if item := (&Tray{}).addNotice(); item != nil {
+		t.Errorf("an empty notice added a row: %s", item)
+	}
+
+	const notice = "HTML Clay cannot show permission dialogs on this desktop. Install zenity or kdialog."
+	item := (&Tray{notice: notice}).addNotice()
+	if item == nil {
+		t.Fatal("a notice must get a row of its own")
+	}
+	if !strings.Contains(item.String(), notice) {
+		t.Errorf("the row does not carry the notice: %s", item)
+	}
+	if !item.Disabled() {
+		t.Error("the notice row must be disabled; there is nothing behind it to click")
 	}
 }

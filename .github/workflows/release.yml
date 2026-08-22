@@ -67,10 +67,13 @@ jobs:
              dist/linux/htmlclay-mime.xml \
              dist/linux/htmlclay.png \
              dist/linux/htmlclay.svg \
+             dist/linux/application-x-htmlclay.png \
+             dist/linux/application-x-htmlclay.svg \
              dist/linux/install-icon.sh \
              dist/linux/install.sh \
+             dist/linux/uninstall.sh \
              "$stage/"
-          chmod +x "$stage/install.sh" "$stage/install-icon.sh"
+          chmod +x "$stage/install.sh" "$stage/install-icon.sh" "$stage/uninstall.sh"
           tar czf "$stage.tar.gz" -C "$stage" .
 
       - uses: actions/upload-artifact@v4
@@ -78,9 +81,12 @@ jobs:
           name: htmlclay-linux-${{ matrix.goarch }}.tar.gz
           path: htmlclay-linux-${{ matrix.goarch }}.tar.gz
 
-  # ── Windows: build, sign with Azure Trusted Signing ──
+  # ── Windows: build both architectures, sign with Azure Trusted Signing ──
   build-windows:
     needs: [test, license]
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
     runs-on: windows-latest
 
     steps:
@@ -90,25 +96,25 @@ jobs:
         with:
           go-version: "1.26"
 
-      - name: Embed icon resource
+      # Two icon groups, not one: resource 1 is the app icon Explorer draws on
+      # htmlclay.exe, resource 2 is the document icon that the DefaultIcon
+      # registry value names by ID (platform/register_windows.go). goversioninfo
+      # embeds a single -icon and numbers it itself, which is why this is
+      # go-winres; the IDs have to be ours to name.
+      - name: Embed icon and version resources
         run: |
-          $nums = [regex]::Matches("${{ inputs.version }}", '\d+') | ForEach-Object { $_.Value }
-          $maj = if ($nums.Count -gt 0) { $nums[0] } else { "0" }
-          $min = if ($nums.Count -gt 1) { $nums[1] } else { "0" }
-          $pat = if ($nums.Count -gt 2) { $nums[2] } else { "0" }
-          go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1 `
-            -64 -o resource_windows_amd64.syso `
-            -icon dist/windows/htmlclay.ico `
-            -file-version "${{ inputs.version }}" -product-version "${{ inputs.version }}" `
-            -ver-major $maj -ver-minor $min -ver-patch $pat `
-            -product-ver-major $maj -product-ver-minor $min -product-ver-patch $pat `
-            dist/windows/versioninfo.json
+          go run github.com/tc-hib/go-winres@v0.3.1 make `
+            --in dist/windows/winres.json `
+            --out resource `
+            --arch ${{ matrix.goarch }} `
+            --file-version "${{ inputs.version }}" --product-version "${{ inputs.version }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: pwsh
 
       - name: Build
         run: |
           $env:CGO_ENABLED = "0"
+          $env:GOARCH = "${{ matrix.goarch }}"
           go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay.exe .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: pwsh
@@ -144,13 +150,16 @@ jobs:
         shell: pwsh
 
       - name: Package
-        run: Compress-Archive -Path htmlclay.exe,dist\windows\register.bat -DestinationPath htmlclay-windows-amd64.zip
+        run: |
+          Compress-Archive `
+            -Path htmlclay.exe,dist\windows\README.txt,dist\windows\register.bat `
+            -DestinationPath htmlclay-windows-${{ matrix.goarch }}.zip
         shell: pwsh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: htmlclay-windows-amd64.zip
-          path: htmlclay-windows-amd64.zip
+          name: htmlclay-windows-${{ matrix.goarch }}.zip
+          path: htmlclay-windows-${{ matrix.goarch }}.zip
 
   # ── macOS: build universal binary, sign + notarize with Apple ──
   build-macos:
@@ -214,6 +223,16 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The whole verification story for the Linux tarball, which is unsigned, and
+      # useful on the other two as well. Written outside artifacts/ so it cannot
+      # list a hash of itself, and so it stays out of the release-info file list,
+      # which names the downloads rather than the metadata about them. The names
+      # inside are bare, so `sha256sum -c SHA256SUMS` works in a download folder.
+      - name: Checksum every artifact
+        run: |
+          (cd artifacts && sha256sum *) > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Upload to R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -228,12 +247,23 @@ jobs:
 
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
+          # Cache lifetime follows whether the name can ever be reused. Only the
+          # macOS dmg carries the version, so it is immutable and caches for a
+          # year. The Windows zips and Linux tarballs keep stable names and are
+          # OVERWRITTEN by every release, while the download page publishes each
+          # release's SHA-256 beside them: a long cache there serves the previous
+          # archive next to the new hash, so someone verifying their download gets
+          # a mismatch and reads it as a tampered file.
           for file in artifacts/*; do
             filename=$(basename "$file")
-            echo "Uploading $filename..."
+            case "$filename" in
+              *"${{ inputs.version }}"*) cache="public, max-age=31536000, immutable" ;;
+              *)                         cache="public, max-age=60" ;;
+            esac
+            echo "Uploading $filename ($cache)..."
             aws s3 cp "$file" "s3://${R2_BUCKET}/$filename" \
               --endpoint-url "$ENDPOINT" \
-              --cache-control "public, max-age=1200"
+              --cache-control "$cache"
           done
 
           echo "All artifacts uploaded to R2"
@@ -248,16 +278,32 @@ jobs:
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
           FILES=$(ls artifacts/ | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          # sha256sum prints "<hash>  <name>"; flip the pair so jq can build a
+          # filename-keyed object out of it.
+          SHA256=$(awk '{print $2" "$1}' SHA256SUMS | jq -R -s -c \
+            'split("\n") | map(select(. != "")) | map(split(" ")) | map({(.[0]): .[1]}) | add')
           jq -n \
             --arg latest "${{ inputs.version }}" \
             --arg url "https://htmlclay.com/#downloads" \
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson files "$FILES" \
-            '{latest: $latest, url: $url, date: $date, files: $files}' > htmlclay-release-info.json
+            --argjson sha256 "$SHA256" \
+            '{latest: $latest, url: $url, date: $date, files: $files, sha256: $sha256}' > htmlclay-release-info.json
 
+          # Both files below are stable-named and rewritten by every release, and
+          # both are read to decide something about the CURRENT one (the updater
+          # checks for a new version, SHA256SUMS is what a download is verified
+          # against), so neither may be served from the previous release.
           aws s3 cp htmlclay-release-info.json "s3://${R2_BUCKET}/htmlclay-release-info.json" \
             --endpoint-url "$ENDPOINT" \
             --content-type "application/json" \
-            --cache-control "public, max-age=1200"
+            --cache-control "public, max-age=60"
 
-          echo "Uploaded htmlclay-release-info.json"
+          # text/plain so the download page can link it and a browser shows it
+          # rather than saving an extensionless file.
+          aws s3 cp SHA256SUMS "s3://${R2_BUCKET}/SHA256SUMS" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "text/plain" \
+            --cache-control "public, max-age=60"
+
+          echo "Uploaded htmlclay-release-info.json and SHA256SUMS"

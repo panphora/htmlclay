@@ -83,9 +83,13 @@ type Tray struct {
 
 	trusted     *TrustedFolderHooks
 	trustedMenu *listMenu
+
+	// notice is a permanent row for something about this machine that HTML Clay
+	// cannot fix and the user can. Empty means there is nothing to say.
+	notice string
 }
 
-func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks) {
+func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, notice string) {
 	t := &Tray{
 		cfg:           cfg,
 		onOpenExample: onOpenExample,
@@ -93,6 +97,7 @@ func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit 
 		onQuit:        onQuit,
 		updateCh:      updateCh,
 		trusted:       trusted,
+		notice:        notice,
 	}
 	systray.Run(t.onReady, t.onExit)
 }
@@ -253,6 +258,8 @@ func (t *Tray) onReady() {
 		systray.Quit()
 	}()
 
+	t.addNotice()
+
 	t.updateItem = systray.AddMenuItem("", "")
 	t.updateItem.Hide()
 	systray.AddSeparator()
@@ -293,6 +300,23 @@ func (t *Tray) onReady() {
 	}()
 
 	t.watchTrustedMenu(addTrustedItem)
+}
+
+// addNotice puts the machine notice at the very top of the menu, disabled
+// because there is nothing to click, and returns the row it made or nil when
+// there is nothing to say.
+//
+// A permanent row, not a notification: it is the channel that survives a desktop
+// with no notification daemon, and that is the same minimal desktop that raises
+// the notice in the first place.
+func (t *Tray) addNotice() *systray.MenuItem {
+	if t.notice == "" {
+		return nil
+	}
+	item := systray.AddMenuItem(t.notice, "")
+	item.Disable()
+	systray.AddSeparator()
+	return item
 }
 
 // buildTrustedMenu adds the Trusted Folders submenu: an add row, and rows that

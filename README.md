@@ -252,13 +252,13 @@ trust/               The rules about which folders may be trusted, and on whose 
 browser/             Opening a URL in the system's default browser
 htmlutil/            Inject/strip htmlclaytoken and htmlclayid attributes in <html> tag
 config/              Persist settings to OS config dir (~/Library/Application Support, ~/.config, %APPDATA%)
-platform/            Single-instance enforcement (Unix socket / TCP on Windows), Start on Login
+platform/            Single-instance enforcement (Unix socket / TCP on Windows), Start on Login, file associations
 tray/                System tray icon and menu
 logging/             File-based logger with 10MB rotation
 update/              Version check against htmlclay.com
 dist/macos/          macOS .app bundle build script, Info.plist, codesigning
-dist/linux/          Desktop entry, MIME type registration, install scripts
-dist/windows/        File association registration script
+dist/linux/          Desktop entry, MIME type registration, icons, install and uninstall scripts
+dist/windows/        Icon and version resources (winres.json), zip README, fallback registration script
 ```
 
 ### Security model
@@ -292,8 +292,10 @@ survives a restart. A port that is taken at startup is given up and the new one 
 
 The trusted-folder list keeps the on-disk key `workspaceFolders` from the version that introduced it.
 Renaming the key would make older configs fail to parse, and the corrupt-config path would then reset
-every other setting. `identity` is the folder's device and inode fingerprint at the moment you trusted
-it; a folder replaced since then stops granting anything rather than covering the newcomer.
+every other setting. `identity` is the folder's fingerprint at the moment you trusted it: device and
+inode on macOS and Linux, volume serial and file id on Windows. A folder replaced since then stops
+granting anything rather than covering the newcomer. An entry recorded before Windows could
+fingerprint a directory has no `identity`; it keeps working and gains one on the next launch.
 
 ### System tray
 
@@ -330,6 +332,23 @@ make clean
 ### Platform support
 
 Supports macOS, Linux, and Windows. Each platform has build scripts and OS integration assets in `dist/`. The `browser/`, `platform/`, and `tray/` packages use platform-specific build files (`_darwin.go`, `_linux.go`, `_windows.go`).
+
+**File associations.** macOS reads them from the `.app` bundle's `Info.plist`. Linux gets them from the
+freedesktop MIME database, which `dist/linux/install.sh` writes into `~/.local/share` with no sudo.
+Windows writes them itself, under `HKCU\Software\Classes`, on every launch, so a binary that moved
+keeps a working association.
+
+**Undoing it.** `htmlclay.exe --unregister` on Windows removes the file associations and the Start on
+Login entry, then exits; it runs before the single-instance lock, so it works whether or not the app is
+running. `bash uninstall.sh` in the Linux tarball removes the binary, the desktop entry, the MIME
+package, the icons, and the autostart entry. Neither touches the config directory, which holds the
+trusted-folder list and every saved version.
+
+**Linux permission prompts** are drawn by `zenity`, falling back to `kdialog`. With neither installed
+the app says so at startup, in the log, in a notification, and in a permanent tray row, because every
+prompt then fails closed. The folder picker also falls back to the XDG desktop portal
+(`org.freedesktop.portal.FileChooser`), which needs no helper binary, so trusting a folder still works
+on a machine with neither tool.
 
 ### Releasing
 

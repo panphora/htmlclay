@@ -11,12 +11,26 @@ import (
 	"strings"
 )
 
-// selectFolder shows a native directory picker via zenity, falling back to
-// kdialog. A user cancel exits with status 1 and is reported as ok=false with no
-// error; any other non-zero exit (no display, crash, timeout) is a genuine failure
-// and is surfaced as an error rather than a silent cancel. Only a missing tool
+// selectFolder shows a native directory picker: the XDG desktop portal first,
+// then zenity, then kdialog. The portal needs no helper binary and is uniform
+// across GNOME, KDE, Wayland and Flatpak, so it leads; the helper tools remain
+// for a desktop with no portal service running. The fallback happens only when
+// the portal is unavailable: once a portal dialog could have opened, its errors
+// are surfaced rather than stacking a second picker on the first.
+//
+// In every backend a user cancel is reported as ok=false with no error; a
+// failure after the dialog existed (no display, crash, timeout) is surfaced as
+// an error rather than a silent cancel. With no portal and neither tool it
 // fails closed with an error.
 func selectFolder(prompt string) (string, bool, error) {
+	dir, ok, err := portalSelectFolder(prompt)
+	if err == nil {
+		return dir, ok, nil
+	}
+	if !errors.Is(err, errPortalUnavailable) {
+		return "", false, err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), pickerTimeout)
 	defer cancel()
 
@@ -49,7 +63,7 @@ func selectFolder(prompt string) (string, bool, error) {
 		return "", false, nil
 	}
 
-	return "", false, errors.New("no native folder picker (zenity or kdialog) found")
+	return "", false, errors.New("no native folder picker found (no desktop portal, and neither zenity nor kdialog is installed)")
 }
 
 // cancelled reports whether err is a clean user cancel (exit status 1), as opposed

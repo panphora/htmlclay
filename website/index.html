@@ -46,6 +46,26 @@
       -webkit-font-smoothing: antialiased;
     }
     .wrap { max-width: 640px; margin: 0 auto; padding: 0 22px; }
+
+    .sitenav {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 22px 0 0;
+      font-size: 14px;
+    }
+
+    .sitenav a {
+      color: var(--muted);
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .sitenav a:hover { color: var(--ink); }
+    .sitenav .brand { color: var(--ink); font-weight: 700; }
+    .sitenav .navlinks { display: flex; gap: 18px; }
+    .sitenav a[aria-current="page"] { color: var(--accent); }
     a { color: var(--accent); text-underline-offset: 2px; }
     a:hover { text-decoration: none; }
 
@@ -116,6 +136,16 @@
     .dl-row .os { font-weight: 600; }
     .dl-row .os span { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
     .dl-row a.file { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+    .dl-row .filecol { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; }
+    .dl-hash { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; text-align: right; }
+    /* The label is a pseudo-element so it cannot be orphaned onto its own line by
+       the hash wrapping, and so selecting the hash copies only the hash. */
+    .dl-hash:not(:empty)::before { content: "SHA-256 "; opacity: .7; }
+    /* Empty until a release stamps it, and an empty slot must take no space. */
+    .dl-hash:empty { display: none; }
+    .dl-note { color: var(--muted); font-size: 14px; margin: 16px 0 0; }
+    .dl-note + .dl-note { margin-top: 10px; }
+    .dl-note b { color: var(--ink); }
 
     footer { padding: 40px 0 64px; text-align: center; color: var(--muted); font-size: 14px; }
     footer p { margin: 0 0 8px; }
@@ -125,6 +155,8 @@
       .hero h1 { font-size: 31px; }
       .hero { padding-top: 40px; }
       .dl-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+      .dl-row .filecol { align-items: flex-start; }
+      .dl-hash { text-align: left; }
     }
 
     /* ---- App gallery ---- */
@@ -312,6 +344,14 @@
 <body>
   <main class="wrap">
 
+    <nav class="sitenav">
+      <a class="brand" href="/">HTML Clay</a>
+      <div class="navlinks">
+        <a href="/" aria-current="page">Home</a>
+        <a href="/features">Features</a>
+      </div>
+    </nav>
+
     <div class="hero">
       <img src="htmlclay-blob.svg" alt="HTML Clay" width="116" height="116">
       <h1>Simple Apps. One File.</h1>
@@ -354,13 +394,13 @@
         <div class="step">
           <div>
             <b>Double-click a file</b>
-            <p>Any <span class="filechip">.htmlclay</span> file opens in its own clean window. No browser tabs, no clutter.</p>
+            <p>Any <span class="filechip">.htmlclay</span> file opens in your browser, in an ordinary tab. Same browser you already use, same shortcuts.</p>
           </div>
         </div>
         <div class="step">
           <div>
             <b>Just use it</b>
-            <p>Type, edit, organize. It saves automatically, back into the same file.</p>
+            <p>Type, edit, organize. Changes go back into the same file, and most files save as you go.</p>
           </div>
         </div>
       </div>
@@ -601,7 +641,8 @@
     <section id="safe">
       <h2>Is it safe?</h2>
       <div class="safe">
-        <p><b>As safe as a web page.</b> It runs in your browser's sandbox and the only file it can change is its own. The one real risk is the same anywhere online: be cautious if a page asks you to download and run a separate program.</p>
+        <p><b>As safe as a web page.</b> It runs in your browser's sandbox, and a page saves only into its own file. The one exception is a folder you explicitly trust: inside it, any HTML Clay file can change any other, which is what makes a project of linked documents work. Nothing outside your home folder opens at all. The one real risk is the same anywhere online: be cautious if a page asks you to download and run a separate program.</p>
+        <p>The long version of everything the app does, with this boundary stated exactly, is on the <a href="/features">features page</a>.</p>
       </div>
     </section>
 
@@ -609,22 +650,57 @@
       <h2>Download <span data-version style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:400">v1.7.0</span></h2>
       <div class="dl">
         <div class="dl-row">
-          <div class="os">macOS <span>Universal (Apple Silicon + Intel)</span></div>
-          <a class="file" data-mac-dmg href="https://download.htmlclay.com/HTMLClay-1.7.0-universal.dmg" download>HTMLClay-1.7.0-universal.dmg</a>
+          <div class="os">macOS <span>Universal (Apple Silicon + Intel), signed and notarized</span></div>
+          <div class="filecol"><a class="file" data-mac-dmg href="https://download.htmlclay.com/HTMLClay-1.7.0-universal.dmg" download>HTMLClay-1.7.0-universal.dmg</a>
+            <code class="dl-hash" data-sha256="HTMLClay-1.7.0-universal.dmg"></code>
+          </div>
         </div>
         <div class="dl-row">
-          <div class="os">Windows <span>64-bit</span></div>
-          <a class="file" href="https://download.htmlclay.com/htmlclay-windows-amd64.zip" download>htmlclay-windows-amd64.zip</a>
+          <div class="os">Windows <span>64-bit Intel or AMD, signed</span></div>
+          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-windows-amd64.zip" download>htmlclay-windows-amd64.zip</a>
+            <code class="dl-hash" data-sha256="htmlclay-windows-amd64.zip"></code>
+          </div>
+        </div>
+        <div class="dl-row">
+          <div class="os">Windows <span>ARM64, signed</span></div>
+          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-windows-arm64.zip" download>htmlclay-windows-arm64.zip</a>
+            <code class="dl-hash" data-sha256="htmlclay-windows-arm64.zip"></code>
+          </div>
         </div>
         <div class="dl-row">
           <div class="os">Linux <span>x86_64</span></div>
-          <a class="file" href="https://download.htmlclay.com/htmlclay-linux-amd64.tar.gz" download>htmlclay-linux-amd64.tar.gz</a>
+          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-linux-amd64.tar.gz" download>htmlclay-linux-amd64.tar.gz</a>
+            <code class="dl-hash" data-sha256="htmlclay-linux-amd64.tar.gz"></code>
+          </div>
         </div>
         <div class="dl-row">
           <div class="os">Linux <span>ARM64</span></div>
-          <a class="file" href="https://download.htmlclay.com/htmlclay-linux-arm64.tar.gz" download>htmlclay-linux-arm64.tar.gz</a>
+          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-linux-arm64.tar.gz" download>htmlclay-linux-arm64.tar.gz</a>
+            <code class="dl-hash" data-sha256="htmlclay-linux-arm64.tar.gz"></code>
+          </div>
         </div>
       </div>
+
+      <p class="dl-note">
+        <b>Opening it.</b> On macOS, drag it into Applications. On Windows, unzip it and run
+        <span class="filechip">htmlclay.exe</span> once: it sets up <span class="filechip">.htmlclay</span>
+        files for your account, with no administrator prompt. On Linux, unpack the tarball and run
+        <span class="filechip">bash install.sh</span>, which installs into
+        <span class="filechip">~/.local/bin</span> and never asks for sudo.
+      </p>
+      <p class="dl-note">
+        <b>One thing Linux needs.</b> Permission prompts are real desktop dialogs, drawn by
+        <span class="filechip">zenity</span> or <span class="filechip">kdialog</span>. With neither
+        installed, a file opened from outside a folder you trust is refused rather than asked about.
+        Folders you trust work either way.
+      </p>
+      <p class="dl-note">
+        <b>Checking what you downloaded.</b> Every file's SHA-256 is listed in
+        <a href="https://download.htmlclay.com/SHA256SUMS">SHA256SUMS</a>. Hash your copy and compare it
+        with the matching line: <span class="filechip">sha256sum &lt;file&gt;</span> on Linux,
+        <span class="filechip">shasum -a 256 &lt;file&gt;</span> on macOS,
+        <span class="filechip">certutil -hashfile &lt;file&gt; SHA256</span> on Windows.
+      </p>
     </section>
 
     <div class="closer">

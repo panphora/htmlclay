@@ -103,3 +103,20 @@ func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 
 	return false, errors.New("no native dialog tool (zenity or kdialog) found")
 }
+
+// missingDialogAdvice reports the one machine state that makes HTML Clay look
+// broken for no visible reason: a desktop with neither zenity nor kdialog, where
+// confirmDialog and confirmTwoButtons above can only fail closed.
+//
+// It covers the permission prompts alone. The folder picker has a third backend
+// that needs no helper binary (selectfolder_linux.go), and there is no portal
+// interface for a three-button question, so a machine with neither tool can
+// still trust a folder from the tray and then work with no prompts at all.
+func missingDialogAdvice() string {
+	for _, bin := range []string{"zenity", "kdialog"} {
+		if _, err := exec.LookPath(bin); err == nil {
+			return ""
+		}
+	}
+	return "HTML Clay cannot show permission dialogs on this desktop. Install zenity or kdialog."
+}

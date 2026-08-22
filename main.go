@@ -77,6 +77,11 @@ type app struct {
 	parked   []*parked
 	stopping bool
 	noTray   bool
+	// dialogAdvice is non-empty when this machine cannot raise a permission
+	// dialog at all. It is read once at startup and shown in two places, so it
+	// is held rather than asked for again: platform.MissingDialogAdvice runs
+	// exec.LookPath, and the tray builds its menu long after the check.
+	dialogAdvice string
 	// loaded records what config.Load had to do to the file on disk, so a
 	// one-time upgrade (deleting App Mode's browser profile) can run after the
 	// logger exists rather than during config parsing.
@@ -129,7 +134,17 @@ func main() {
 	}
 
 	noTray := flag.Bool("no-tray", false, "Run without system tray (signal-based shutdown)")
+	unregister := flag.Bool("unregister", false, "Remove the file associations and the Start on Login entry, then exit")
 	flag.Parse()
+
+	// Before initConfig, and so before the single-instance lock, on purpose. A
+	// launch that finds the lock held forwards its arguments to the running app
+	// and exits, so an --unregister placed after it would quietly do nothing
+	// whenever HTML Clay happened to be running, which is the state a person is
+	// most likely to be in while uninstalling.
+	if *unregister {
+		os.Exit(runUnregister())
+	}
 
 	migrateConfigDir()
 
@@ -146,6 +161,8 @@ func main() {
 	a.finishUpgrade()
 
 	a.refreshLoginItem()
+	a.refreshFileTypes()
+	a.warnMissingDialogs()
 
 	// Bind every remembered port before argv is processed, so a URL bookmarked
 	// before the last quit answers on the first launch after it. A file named on
@@ -284,8 +301,23 @@ func (a *app) startRuntime() {
 // talks to the user, and because this is already where one-shot upgrade work
 // (migrateConfigDir) lives.
 func (a *app) finishUpgrade() {
+	// Both migrations rewrote the config in memory only. Persisting it here is
+	// what makes them one-time. Without this they are re-derived on every Load,
+	// and nothing else on a settled launch saves: trustFolder, untrustFolder, the
+	// Start-on-Login toggle and rememberPort are the only writers, and a launch
+	// that trusts nothing new and keeps its port touches none of them. A pin that
+	// never lands is a pin re-taken from whatever directory sits at that path at
+	// the time, which is exactly the swap it exists to catch.
+	if a.loaded.PromotedLegacy || a.loaded.PinnedIdentities {
+		if err := a.rt.cfg.Save(); err != nil {
+			a.rt.logger.Printf("Could not persist the upgraded config: %v", err)
+		}
+	}
 	if a.loaded.PromotedLegacy {
 		a.rt.logger.Printf("Promoted legacy read-only trusted folders to trusted folders")
+	}
+	if a.loaded.PinnedIdentities {
+		a.rt.logger.Printf("Pinned trusted folders that were recorded without an identity fingerprint")
 	}
 	if !a.loaded.HadAppMode {
 		return
@@ -329,8 +361,74 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 		List:   a.trustedFolderRows,
 		Add:    a.pickAndTrustFolder,
 		Remove: a.removeTrustedFolder,
-	})
+	}, a.dialogAdvice)
 	a.rt.logger.Printf("Tray exited")
+}
+
+// runUnregister undoes what a launch registers: the file associations and the
+// Start on Login entry. It touches nothing else. config.json stays, because the
+// trusted-folder list is the record of what the user granted rather than part of
+// the installation, and so do the saved versions under the config directory.
+func runUnregister() int {
+	code := 0
+	if err := platform.UnregisterFileTypes(); err != nil {
+		fmt.Fprintf(os.Stderr, "[htmlclay] Could not remove the file associations: %v\n", err)
+		code = 1
+	}
+	if err := platform.SetLoginItem(false, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "[htmlclay] Could not remove the Start on Login entry: %v\n", err)
+		code = 1
+	}
+	if code == 0 {
+		// "set up itself" is the honest wording on all three platforms: on Windows
+		// that is four registry keys, and on macOS and Linux it is none, because
+		// the app bundle and the freedesktop MIME database own those.
+		fmt.Fprintln(os.Stderr, "[htmlclay] Removed the Start on Login entry and every file association HTML Clay set up itself.")
+	}
+	fmt.Fprintln(os.Stderr, "[htmlclay] Your files, your trusted folders and your saved versions are untouched.")
+	fmt.Fprintln(os.Stderr, "[htmlclay] Starting HTML Clay again puts them back, so delete the program now if you are done with it.")
+	return code
+}
+
+// warnMissingDialogs turns a silent failure into an instruction. On a desktop
+// with neither zenity nor kdialog every permission prompt fails closed, which is
+// correct, but the result the user sees is a file that will not open and nothing
+// on screen saying why.
+//
+// Three channels, because each one can be absent on exactly the machine that
+// needs it: the log always works, the tray row is permanent and needs no
+// notification daemon, and the banner is the only one that appears without the
+// user going looking, but it runs through notify-send, which the same minimal
+// desktop may not have either.
+func (a *app) warnMissingDialogs() {
+	a.dialogAdvice = platform.MissingDialogAdvice()
+	if a.dialogAdvice == "" {
+		return
+	}
+	a.rt.logger.Printf("%s", a.dialogAdvice)
+	msg := a.dialogAdvice + "\n\nUntil then, a file opened from outside a trusted folder is refused, " +
+		"because the prompt that would allow it cannot be shown. Trusted folders themselves still work: " +
+		"add one from the HTML Clay menu and its files open with no prompt at all."
+	go func() {
+		if err := a.notifyUser("HTML Clay", msg); err != nil {
+			a.rt.logger.Printf("Could not show the missing-dialog notice: %v", err)
+		}
+	}()
+}
+
+// refreshFileTypes re-registers the file associations on every launch, for the
+// reason refreshLoginItem re-registers the login item: a binary the user moved
+// leaves a stored path pointing at nothing. Failure is logged and the launch
+// carries on, since the launch running this is usually a double-click on a file
+// and that file still has to open.
+func (a *app) refreshFileTypes() {
+	execPath, err := os.Executable()
+	if err != nil || execPath == "" {
+		return
+	}
+	if err := platform.RegisterFileTypes(execPath); err != nil {
+		a.rt.logger.Printf("Could not register the .htmlclay file association: %v", err)
+	}
 }
 
 func (a *app) refreshLoginItem() {

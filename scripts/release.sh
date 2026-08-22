@@ -172,9 +172,36 @@ section "Step 5: Publish Website"
 # integration, so publishing the site means pushing the stamped page. This runs
 # after CI so the links never point at artifacts that are not on R2 yet.
 info "Stamping website with v${NEW_VERSION}..."
-node scripts/stamp-website.js "${NEW_VERSION}"
+CHECKSUM_FILE="$(mktemp "${TMPDIR:-/tmp}/htmlclay-checksums.XXXXXX")"
+trap 'rm -f "$CHECKSUM_FILE"' EXIT
+# R2 can lag a little behind the workflow finishing, and a release that dies here
+# would leave the artifacts published and the site unstamped, so give it a few tries
+# before giving up. The query is a cache-buster: without it a CDN copy of the previous
+# release's SHA256SUMS can be served and stamped, which is worse than failing. It
+# varies per ATTEMPT, not just per version, because Cloudflare caches 404s too: one
+# constant key means attempts 2 to 5 are served the negative response the first
+# attempt just cached, and a re-run of the same version reuses the failed run's key.
+fetched=false
+for attempt in 1 2 3 4 5; do
+  if curl -fsS "https://download.htmlclay.com/SHA256SUMS?v=${NEW_VERSION}-${attempt}" -o "$CHECKSUM_FILE"; then
+    fetched=true
+    break
+  fi
+  warn "SHA256SUMS not readable yet (attempt ${attempt}/5); waiting 10s..."
+  sleep 10
+done
+if [ "$fetched" != true ]; then
+  error "Could not fetch SHA256SUMS after 5 attempts. The artifacts are published; re-run the website stamp once R2 has it."
+  exit 1
+fi
+node scripts/stamp-website.js "${NEW_VERSION}" "$CHECKSUM_FILE"
+rm -f "$CHECKSUM_FILE"
+trap - EXIT
 
-git add website/index.html
+# Both pages, because stamp-website.js writes both. Keep this list in step with
+# PAGES in scripts/stamp-website.js: a page stamped and not staged ships stale
+# and leaves the tree dirty, which fails the next release's clean-tree check.
+git add website/index.html website/features.html
 if git diff --cached --quiet; then
   info "Website already current, nothing to push"
 else
