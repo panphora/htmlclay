@@ -103,6 +103,14 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	// is a rename for a caller that was already correct.
 	mux.HandleFunc("GET /_/sync", sameOrigin(s.handleLiveSyncStream))
 	mux.HandleFunc("POST /_/sync", sameOrigin(s.handleLiveSyncSave))
+	// The pre-spec addresses, kept permanently rather than as a grace period. A saved
+	// document is a frozen client: the Collection dashboard opens this exact stream from
+	// inline page script, so every dashboard ever minted names this path and no library
+	// update can reach it. hyperclayjs hardcodes both too. The handlers already read
+	// document-url/page-url, Document-URL/Page-URL and snapshot/html, so these are pure
+	// aliases with no duplicated logic.
+	mux.HandleFunc("GET /_/live-sync/stream", sameOrigin(s.handleLiveSyncStream))
+	mux.HandleFunc("POST /_/live-sync/save", sameOrigin(s.handleLiveSyncSave))
 	// Both endpoints keep their 1.2.0 URLs. User HTML calls
 	// /_/workspace-request/{token} directly, so the concept renames in Go and
 	// not on the wire; /_/open-request is only ever called by bytes this server

@@ -414,6 +414,54 @@ func TestResolvePageURLStripsSPASuffix(t *testing.T) {
 	}
 }
 
+// The pre-spec addresses are permanent aliases, not a grace period: a saved document
+// is a frozen client. The Collection dashboard opens /_/live-sync/stream from inline
+// page script, so every dashboard ever minted names that path and no library update
+// can reach it, and hyperclayjs hardcodes both. Deleting them once already shipped as
+// a break; this is what stops it shipping again.
+func TestLegacyLiveSyncAddressesStillStream(t *testing.T) {
+	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
+	filePath := filepath.Join(homeDir, "page.htmlclay")
+	os.WriteFile(filePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
+
+	mgr := newTestManager(t, homeDir)
+	if _, err := mgr.Register(filePath, session.ViaOsOpen); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
+	go srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	})
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", srv.port)
+	pageURL := base + "/page.htmlclay"
+
+	// The legacy address with the legacy query spelling, which is exactly what the
+	// frozen inline script in a Collection dashboard sends.
+	req, _ := http.NewRequest("GET", base+"/_/live-sync/stream?page-url="+url.QueryEscape(pageURL), nil)
+	sameOriginHeaders(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("legacy stream address returned %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("legacy stream Content-Type = %q, want text/event-stream", ct)
+	}
+}
+
 // End-to-end over a real connection, which is the only way to prove the logging
 // responseWriter's Unwrap and Flush actually reach the underlying writer. Without
 // them http.ResponseController cannot clear the write deadline or flush, and the
@@ -612,7 +660,7 @@ func TestLiveSyncRejectsSymlinkEscape(t *testing.T) {
 func TestLiveSyncRoutesRejectForeignHost(t *testing.T) {
 	srv, _ := setupLiveSyncTest(t)
 
-	for _, target := range []string{"/_/sync", "/_/sync"} {
+	for _, target := range []string{"/_/sync", "/_/live-sync/stream", "/_/live-sync/save"} {
 		req := httptest.NewRequest("GET", target, nil)
 		req.Host = "evil.com:1234"
 		w := httptest.NewRecorder()

@@ -267,7 +267,7 @@ func TestUploadRejectsAnEmptyFile(t *testing.T) {
 	}
 }
 
-func TestMetaAnnouncesTheSpecAndUploads(t *testing.T) {
+func TestMetaAnnouncesTheSpecAndExtensions(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	req := httptest.NewRequest("GET", "/_/meta/"+f.Token, nil)
@@ -287,8 +287,17 @@ func TestMetaAnnouncesTheSpecAndUploads(t *testing.T) {
 	if meta.Spec != specVersion {
 		t.Errorf("spec = %d, want %d", meta.Spec, specVersion)
 	}
-	if len(meta.Extensions) == 0 || meta.Extensions[0] != "upload" {
+	announced := map[string]bool{}
+	for _, e := range meta.Extensions {
+		announced[e] = true
+	}
+	// Membership, not position. The list grows, and the order it grows in was never
+	// a contract: asserting Extensions[0] made adding a second capability a failure.
+	if !announced["upload"] {
 		t.Errorf("extensions = %v, want upload announced", meta.Extensions)
+	}
+	if !announced["sync"] {
+		t.Errorf("extensions = %v, want sync announced now that both halves of /_/sync are served", meta.Extensions)
 	}
 	// Additive: every field that was there before still is.
 	if meta.Name != "test.htmlclay" {

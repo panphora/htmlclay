@@ -935,8 +935,12 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meta := fileMeta{
-		Spec:         specVersion,
-		Extensions:   []string{"upload"},
+		Spec: specVersion,
+		// `sync` is announced because this host serves both halves of the §10 address.
+		// It relays snapshots only and refuses a `document` body; §10 is informative in
+		// v1, and updating viewers on save rather than by client relay is the flow the
+		// section itself describes as usual.
+		Extensions:   []string{"sync", "upload"},
 		Path:         f.RelPath,
 		AbsolutePath: f.AbsPath,
 		Name:         f.Name,
