@@ -1,6 +1,6 @@
 # Third-party notices
 
-Our own code in this repository is licensed under the Clay License (see LICENSE). The statically linked Go modules below are third-party work and keep their original licenses, reproduced in full as their terms require.
+Our own code in this repository is licensed under the First Million Stays Yours License (see LICENSE). The statically linked Go modules below are third-party work and keep their original licenses, reproduced in full as their terms require.
 
 ## fyne.io/systray v1.12.0 (Apache-2.0)
 
