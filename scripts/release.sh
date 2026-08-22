@@ -103,20 +103,23 @@ success "Updated main.go"
 # site, so stamping now would advertise downloads minutes before they exist.
 
 # ══════════════════════════════════════════════════
-section "Step 3: Commit, Tag & Push"
+section "Step 3: Commit & Push"
 # ══════════════════════════════════════════════════
 
 git add main.go website/index.html
 git commit -m "chore: release v${NEW_VERSION}"
 success "Committed version bump"
 
-git tag "v${NEW_VERSION}"
-success "Tagged v${NEW_VERSION}"
-
 info "Pushing to remote..."
 git push origin HEAD
-git push origin "v${NEW_VERSION}"
-success "Pushed commit and tag"
+RELEASE_SHA="$(git rev-parse HEAD)"
+success "Pushed commit ${RELEASE_SHA:0:7}"
+
+# The tag is created in step 4, AFTER the gate passes. Tagging here published a tag
+# for a release nothing had tested yet, so a red gate left a permanent tag claiming a
+# version that never shipped. That is what happened on 2026-07-27: the run died at the
+# Windows test gate, was never retried, and users sat on 1.1.1 for four weeks while
+# main carried two shipped features.
 
 # ══════════════════════════════════════════════════
 section "Step 4: Build & Publish via CI"
@@ -130,21 +133,36 @@ info "Waiting for workflow run to appear..."
 RUN_ID=""
 for _ in $(seq 1 15); do
   sleep 3
-  RUN_ID=$(gh run list --workflow=release.yml --branch "$BRANCH" --event workflow_dispatch \
-    --limit 1 --json databaseId,status -q '.[0].databaseId' 2>/dev/null || echo "")
+  # Match the exact release SHA. `--limit 1` alone takes the newest dispatch, which can
+  # belong to a different commit, and watching a green run for someone else's commit
+  # would tag and ship an untested one.
+  RUN_ID=$(gh run list --workflow=release.yml --event workflow_dispatch \
+    --limit 20 --json databaseId,headSha \
+    -q "[.[] | select(.headSha == \"${RELEASE_SHA}\")] | .[0].databaseId" 2>/dev/null || echo "")
+  [ "$RUN_ID" = "null" ] && RUN_ID=""
   [ -n "$RUN_ID" ] && break
 done
 
-if [ -n "$RUN_ID" ]; then
-  info "Watching run ${RUN_ID}..."
-  gh run watch "$RUN_ID" --exit-status || {
-    error "CI workflow failed! Check: gh run view $RUN_ID"
-    exit 1
-  }
-  success "CI workflow completed"
-else
-  warn "Could not find CI run — check GitHub Actions manually"
+if [ -z "$RUN_ID" ]; then
+  error "No release run found for ${RELEASE_SHA:0:7} — refusing to tag."
+  error "The version commit is pushed. Check GitHub Actions, then re-run with the same version."
+  exit 1
 fi
+
+info "Watching run ${RUN_ID}..."
+gh run watch "$RUN_ID" --exit-status || {
+  error "CI workflow failed! Check: gh run view $RUN_ID"
+  error "No tag was created, so nothing claims a release. Fix forward on main and"
+  error "re-run with the same version."
+  exit 1
+}
+success "CI workflow completed"
+
+# Green for this exact commit, so the tag can now claim a release that really exists.
+info "Tagging v${NEW_VERSION}..."
+git tag "v${NEW_VERSION}"
+git push origin "v${NEW_VERSION}"
+success "Tagged and pushed v${NEW_VERSION}"
 
 # ══════════════════════════════════════════════════
 section "Step 5: Publish Website"

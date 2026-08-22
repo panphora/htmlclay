@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  # Also on push, so a broken main is found when it breaks rather than at release
+  # time. Dispatch-only meant pushing tested nothing, and the release workflow was
+  # the first thing to run the suite.
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -9,6 +15,9 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # Now that this runs on push, an unbounded hang would burn GitHub's 6h ceiling
+    # every time and report as "cancelled" rather than as a failure.
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
