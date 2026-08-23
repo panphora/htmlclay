@@ -198,10 +198,10 @@ node scripts/stamp-website.js "${NEW_VERSION}" "$CHECKSUM_FILE"
 rm -f "$CHECKSUM_FILE"
 trap - EXIT
 
-# Both pages, because stamp-website.js writes both. Keep this list in step with
-# PAGES in scripts/stamp-website.js: a page stamped and not staged ships stale
-# and leaves the tree dirty, which fails the next release's clean-tree check.
-git add website/index.html website/features.html
+# Keep this list in step with PAGES in scripts/stamp-website.js: a page stamped
+# and not staged ships stale and leaves the tree dirty, which fails the next
+# release's clean-tree check.
+git add website/index.html
 if git diff --cached --quiet; then
   info "Website already current, nothing to push"
 else

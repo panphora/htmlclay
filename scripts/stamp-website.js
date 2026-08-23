@@ -15,7 +15,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const PAGES = ['index.html', 'features.html'].map((name) => join(ROOT, 'website', name));
+// Only pages that actually carry a version or a download link. A page listed here
+// with neither is a hard error, which is what catches a stamp slot that quietly
+// disappeared; features.html is deliberately absent because it carries no version.
+const PAGES = ['index.html'].map((name) => join(ROOT, 'website', name));
 const DOWNLOAD_BASE = 'https://download.htmlclay.com/';
 
 const version =
