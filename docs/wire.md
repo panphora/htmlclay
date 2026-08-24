@@ -138,6 +138,15 @@ Exiting `0` becomes `wire/done`, any other code becomes `wire/error`.
 **Cancel:** the process is sent `SIGTERM` (Windows has no deliverable SIGTERM, so
 it is killed there). A handler that wants to finish its write can trap it.
 
+**On the CLI's own stderr:** the handler's stderr, each line prefixed with the
+short request id, and then one line per request saying how it ended (`done`,
+`error: …`, `cancelled`). That last line is worth knowing about when something
+goes wrong: a request that ends with no terminal frame looks exactly like one
+whose frame was posted and lost somewhere downstream, and the two have nothing in
+common. The line is printed after the frame goes out, so if the line is there,
+the CLI did its part. A request refused before the handler ever ran says so on
+the same line (`refused: …`, `already running; ignoring the repeat`).
+
 The program edits the file directly. There is no "return the new HTML" path, on
 purpose: the file is the state, and anything that wrote HTML back through the wire
 would be a second, competing writer.

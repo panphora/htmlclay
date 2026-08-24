@@ -1021,14 +1021,17 @@ func (sv *wireServer) start(raw []byte, f wireFrame) {
 		// Not the silent drop hyper-wire's serve.js does: ids are opaque uuids, so
 		// a repeat is this process seeing one request twice (a replayed frame, a
 		// resend), never two different requests colliding.
-		fmt.Fprintf(sv.env.stderr, "[wire] %s is already running; ignoring the repeat\n", f.ID)
+		sv.say(f.ID, "already running; ignoring the repeat")
 		return
 	}
 	if len(sv.live) >= wireServeMax {
 		sv.mu.Unlock()
 		cancel()
-		go sv.sender.send(wireFrame{Type: "wire/error", ID: f.ID, File: sv.file,
-			Text: fmt.Sprintf("this handler is already running %d requests", wireServeMax)})
+		full := fmt.Sprintf("this handler is already running %d requests", wireServeMax)
+		go func() {
+			sv.sender.send(wireFrame{Type: "wire/error", ID: f.ID, File: sv.file, Text: full})
+			sv.say(f.ID, "refused: "+full)
+		}()
 		return
 	}
 	sv.live[f.ID] = cancel
@@ -1075,6 +1078,7 @@ func (sv *wireServer) run(ctx context.Context, raw []byte, id string) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		sv.sender.send(wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: err.Error()})
+		sv.say(id, "error: "+err.Error())
 		return
 	}
 	cmd.Stdout = pw
@@ -1083,6 +1087,7 @@ func (sv *wireServer) run(ctx context.Context, raw []byte, id string) {
 		pw.Close()
 		pr.Close()
 		sv.sender.send(wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: err.Error()})
+		sv.say(id, "error: "+err.Error())
 		return
 	}
 	// The parent's copy of the write end must go, or EOF never arrives even when
@@ -1119,18 +1124,42 @@ func (sv *wireServer) run(ctx context.Context, raw []byte, id string) {
 	}
 	pr.Close()
 
+	// Every outcome is written to stderr as well as sent. A request that ends
+	// with no terminal frame is otherwise indistinguishable from one whose frame
+	// was posted and lost downstream, and the two have nothing in common: the
+	// first means this goroutine never got past Wait, the second means it did.
+	// One line here is what tells them apart afterwards, from the log alone.
+	//
+	// The line goes out AFTER the send returns, so that it means the frame was
+	// posted rather than merely decided on. Printing it first would let the log
+	// claim an outcome the server was never told about, which is the exact
+	// confusion the line exists to remove.
+	var out wireFrame
+	var said string
 	switch {
 	case ctx.Err() != nil:
-		sv.sender.send(wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: "cancelled"})
+		out = wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: "cancelled"}
+		said = "cancelled"
 	case waitErr == nil:
-		sv.sender.send(wireFrame{Type: "wire/done", ID: id, File: sv.file})
+		out = wireFrame{Type: "wire/done", ID: id, File: sv.file}
+		said = "done"
 	case errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0:
 		// The handler exited 0 and something it left behind held a pipe open past
 		// WaitDelay. The request succeeded; only the cleanup was late.
-		sv.sender.send(wireFrame{Type: "wire/done", ID: id, File: sv.file})
+		out = wireFrame{Type: "wire/done", ID: id, File: sv.file}
+		said = "done, after waiting out something the handler left holding a pipe"
 	default:
-		sv.sender.send(wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: waitErr.Error()})
+		out = wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: waitErr.Error()}
+		said = "error: " + waitErr.Error()
 	}
+	sv.sender.send(out)
+	sv.say(id, said)
+}
+
+// say reports one request's outcome on the CLI's own stderr, in the same
+// bracketed form the handler's stderr is prefixed with.
+func (sv *wireServer) say(id, text string) {
+	fmt.Fprintf(sv.env.stderr, "[%s] %s\n", wireShortID(id), text)
 }
 
 // wireReadLine returns one line, truncated to max bytes, discarding the rest of

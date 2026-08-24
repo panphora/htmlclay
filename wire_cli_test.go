@@ -748,6 +748,41 @@ func TestWireServeSurvivesADescendantHoldingStdout(t *testing.T) {
 	waitForExit(t, watching)
 }
 
+// The same wedge on the other pipe. stdout is an os.Pipe this process owns and
+// can take away; stderr is an ordinary writer, so exec copies it on a goroutine
+// that Wait waits for, and a descendant holding that write end is the one delay
+// only WaitDelay can end. A handler that answered and exited 0 must still reach
+// wire/done through it.
+func TestWireServeSurvivesADescendantHoldingStderr(t *testing.T) {
+	file, _, cfgBase := openTestSite(t)
+	t.Setenv("HTMLCLAY_WIRE_HELPER", "1")
+	t.Setenv("HTMLCLAY_WIRE_HELPER_MODE", "orphan-stderr")
+
+	server := newWireHarness(t, cfgBase)
+	serving := server.background(append([]string{"serve", file, "--"}, wireHelperCommand()...)...)
+	waitForText(t, server.errs, "attached as handler")
+
+	watcher := newWireHarness(t, cfgBase)
+	watching := watcher.background("listen", file)
+	waitForText(t, watcher.errs, "attached as observer")
+
+	sender := newWireHarness(t, cfgBase)
+	if code := sender.run("send", file, "--type", "wire/request", "--id", "req-orphan-stderr"); code != wireExitOK {
+		t.Fatalf("send exited %d; stderr:\n%s", code, sender.errs.String())
+	}
+
+	waitForText(t, watcher.out, `"wire/done"`)
+	// The done had to come from the WaitDelay arm, not the ordinary one: an
+	// assertion on `wire/done` alone would still pass if the descendant stopped
+	// holding the pipe on its own and nothing was ever waited out.
+	waitForText(t, server.errs, "done, after waiting out something the handler left holding a pipe")
+
+	server.cancel()
+	watcher.cancel()
+	waitForExit(t, serving)
+	waitForExit(t, watching)
+}
+
 func TestWireReadLineTruncatesInsteadOfStopping(t *testing.T) {
 	long := strings.Repeat("a", 200<<10)
 	r := bufio.NewReaderSize(strings.NewReader(long+"\nshort\n"), 4<<10)
@@ -830,6 +865,16 @@ func TestWireHelperProcess(t *testing.T) {
 		child.Stdout = os.Stdout
 		child.Start()
 		fmt.Println("working")
+	case "orphan-stderr":
+		// A descendant that inherits STDERR and outlives its parent. Nothing
+		// closes that write end when this process exits, so exec's own copy
+		// goroutine never sees EOF and only WaitDelay can end the wait.
+		child := exec.Command(os.Args[0], "-test.run=TestWireHelperProcess")
+		child.Env = append(os.Environ(), "HTMLCLAY_WIRE_HELPER_MODE=sleep",
+			"HTMLCLAY_WIRE_HELPER_OUT=")
+		child.Stderr = os.Stderr
+		child.Start()
+		fmt.Println("answered")
 	case "sleep":
 		// SIGTERM has to be observable, or a test cannot tell "the signal
 		// arrived" from "the process was still running when we gave up".
