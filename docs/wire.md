@@ -142,6 +142,56 @@ The program edits the file directly. There is no "return the new HTML" path, on
 purpose: the file is the state, and anything that wrote HTML back through the wire
 would be a second, competing writer.
 
+### Answering in words
+
+Status lines are how a handler says what it is doing. They are also how it says
+something back to the person who asked, if the page it is talking to knows to look
+for one. The convention redpen uses, and the one worth copying, is a single line
+that parses as a JSON object carrying a `redpen` key:
+
+```json
+{"redpen":1,"reply":"Cut the second clause and moved the date into the caption."}
+```
+
+| field | meaning |
+|---|---|
+| `redpen` | the marker, value `1`. Required, and conventionally the first key |
+| `reply` | the text, plain. A blank line starts a paragraph |
+| `append` | optional `true`: concatenate onto the reply so far instead of replacing it |
+
+Every other line stays progress. The marker is what stops a handler that pipes
+`jq` or an HTTP response to stdout from having its tool output read as the agent's
+own words. Put `redpen` first, because a line cut at the size limit keeps its head,
+and that head is the only thing a reader can use to tell a truncated reply from a
+line that was never meant to be one.
+
+Three rules that are easy to get wrong:
+
+- **Budget the reply at about 3,500 bytes** after JSON escaping. The line cap is
+  4096 bytes and it is enforced twice, in the CLI's reader and again in the server.
+  Longer replies split across several lines with `append: true`.
+- **Print the reply before you exit.** Frames for a request that has already
+  finished are dropped, silently, so a reply printed after the process ends is
+  simply lost.
+- **The last non-append line wins**, which makes printing the same reply twice
+  free. The status lane is documented as lossy on both sides, so a handler that
+  prints its reply when it has the answer and again just before exit halves the
+  chance of losing it.
+
+Hand-escaping JSON in bash is how people ship broken handlers, so let `jq` do it:
+
+```bash
+echo "rewriting the intro"
+REPLY=$(node rewrite.js "$HTMLCLAY_WIRE_FILE")
+printf '{"redpen":1,"reply":%s}\n' "$(jq -Rs . <<<"$REPLY")"
+```
+
+A page that holds a conversation sends a follow-up as another ordinary request.
+**`said` is always the newest message**, so a handler that only reads
+`payload.said` keeps working with no change; the exchanges so far ride alongside
+it as `thread`, a list of `{you, agent}` pairs, and appear only from the second
+message onwards.
+
 ## The CLI
 
 ```
@@ -217,6 +267,10 @@ Both spellings, because hosts differ on which they read.
 program rewrites another, live sync merges the two by matching elements. Give the
 regions a program will touch a stable `data-id` or `id`, or a structural change
 has nothing to match and quietly does not appear.
+
+**A reply printed after the work is done is thrown away.** Frames are dropped for
+a request that has already finished, and exiting finishes it. Print anything you
+want the page to read, then exit.
 
 **The first save after a program's edit warns you.** It reports that the file
 changed outside this tab and that your version was saved with the previous one in
