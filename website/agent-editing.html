@@ -1,0 +1,1772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent editing | HTML Clay</title>
+  <meta name="description" content="Ask for a change from inside your own page and watch a program on your machine make it. A worked example you can paste and run, first with a five line script, then with an AI.">
+  <link rel="canonical" href="https://htmlclay.com/agent-editing">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Let a program edit your file">
+  <meta property="og:description" content="Ask for a change from inside your own page and watch a program on your machine make it. A worked example you can paste and run, first with a five line script, then with an AI.">
+  <meta property="og:url" content="https://htmlclay.com/agent-editing">
+  <meta property="og:image" content="https://htmlclay.com/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Let a program edit your file">
+  <meta name="twitter:description" content="Ask for a change from inside your own page and watch a program on your machine make it. A worked example you can paste and run, first with a five line script, then with an AI.">
+
+  <style>
+    :root {
+      --bg: #faf8f3;
+      --ink: #1b1a17;
+      --muted: #6f6b62;
+      --line: #e7e3d8;
+      --card: #ffffff;
+      --accent: #c2410c;
+      --btn: #161512;
+      --btn-ink: #faf8f3;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      -webkit-text-size-adjust: 100%;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 17px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a {
+      color: var(--accent);
+      text-underline-offset: 2px;
+    }
+
+    a:hover { text-decoration: none; }
+
+    a:focus-visible,
+    button:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 3px solid rgba(194, 65, 12, .24);
+      outline-offset: 3px;
+      border-radius: 4px;
+    }
+
+    h1,
+    h2,
+    .display,
+    .closer p {
+      font-family: ui-rounded, "SF Pro Rounded", system-ui, "Segoe UI", sans-serif;
+      letter-spacing: -.01em;
+      line-height: 1.2;
+    }
+
+    .wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 0 22px;
+    }
+
+    .sitenav {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 22px 0 0;
+      font-size: 14px;
+    }
+
+    .sitenav a {
+      color: var(--muted);
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .sitenav a:hover { color: var(--ink); }
+    .sitenav .brand { color: var(--ink); font-weight: 700; }
+    .sitenav .navlinks { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+    .navlinks a { white-space: nowrap; }
+    .sitenav a[aria-current="page"] { color: var(--accent); }
+
+    .hero {
+      text-align: center;
+      padding: 68px 0 22px;
+    }
+
+    .eyebrow {
+      margin: 0 0 18px;
+      color: var(--accent);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 30px;
+      font-weight: 700;
+    }
+
+    .hero .eyebrow { margin-bottom: 12px; }
+
+    .hero h1 {
+      max-width: 580px;
+      margin: 0 auto 18px;
+      font-size: 46px;
+    }
+
+    .hero .lede {
+      max-width: 32em;
+      margin: 0 auto;
+      color: var(--ink);
+      font-size: 19px;
+    }
+
+    .filechip {
+      display: inline-block;
+      padding: 1px 7px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f1ede2;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .history-card {
+      position: relative;
+      margin: 30px 0 10px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: #f1ede2;
+      box-shadow: 0 24px 54px -42px rgba(27, 26, 23, .75);
+      text-align: left;
+    }
+
+    .history-file {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 12px 11px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .history-file code,
+    code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .history-file code { color: var(--ink); }
+
+    .version-list {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--card);
+    }
+
+    .version-row {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 11px;
+      padding: 11px 13px;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .version-row:first-child { border-top: 0; }
+
+    .version-dot {
+      width: 8px;
+      height: 8px;
+      margin-left: 3px;
+      border: 2px solid var(--accent);
+      border-radius: 50%;
+      background: var(--card);
+    }
+
+    .version-row:first-child .version-dot { background: var(--accent); }
+
+    .version-row b { font-size: 14px; }
+
+    .version-row span:last-child {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .retention {
+      margin: 0;
+      padding: 11px 13px 4px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .naming {
+      margin-top: 26px;
+      padding: 20px 22px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+      text-align: left;
+    }
+
+    .naming p { margin: 0; color: var(--muted); }
+    .naming p + p { margin-top: 10px; }
+    .naming b { color: var(--ink); }
+
+    section { padding: 42px 0; }
+
+    .section-lede {
+      margin: -4px 0 20px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .history-card + .section-lede { margin-top: 14px; }
+
+    .points {
+      display: grid;
+      gap: 16px;
+    }
+
+    .point {
+      padding: 19px 20px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .point h3 {
+      margin: 0 0 5px;
+      font-size: 18px;
+    }
+
+    .point p { margin: 0; color: var(--muted); }
+    .point p + p { margin-top: 9px; }
+    .point b { color: var(--ink); }
+
+    .feature-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .feature-pair .point {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+
+    .point-tag {
+      align-self: flex-start;
+      margin-bottom: 13px;
+      padding: 3px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .mini-list {
+      display: grid;
+      gap: 0;
+      margin-top: 17px;
+      border-top: 1px solid var(--line);
+    }
+
+    .mini-list div {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .mini-list b { color: var(--ink); }
+
+    .safe {
+      position: relative;
+      overflow: hidden;
+      padding: 22px 22px 22px 27px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .safe::before {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 5px;
+      background: var(--accent);
+      content: "";
+    }
+
+    .safe p { margin: 0; color: var(--muted); }
+    .safe p + p { margin-top: 13px; }
+    .safe b { color: var(--ink); }
+
+    .quiet-list {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .quiet-item {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 12px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .quiet-item:first-child { border-top: 0; }
+
+    .quiet-check {
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .quiet-item p { margin: 0; color: var(--muted); font-size: 15px; }
+    .quiet-item b { color: var(--ink); }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .platform {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .platform h3 {
+      margin: 0;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      background: #f1ede2;
+      font-size: 17px;
+    }
+
+    .platform dl { margin: 0; }
+
+    .platform dt {
+      padding: 10px 15px 0;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .platform dt:first-child { border-top: 0; }
+
+    .platform dd {
+      margin: 0;
+      padding: 1px 15px 10px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .matrix-note {
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .developer-zone {
+      position: relative;
+      margin-top: 34px;
+      padding-top: 68px;
+      border-top: 1px solid var(--line);
+    }
+
+    .developer-zone::before {
+      position: absolute;
+      top: -17px;
+      left: 50%;
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      transform: translateX(-50%);
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--bg);
+      color: var(--accent);
+      content: "</>";
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .developer-intro { text-align: center; }
+
+    .developer-intro .dev-label {
+      display: inline-block;
+      margin-bottom: 15px;
+      padding: 6px 16px;
+      border: 1px solid rgba(194, 65, 12, .28);
+      border-radius: 999px;
+      background: rgba(194, 65, 12, .09);
+      color: var(--accent);
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .developer-intro .display {
+      margin: 0 auto 13px;
+      font-size: 34px;
+      font-weight: 700;
+    }
+
+    .developer-intro p:last-child {
+      max-width: 34em;
+      margin: 0 auto;
+      color: var(--muted);
+    }
+
+    .command {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      overflow-x: auto;
+      margin: 6px 0 19px;
+      padding: 15px 17px;
+      border-radius: 11px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font-size: 14px;
+      line-height: 1.45;
+      white-space: nowrap;
+    }
+
+    .command::before {
+      color: #e69a77;
+      content: "$";
+      font-weight: 700;
+    }
+
+    .wire-flow {
+      display: grid;
+      grid-template-columns: 1fr 34px 1fr 34px 1fr;
+      align-items: stretch;
+      margin: 21px 0 0;
+    }
+
+    .wire-step {
+      min-width: 0;
+      padding: 16px 13px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--card);
+      text-align: center;
+    }
+
+    .wire-step .num {
+      display: grid;
+      place-items: center;
+      width: 25px;
+      height: 25px;
+      margin: 0 auto 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .wire-step b {
+      display: block;
+      font-size: 14px;
+    }
+
+    .wire-step small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .wire-arrow {
+      position: relative;
+      align-self: center;
+      height: 1px;
+      background: var(--line);
+    }
+
+    .wire-arrow::after {
+      position: absolute;
+      top: -4px;
+      right: 0;
+      width: 7px;
+      height: 7px;
+      transform: rotate(45deg);
+      border-top: 1px solid var(--muted);
+      border-right: 1px solid var(--muted);
+      content: "";
+    }
+
+    .fine-print {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .code-window {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+      box-shadow: 0 20px 46px -34px rgba(0, 0, 0, .35);
+    }
+
+    .code-window + .code-window { margin-top: 12px; }
+
+    .code-bar {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 13px;
+      border-bottom: 1px solid var(--line);
+      background: #f1ede2;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .code-dots { display: flex; gap: 5px; }
+
+    .code-dots i {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #d8d2c4;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 0;
+      padding: 18px;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .prompt { color: var(--accent); }
+    .output { color: var(--muted); }
+    .termout { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+    code[class*="language-"] .token.comment,
+    code[class*="language-"] .token.prolog,
+    code[class*="language-"] .token.doctype,
+    code[class*="language-"] .token.cdata { color: #7a7365; font-style: italic; }
+
+    code[class*="language-"] .token.punctuation { color: #7a7365; }
+
+    code[class*="language-"] .token.tag,
+    code[class*="language-"] .token.keyword,
+    code[class*="language-"] .token.selector,
+    code[class*="language-"] .token.important { color: #9d0006; }
+
+    code[class*="language-"] .token.attr-name,
+    code[class*="language-"] .token.function,
+    code[class*="language-"] .token.class-name,
+    code[class*="language-"] .token.property { color: #a3670f; }
+
+    code[class*="language-"] .token.attr-value,
+    code[class*="language-"] .token.string,
+    code[class*="language-"] .token.char,
+    code[class*="language-"] .token.regex { color: #6f6b0d; }
+
+    code[class*="language-"] .token.attr-value > .token.punctuation { color: #6f6b0d; }
+    code[class*="language-"] .token.attr-value > .token.attr-equals { color: #7a7365; }
+
+    code[class*="language-"] .token.variable,
+    code[class*="language-"] .token.constant,
+    code[class*="language-"] .token.environment,
+    code[class*="language-"] .token.parameter { color: #076678; }
+
+    code[class*="language-"] .token.number,
+    code[class*="language-"] .token.boolean,
+    code[class*="language-"] .token.entity,
+    code[class*="language-"] .token.symbol { color: #8f3f71; }
+
+    code[class*="language-"] .token.builtin { color: #3f7554; }
+
+    code[class*="language-"] .token.operator,
+    code[class*="language-"] .token.url { color: #af3a03; }
+
+    code[class*="language-"] .token.shebang { color: #7a7365; font-style: italic; }
+
+    code[class*="language-"] .token.namespace { opacity: .7; }
+
+    .api-note {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 13px;
+    }
+
+    .api-note p {
+      margin: 0;
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .api-note b { color: var(--ink); }
+
+    .closer {
+      padding: 52px 0 12px;
+      text-align: center;
+    }
+
+    .closer p {
+      margin: 0;
+      font-size: 25px;
+      font-weight: 650;
+    }
+
+    .closer .closer-sub {
+      margin-top: 9px;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 400;
+    }
+
+    .btn {
+      display: inline-block;
+      margin-top: 22px;
+      padding: 13px 26px;
+      border-radius: 11px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font-size: 17px;
+      font-weight: 650;
+      text-decoration: none;
+      transition: background .15s ease, transform .06s ease;
+    }
+
+    .btn:hover { background: #000; }
+    .btn:active { transform: translateY(1px); }
+
+    footer {
+      padding: 40px 0 64px;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    footer p { margin: 0 0 8px; }
+    footer[data-hyper-footer] { padding: 0 0 64px; }
+
+    @media (max-width: 620px) {
+      .hero { padding-top: 50px; }
+      .hero h1 { font-size: 38px; }
+      .feature-pair { grid-template-columns: 1fr; }
+      .platform-grid { grid-template-columns: 1fr; }
+
+      .platform h3 {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+      }
+
+      .platform h3::after {
+        color: var(--muted);
+        font-family: system-ui, sans-serif;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+
+      .platform:nth-child(1) h3::after { content: "Universal"; }
+      .platform:nth-child(2) h3::after { content: "64 bit"; }
+      .platform:nth-child(3) h3::after { content: "x86 + ARM"; }
+
+      .platform dl { display: grid; grid-template-columns: 104px 1fr; }
+      .platform dt { padding: 11px 0 11px 15px; }
+      .platform dd { padding: 11px 15px; border-top: 1px solid var(--line); }
+      .platform dt:first-child + dd { border-top: 0; }
+    }
+
+    @media (max-width: 480px) {
+      .wrap { padding: 0 18px; }
+      .hero h1 { font-size: 34px; }
+      .hero .lede { font-size: 18px; }
+      h2 { font-size: 26px; }
+      .history-file { align-items: flex-start; flex-direction: column; gap: 2px; }
+      .version-row { grid-template-columns: 16px 1fr; }
+      .version-row span:last-child { grid-column: 2; }
+      .developer-intro .display { font-size: 27px; }
+
+      .wire-flow {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+
+      .wire-arrow {
+        width: 1px;
+        height: 26px;
+        margin: 0 auto;
+      }
+
+      .wire-arrow::after {
+        top: auto;
+        right: -3px;
+        bottom: 0;
+        transform: rotate(135deg);
+      }
+
+      .api-note { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .btn { transition: none; }
+    }
+    /* --- steps and guide pages --- */
+    .step { padding-top: 30px; }
+    .step h2 {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .stepnum {
+      display: grid;
+      place-items: center;
+      flex: none;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .copywrap { position: relative; }
+    .copybtn {
+      position: absolute;
+      top: 9px;
+      right: 10px;
+      padding: 5px 11px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--bg);
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .copybtn:hover { color: var(--ink); border-color: var(--muted); }
+    .copybtn[data-done="1"] { color: var(--accent); border-color: var(--accent); }
+    .callout {
+      margin: 19px 0;
+      padding: 15px 17px;
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 11px 11px 0;
+      background: var(--card);
+      font-size: 15px;
+    }
+    .callout p { margin: 0; }
+    .callout p + p { margin-top: 9px; }
+    .aside {
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .trouble { margin: 16px 0 0; padding: 0; list-style: none; }
+    .trouble li {
+      margin: 0 0 11px;
+      padding-left: 19px;
+      border-left: 2px solid var(--line);
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .trouble b { color: var(--ink); }
+    .seq { margin: 19px 0; padding: 0; list-style: none; counter-reset: seq; }
+    .seq li {
+      position: relative;
+      margin: 0 0 13px;
+      padding-left: 30px;
+      counter-increment: seq;
+    }
+    .seq li::before {
+      content: counter(seq);
+      position: absolute;
+      left: 0;
+      top: 1px;
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--card);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .attrs { width: 100%; margin: 19px 0; border-collapse: collapse; font-size: 15px; }
+    .attrs th, .attrs td {
+      padding: 10px 12px 10px 0;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    .attrs th { color: var(--muted); font-weight: 600; font-size: 13px; }
+    .attrs code { white-space: nowrap; }
+    .flowpic { margin: 24px 0; }
+    .flowpic svg { display: block; width: 100%; height: auto; }
+    .flowcap { margin: 10px 0 0; color: var(--muted); font-size: 14px; text-align: center; }
+    @media (max-width: 480px) {
+      .attrs code { white-space: normal; }
+    }
+
+    /* --- worked demos --- */
+    .demo { margin: 34px 0 4px; }
+    .demo-inline { margin: 26px 0 28px; }
+
+    .demo-doc .code-bar { justify-content: flex-start; }
+
+    .demo-barnote {
+      margin-left: auto;
+      color: #9c968a;
+    }
+
+    .demo-page { padding: 20px 20px 16px; }
+
+    .demo-title {
+      margin: 0 0 12px;
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -.01em;
+    }
+
+    .demo-body { overflow: hidden; }
+
+    .demo-body ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .demo-body li {
+      position: relative;
+      padding: 5px 0 5px 25px;
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .demo-body li::before {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: 12px;
+      width: 11px;
+      height: 11px;
+      border: 1.5px solid #d3ccbc;
+      border-radius: 3px;
+    }
+
+    .demo-groups {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 18px;
+      align-items: start;
+    }
+
+    .demo-group h4 {
+      margin: 0 0 4px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .demo[data-kind="recipe"] .demo-title { margin-bottom: 4px; }
+    .demo[data-kind="recipe"] .demo-body li { padding-left: 18px; }
+
+    .demo[data-kind="recipe"] .demo-body li::before {
+      left: 4px;
+      top: 15px;
+      width: 5px;
+      height: 5px;
+      border: 0;
+      border-radius: 50%;
+      background: #d3ccbc;
+    }
+
+    .demo-serves {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 14.5px;
+    }
+
+    .demo-bake {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 14.5px;
+    }
+
+    .demo-qty {
+      font-weight: 650;
+      border-radius: 4px;
+      transition: background .35s ease, box-shadow .35s ease;
+    }
+
+    .demo-qty.is-lit {
+      background: rgba(194, 65, 12, .14);
+      box-shadow: 0 0 0 3px rgba(194, 65, 12, .14);
+    }
+
+    .demo-ask {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 15px;
+      border-top: 1px solid var(--line);
+    }
+
+    .demo-input {
+      flex: 1;
+      min-width: 0;
+      padding: 10px 13px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--bg);
+      color: var(--ink);
+      font: inherit;
+      font-size: 16px;
+      transition: border-color .2s ease;
+    }
+
+    .demo-input::placeholder { color: #a49d90; }
+    .demo-input.demo-typing { border-color: #d9b39a; }
+
+    .demo-send {
+      flex: none;
+      min-width: 92px;
+      padding: 10px 19px;
+      border: 0;
+      border-radius: 9px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font: inherit;
+      font-size: 15px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: background .15s ease, transform .06s ease, opacity .2s ease;
+    }
+
+    .demo-send:hover { background: #2b2823; }
+    .demo-send:active { transform: translateY(1px); }
+    .demo-send[disabled] { opacity: .45; cursor: default; }
+
+    .demo-status {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 20px;
+      margin: 11px 2px 0;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .demo-dot {
+      flex: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #d3ccbc;
+      transition: background .2s ease;
+    }
+
+    .demo-status[data-state="sent"] .demo-dot,
+    .demo-status[data-state="thinking"] .demo-dot { background: var(--accent); }
+    .demo-status[data-state="thinking"] .demo-dot { animation: demo-pulse 1.15s ease-in-out infinite; }
+    .demo-status[data-state="done"] .demo-dot { background: #7c9a6e; }
+    .demo-status[data-state="done"] .demo-say { color: var(--ink); }
+
+    .demo-saved {
+      margin-left: auto;
+      color: #9c968a;
+      animation: demo-rise .4s ease both;
+    }
+
+    .demo-term { margin-top: 12px; }
+    .demo-term pre { padding: 13px 15px; font-size: 12.5px; }
+
+    .demo-cap {
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 14.5px;
+      line-height: 1.55;
+      text-align: center;
+    }
+
+    .demo-sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .demo-fade { animation: demo-rise .45s ease both; }
+
+    @keyframes demo-rise {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes demo-pulse {
+      50% { opacity: .3; }
+    }
+
+    @media (max-width: 519px) {
+      .demo-groups { grid-template-columns: 1fr; gap: 14px; }
+      .demo-barnote { display: none; }
+      .demo-ask { flex-wrap: wrap; }
+      .demo-input { flex: 1 1 100%; }
+      .demo-send { width: 100%; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .demo-fade,
+      .demo-saved,
+      .demo-status .demo-dot { animation: none !important; }
+      .demo-body li,
+      .demo-body,
+      .demo-qty { transition: none !important; }
+    }
+</style>
+  <script src="prism.min.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <nav class="sitenav">
+      <a class="brand" href="/">HTML Clay</a>
+      <div class="navlinks">
+        <a href="/">Home</a>
+        <a href="/get-started">Get started</a>
+        <a href="/features">Features</a>
+        <a href="/agent-editing" aria-current="page">Agent editing</a>
+      </div>
+    </nav>
+
+    <div class="hero">
+      <p class="eyebrow">Agent editing</p>
+      <h1>Let a program edit your file</h1>
+      <p class="lede">Your file is open in a tab. You type "add everything I need for a beach trip" into a box on the page and press Send. A program in your own terminal wakes up, edits the file, and the new lines appear in front of you, already saved.</p>
+    </div>
+
+    <section class="demo" id="demo-trip" data-kind="list" aria-label="A demonstration of asking for a change from inside your own page">
+      <div class="demo-doc code-window">
+        <div class="code-bar">
+          <span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>camping.htmlclay</span>
+          <span class="demo-barnote">your file, open in a tab</span>
+        </div>
+        <div class="demo-page">
+          <p class="demo-title">Trip list</p>
+          <div class="demo-body">
+            <ul>
+              <li>Tent</li>
+              <li>Sleeping bag</li>
+              <li>Headlamp</li>
+              <li>Firewood</li>
+              <li>Rain jacket</li>
+              <li>Coffee and the little pot</li>
+              <li>Water filter</li>
+            </ul>
+          </div>
+          <form class="demo-ask">
+            <label class="demo-sr" for="demo-trip-input">Ask for a change</label>
+            <input class="demo-input" id="demo-trip-input" type="text" placeholder="Ask for a change&#8230;" readonly autocomplete="off">
+            <button class="demo-send" type="submit">Send</button>
+          </form>
+          <p class="demo-status" data-state="">
+            <span class="demo-dot" aria-hidden="true"></span>
+            <span class="demo-say"></span>
+            <span class="demo-saved" hidden>saved into the file</span>
+          </p>
+          <p class="demo-sr" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <div class="demo-term code-window">
+        <div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div>
+        <pre class="termout" tabindex="0"><code><span class="output">[wire] attached as handler to http://127.0.0.1:52341 (/Users/you/Desktop/camping.htmlclay)</span></code></pre>
+      </div>
+
+      <p class="demo-cap">That is the whole loop. This one is a demonstration; the rest of the page builds the real thing, on a file of your own.</p>
+    </section>
+
+    <section>
+      <p>No copying out of a chat window and pasting back in. No service in the middle. The program runs on your computer, as you, and the file on your disk is the only thing the two sides share.</p>
+
+      <p>Usually that program is an AI agent. It can just as easily be a formatter, a script you wrote, or five lines of shell. This page sets it up both ways: first with a robot that cannot fail, so you can watch the whole loop with nothing clever in it, then with an AI.</p>
+
+    </section>
+
+    <section aria-labelledby="what">
+      <h2 id="what">Before you start</h2>
+      <ul class="mini-list">
+        <li><b>HTML Clay 1.6 or newer,</b> and a file that opens and saves. If you have not made one yet, <a href="/get-started">get started</a> covers it in five minutes.</li>
+        <li><b>A terminal window you are willing to leave open.</b> Pasting commands into it is as technical as this page gets.</li>
+        <li><b>For the second half, a command line AI tool.</b> The example uses Claude Code. Anything that takes a prompt and can edit a file works the same way, and the page says exactly what you see if you do not have one.</li>
+      </ul>
+
+      <p class="fine-print">The commands below are written for a Mac and use nothing beyond what macOS already ships with. On Linux everything is identical except one line you get to skip, noted where it appears. Windows is covered at the bottom.</p>
+    </section>
+
+    <section class="step" aria-labelledby="a1">
+      <h2 id="a1"><span class="stepnum">1</span> A page with an ask box</h2>
+
+      <p>Save this as <code>robot-notes.htmlclay</code>, the same way you saved your first file: any plain text editor, plain text mode, keep the <span class="filechip">.htmlclay</span> ending. Put it on your Desktop.</p>
+
+      <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>robot-notes.htmlclay</span></div><pre tabindex="0"><code class="language-markup">&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot; autosave&gt;
+&lt;head&gt;
+  &lt;meta charset=&quot;utf-8&quot;&gt;
+  &lt;title&gt;Robot notes&lt;/title&gt;
+  &lt;style&gt;
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 30rem;
+      margin: 3rem auto;
+      padding: 0 1rem;
+    }
+    form { display: flex; gap: 0.5rem; }
+    input { flex: 1; font: inherit; padding: 0.4rem 0.6rem; }
+    button { font: inherit; padding: 0.4rem 0.9rem; }
+  &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1 editable&gt;Robot notes&lt;/h1&gt;
+
+  &lt;form id=&quot;ask&quot;&gt;
+    &lt;input id=&quot;said&quot; placeholder=&quot;Ask for a change&quot; autocomplete=&quot;off&quot;&gt;
+    &lt;button&gt;Send&lt;/button&gt;
+  &lt;/form&gt;
+
+  &lt;ul id=&quot;log&quot;&gt;
+    &lt;li&gt;Lines the robot adds will show up here.&lt;/li&gt;
+  &lt;/ul&gt;
+
+  &lt;div id=&quot;notes&quot; editable&gt;
+    &lt;p&gt;This part is yours. Click and type.&lt;/p&gt;
+  &lt;/div&gt;
+
+  &lt;script src=&quot;https://clayjs.com/clay.js?plugins=sync,wire&quot;&gt;&lt;/script&gt;
+  &lt;script&gt;
+    clay.ready.then(function () {
+      var ask = document.getElementById(&quot;ask&quot;);
+      var box = document.getElementById(&quot;said&quot;);
+
+      // Built here, never typed into the file: everything you can see
+      // in the page is what gets saved.
+      var status = document.createElement(&quot;p&quot;);
+      status.setAttribute(&quot;clay&quot;, &quot;no-save no-snapshot no-watch&quot;);
+      ask.after(status);
+
+      clay.wire.on(function (request) {
+        status.textContent = request.error
+          || request.text
+          || request.state;
+      });
+
+      ask.addEventListener(&quot;submit&quot;, function (event) {
+        event.preventDefault();
+        var words = box.value.trim();
+        if (!words) return;
+        box.value = &quot;&quot;;
+        status.textContent = &quot;sent&quot;;
+        clay.wire.send({ said: words }, { text: words });
+      });
+    });
+  &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+
+      <p>You do not have to read it. If you do, three lines are carrying the page.</p>
+
+      <ul class="mini-list">
+        <li><b>The script tag asks for two extras.</b> <code>wire</code> is what gives the page a way to ask for something. <code>sync</code> is what makes the answer appear in the open tab without a reload.</li>
+        <li><b><code>clay.wire.send</code> is the page asking.</b> You hand it what the person typed. Everything else on the page is an ordinary form.</li>
+        <li><b>The status line is built in JavaScript, not written into the file.</b> That matters more than it looks. Everything you can see in the page is what gets saved, so a line reading "thinking" would be written into your document and still be there tomorrow. The <code>clay</code> attribute on it says: show this, never save it. Build parts like that in code. If you type one into the file by hand, the first save deletes it.</li>
+      </ul>
+
+      <p>Double-click the file now so it is open in a tab. Press Send if you like: a moment later the status reports that nothing is attached, which is the honest answer rather than a spinner that never stops.</p>
+    </section>
+
+    <section class="step" aria-labelledby="a2">
+      <h2 id="a2"><span class="stepnum">2</span> The robot</h2>
+
+      <p>A robot here is just a program. Any program. HTML Clay runs it once each time the page asks for something, and three plain rules connect the two.</p>
+
+      <ol class="seq">
+        <li>The request arrives on the program's standard input, and the file's location arrives in an environment variable called <code>HTMLCLAY_WIRE_FILE</code>.</li>
+        <li>Every line the program prints shows up on the page as progress.</li>
+        <li>When the program exits cleanly, the page is told the work is done. Any other exit code and the page shows an error.</li>
+      </ol>
+
+      <p>Here is a whole working robot. Save it as <code>robot.sh</code>, next to the page file.</p>
+
+      <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>robot.sh</span></div><pre tabindex="0"><code class="language-bash">#!/bin/bash
+echo &quot;working on it&quot;
+
+NOW=$(date &quot;+%H:%M:%S&quot;)
+LINE=&quot;&lt;li&gt;The robot was here at $NOW.&lt;/li&gt;&quot;
+perl -pi -e &quot;s|&lt;/ul&gt;|$LINE\n  &lt;/ul&gt;|&quot; &quot;$HTMLCLAY_WIRE_FILE&quot;
+
+echo &quot;added a line at $NOW&quot;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+
+      <p>It prints a progress line, adds one line to the list in the file stamped with the current time, and prints that it finished. It ignores what you typed, on purpose. This first robot exists so you can watch the loop run with nothing clever inside it. The words start mattering in the next step.</p>
+    </section>
+
+    <section class="step" aria-labelledby="a3">
+      <h2 id="a3"><span class="stepnum">3</span> Connect them</h2>
+
+      <p>Open Terminal and paste these three lines.</p>
+
+      <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">alias htmlclay=&quot;/Applications/HTMLClay.app/Contents/MacOS/htmlclay&quot;
+cd ~/Desktop
+htmlclay wire serve robot-notes.htmlclay -- bash robot.sh</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+
+      <p>The first line teaches this terminal window the <code>htmlclay</code> command, because on a Mac the command lives inside the app rather than on your path. It lasts until you close the window, and putting the same line in your <code>~/.zshrc</code> keeps it. On Linux, skip it: <code>htmlclay</code> is already a command. On Windows it is <code>htmlclay.exe</code>, in the folder you unzipped.</p>
+
+      <p>The last line is the one doing the work: send requests from this file to this program. The terminal answers with one line and then waits.</p>
+
+      <div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre class="termout" tabindex="0"><code><span class="output">[wire] attached as handler to http://127.0.0.1:52341 (/Users/you/Desktop/robot-notes.htmlclay)</span></code></pre></div>
+
+      <p>Your port number and your username will differ, and that is fine. Leave it running. The robot is attached to your file for exactly as long as this command runs, and not a second longer.</p>
+
+      <p class="fine-print">If it says <code>no HTML Clay site is serving this file; open it first</code>, the file has not been opened since HTML Clay last started. Double-click it and run the command again.</p>
+    </section>
+
+    <section class="step" aria-labelledby="a4">
+      <h2 id="a4"><span class="stepnum">4</span> Press Send</h2>
+
+      <p>Go back to the tab, type anything into the box, and press Send. Watch the page. Within a second or two, in this order:</p>
+
+      <ol class="seq">
+        <li>The status under the box reads <b>working on it</b>. That is your robot's first line, arriving on the page as it runs.</li>
+        <li>A new line appears in the list: <i>The robot was here at 14:03:52.</i> The robot edited the file on your disk, and the page picked the change up and showed it to you, with no reload.</li>
+        <li>The status settles on <b>done</b>.</li>
+      </ol>
+
+      <p>Press Send a few more times. One press, one run, one new line.</p>
+
+      <p>Three things quietly happened that are worth saying out loud. The page saved itself before asking, so the robot read exactly what you were looking at. The robot's edit went into <code>robot-notes.htmlclay</code> itself, so it is already saved: close the tab, open the file again, and the robot's lines are all still there. And a complete copy of the file from before the edit went into Backups, exactly as for any other save, so nothing a robot does to your file is beyond undoing.</p>
+    </section>
+
+    <section aria-labelledby="ai">
+      <h2 id="ai">Now make it think</h2>
+      <p class="section-lede">Same loop. Swap the program.</p>
+
+      <p>The robot ignored your words. An AI agent is a robot that reads them.</p>
+
+      <section class="demo demo-inline" id="demo-bread" data-kind="recipe" aria-label="A demonstration of an AI agent rewriting a file">
+        <div class="demo-doc code-window">
+          <div class="code-bar">
+            <span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>banana-bread.htmlclay</span>
+            <span class="demo-barnote">your file, open in a tab</span>
+          </div>
+          <div class="demo-page">
+            <p class="demo-title">Banana bread</p>
+            <div class="demo-body">
+              <p class="demo-serves">Serves <span class="demo-qty" data-after="8">4</span></p>
+              <ul>
+                <li><span class="demo-qty" data-after="6">3</span> ripe bananas</li>
+                <li><span class="demo-qty" data-after="2 sticks">1 stick</span> butter, melted</li>
+                <li><span class="demo-qty" data-after="1&#189; cups">&#190; cup</span> sugar</li>
+                <li><span class="demo-qty" data-after="4">2</span> eggs</li>
+                <li><span class="demo-qty" data-after="3 cups">1&#189; cups</span> flour</li>
+                <li><span class="demo-qty" data-after="2 tsp">1 tsp</span> baking soda</li>
+              </ul>
+              <p class="demo-bake">Bake at 350&deg;F for 55 minutes.</p>
+            </div>
+            <form class="demo-ask">
+              <label class="demo-sr" for="demo-bread-input">Ask for a change</label>
+              <input class="demo-input" id="demo-bread-input" type="text" placeholder="Ask for a change&#8230;" readonly autocomplete="off">
+              <button class="demo-send" type="submit">Send</button>
+            </form>
+            <p class="demo-status" data-state="">
+              <span class="demo-dot" aria-hidden="true"></span>
+              <span class="demo-say"></span>
+              <span class="demo-saved" hidden>saved into the file</span>
+            </p>
+            <p class="demo-sr" aria-live="polite"></p>
+          </div>
+        </div>
+
+        <div class="demo-term code-window">
+          <div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div>
+          <pre class="termout" tabindex="0"><code><span class="output">[wire] attached as handler to http://127.0.0.1:52341 (/Users/you/Desktop/banana-bread.htmlclay)</span></code></pre>
+        </div>
+
+        <p class="demo-cap">Watch the oven line: doubling a recipe is not multiplying every number, and the program left it alone. Cut down for the page, a real ask takes fifteen seconds to a minute.</p>
+      </section>
+
+      <p>This step needs one thing the rest of the page did not: an AI you can run from the terminal. The example uses Claude Code. If typing <code>claude --version</code> prints a version number, you are ready. If it prints <code>command not found</code>, the robot above has already shown you everything this page teaches, and this step will be here when you have one.</p>
+
+      <p>Save this as <code>agent.sh</code>, next to the others.</p>
+
+      <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>agent.sh</span></div><pre tabindex="0"><code class="language-bash">#!/bin/bash
+REQUEST=$(cat)
+
+claude --permission-mode acceptEdits -p &quot;The file at
+$HTMLCLAY_WIRE_FILE is an HTML page I have open on my screen.
+This request came from inside the page: $REQUEST. Make the change
+it asks for by editing that file directly. Leave everything else in
+the file exactly as it is, and do not create any other files.&quot; 1&gt;&amp;2 &amp;
+
+agent=$!
+while kill -0 &quot;$agent&quot; 2&gt;/dev/null; do
+  echo &quot;thinking&quot;
+  sleep 5
+done
+wait &quot;$agent&quot;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+
+      <p>Stop the robot with Ctrl+C, because one file has one program attached at a time, and start this one instead.</p>
+
+      <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">htmlclay wire serve robot-notes.htmlclay -- bash agent.sh</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+
+      <p>Now ask for real things. "Add everything I need for a beach trip to the list." "Rewrite my notes so they are half as long." "Turn my notes into a haiku."</p>
+
+      <p>The rhythm is the same, only slower. The status says <b>thinking</b> while the agent works, and then the page changes in front of you: new list items, or your own notes rewritten in place. A small ask usually takes somewhere between fifteen seconds and a minute.</p>
+
+      <p>Two lines in that script are doing more than they look.</p>
+
+      <ul class="mini-list">
+        <li><b>The heartbeat.</b> A request whose program has gone quiet for two minutes is given up on, and every line it prints resets that clock. Printing "thinking" every five seconds is what lets a slow agent take as long as it needs.</li>
+        <li><b><code>1&gt;&amp;2</code> sends the agent's own chatter to your terminal rather than the page.</b> The page only needs to know that something is happening.</li>
+      </ul>
+
+      <div class="callout">
+        <p><b>Where your file goes.</b> An AI agent reads your file and sends what it reads to its own provider, under your own account with them. That is the agent doing what you installed it to do. HTML Clay sends nothing anywhere: it starts the program you named and gets out of the way.</p>
+        <p>The agent also runs with your permissions, in the folder you started it from. <code>acceptEdits</code> is what lets it write without stopping to ask about every change. If you would rather approve each one, use your agent's stricter setting instead.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="how">
+      <h2 id="how">What just happened</h2>
+
+      <div class="flowpic">
+        <svg viewBox="0 0 600 250" role="img" aria-label="Your page asks HTML Clay, which runs your program. Your program edits the file on disk, and the page updates from that file.">
+          <g fill="var(--card)" stroke="var(--line)" stroke-width="1.5">
+            <rect x="1" y="20" width="168" height="52" rx="11"/>
+            <rect x="216" y="20" width="168" height="52" rx="11"/>
+            <rect x="431" y="20" width="168" height="52" rx="11"/>
+            <rect x="1" y="176" width="598" height="52" rx="11"/>
+          </g>
+          <g fill="var(--ink)" font-family="system-ui, sans-serif" font-size="14" text-anchor="middle">
+            <text x="85" y="51">your page</text>
+            <text x="300" y="51">HTML Clay</text>
+            <text x="515" y="51">your program</text>
+            <text x="300" y="207">robot-notes.htmlclay, the file on disk</text>
+          </g>
+          <g stroke="var(--muted)" stroke-width="1.5" fill="none">
+            <path d="M174 46 H206"/>
+            <path d="M389 46 H421"/>
+          </g>
+          <g fill="var(--muted)">
+            <path d="M206 46 l-7 -4 v8 z"/>
+            <path d="M421 46 l-7 -4 v8 z"/>
+          </g>
+          <g fill="var(--muted)" font-family="system-ui, sans-serif" font-size="12" text-anchor="middle">
+            <text x="190" y="14">asks</text>
+            <text x="405" y="14">runs it</text>
+          </g>
+          <g stroke="var(--accent)" stroke-width="2.5" fill="none">
+            <path d="M515 76 V168"/>
+            <path d="M85 172 V80"/>
+          </g>
+          <g fill="var(--accent)">
+            <path d="M515 176 l-6 -9 h12 z"/>
+            <path d="M85 72 l-6 9 h12 z"/>
+          </g>
+          <g fill="var(--accent)" font-family="system-ui, sans-serif" font-size="12">
+            <text x="503" y="127" text-anchor="end">edits it</text>
+            <text x="97" y="127">and the page updates</text>
+          </g>
+        </svg>
+        <p class="flowcap">No document travels between the page and the program. The file is the only thing they share.</p>
+      </div>
+
+      <p>The page never talks to your program directly, and no page content travels between them. The page sends a short message. Your program edits the file with whatever tools it already has. The edit reaches the page the same way any file change does. HTML Clay calls this channel the wire, and four things about it are worth knowing even if you never look deeper.</p>
+
+      <div class="quiet-list">
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>The program runs only while your command runs.</b> Ctrl+C, and nothing is attached to anything.</p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>A page cannot pretend to be your program.</b> Browsers announce themselves in ways they cannot suppress, so a web page can ask, but only a program you started yourself can answer.</p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>A page can only reach its own file.</b> It cannot send requests about some other file on your disk, even one open in the next tab.</p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Every edit is versioned.</b> A program's change is backed up exactly like yours, even when no tab is open at the time.</p></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="edges">
+      <h2 id="edges">The rough edges</h2>
+      <p class="section-lede">Said here so you do not have to find them yourself.</p>
+
+      <div class="points">
+        <article class="point">
+          <h3>Open the file before you attach</h3>
+          <p>The command finds files through the app, so attaching to a file that is not open answers <code>no HTML Clay site is serving this file; open it first</code>. Double-click the file, then run the command.</p>
+        </article>
+        <article class="point">
+          <h3>One program per file</h3>
+          <p>A second attach to the same file is refused while the first is running. Stop the old one with Ctrl+C first.</p>
+        </article>
+        <article class="point">
+          <h3>A silent program gets two minutes</h3>
+          <p>Every line it prints buys it more time, which is why both example scripts print while they work. An agent grinding silently on a huge request can time out. Small requests are fine.</p>
+        </article>
+        <article class="point">
+          <h3>Your next save after a robot edit warns you</h3>
+          <p>The first time you edit the page yourself after a program has changed the file, the page reports that the file changed outside this tab. Nothing is lost, both versions are in Backups, and your save carries the program's edit forward. It reads more alarming than it is.</p>
+        </article>
+        <article class="point">
+          <h3>Give the parts a program rewrites an id</h3>
+          <p>Changes arrive in the open page by matching elements up, so a program should edit inside elements with a stable <code>id</code> or <code>data-id</code>, like <code>log</code> and <code>notes</code> in the example file. A change inside an anonymous element may not appear until the next reload.</p>
+        </article>
+        <article class="point">
+          <h3>Windows</h3>
+          <p>The app and the wire both work, but the example robots are bash scripts. Write the same three rules in PowerShell or any language you like: read standard input, print progress, edit the file named by <code>HTMLCLAY_WIRE_FILE</code>, exit 0. The command is the same, with the path to your <code>htmlclay.exe</code> in place of the alias.</p>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="anext">
+      <h2 id="anext">Where next</h2>
+      <ul class="mini-list">
+        <li><b><a href="https://github.com/panphora/htmlclay/blob/main/docs/wire.md">The full protocol</a>.</b> Every request state, every exit code, holding a conversation across several messages, and how a program answers in words rather than in edits.</li>
+        <li><b><a href="/features">Everything else the app does</a>.</b> Versions, trusted folders, reading a file as JSON, and the exact safety boundary.</li>
+        <li><b><a href="/get-started">No working file yet?</a></b> The five minute version.</li>
+      </ul>
+    </section>
+
+    <div class="closer">
+      <p>Ask the page. Watch it change.</p>
+      <p class="closer-sub">The file is the whole conversation.</p>
+      <a class="btn" href="/#downloads">Download HTML Clay</a>
+    </div>
+
+
+    <footer>
+      <p>Building your own <span class="filechip">.htmlclay</span> files? Check out <a href="https://hyperclay.com">Hyperclay</a></p>
+      <p>Source code: <a href="https://github.com/panphora/htmlclay">github.com/panphora/htmlclay</a></p>
+      <p>Docs: <a href="/get-started">getting started</a> and <a href="/agent-editing">letting a program edit your file</a></p>
+    </footer>
+  </main>
+  <script>
+    document.querySelectorAll('.copybtn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var code = btn.parentNode.querySelector('code').textContent;
+        function said(word) {
+          btn.textContent = word;
+          btn.dataset.done = '1';
+          setTimeout(function () { btn.textContent = 'Copy'; delete btn.dataset.done; }, 1600);
+        }
+        // execCommand is the fallback for a browser that refuses the clipboard
+        // API, so the button never looks broken by doing nothing at all.
+        function theOldWay() {
+          var box = document.createElement('textarea');
+          box.value = code;
+          box.style.position = 'fixed';
+          box.style.opacity = '0';
+          document.body.appendChild(box);
+          box.select();
+          var ok = false;
+          try { ok = document.execCommand('copy'); } catch (e) {}
+          document.body.removeChild(box);
+          said(ok ? 'Copied' : 'Press Cmd+C');
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(code).then(function () { said('Copied'); }, theOldWay);
+        } else {
+          theOldWay();
+        }
+      });
+    });
+  </script>
+  <script>
+    (function () {
+      var EASE = 'cubic-bezier(.22,.68,.24,1)';
+      var still = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+      function empty(el) { while (el.firstChild) { el.removeChild(el.firstChild); } }
+
+      function wire(root, spec) {
+        var form = root.querySelector('.demo-ask');
+        var input = root.querySelector('.demo-input');
+        var send = root.querySelector('.demo-send');
+        var status = root.querySelector('.demo-status');
+        var say = root.querySelector('.demo-say');
+        var saved = root.querySelector('.demo-saved');
+        var body = root.querySelector('.demo-body');
+        var announce = root.querySelector('.demo-sr[aria-live]');
+
+        var timers = [];
+        var running = false;
+        var played = false;
+
+        function at(ms, fn) { timers.push(setTimeout(fn, ms)); }
+        function stopTimers() { timers.forEach(clearTimeout); timers = []; }
+
+        function state(name, words) {
+          status.setAttribute('data-state', name);
+          say.textContent = words;
+        }
+
+        function settle() {
+          announce.textContent = spec.announce;
+          running = false;
+          send.disabled = false;
+          send.textContent = 'Replay';
+        }
+
+        function reset() {
+          stopTimers();
+          spec.restore(body);
+          input.value = '';
+          state('', '');
+          saved.hidden = true;
+          announce.textContent = '';
+          send.disabled = false;
+          running = false;
+        }
+
+        function type(text, then) {
+          var i = 0;
+          input.classList.add('demo-typing');
+          (function step() {
+            input.value = text.slice(0, ++i);
+            if (i < text.length) { at(text.charAt(i - 1) === ' ' ? 46 : 19, step); }
+            else { input.classList.remove('demo-typing'); at(200, then); }
+          })();
+        }
+
+        function play() {
+          if (running) return;
+          running = true;
+          played = true;
+          send.disabled = true;
+          saved.hidden = true;
+
+          if (still.matches) {
+            input.value = spec.request;
+            spec.change(body, at, true);
+            state('done', 'done');
+            saved.hidden = false;
+            settle();
+            return;
+          }
+
+          type(spec.request, function () {
+            state('sent', 'sent');
+            at(420, function () { state('thinking', 'thinking'); });
+            at(2100, function () {
+              spec.change(body, at, false);
+              at(spec.settleAt, function () { state('done', 'done'); });
+              at(spec.settleAt + 260, function () { saved.hidden = false; settle(); });
+            });
+          });
+        }
+
+        form.addEventListener('submit', function (event) {
+          event.preventDefault();
+          if (running) return;
+          if (played) { reset(); setTimeout(play, 140); } else { play(); }
+        });
+
+        // Nothing moves until the whole demo is genuinely on screen, and then only
+        // after a couple of seconds, so the reader has time to see what it is first.
+        if ('IntersectionObserver' in window) {
+          var eye = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+              if (played || !entry.isIntersecting) return;
+              var enough = Math.min(entry.boundingClientRect.height - 2, window.innerHeight * 0.75);
+              if (entry.intersectionRect.height < enough) return;
+              eye.disconnect();
+              played = true;
+              at(still.matches ? 0 : 2000, play);
+            });
+          }, { threshold: [0, 0.25, 0.5, 0.75, 0.9, 1] });
+          eye.observe(root);
+        }
+      }
+
+      var trip = document.getElementById('demo-trip');
+      if (trip) {
+        var tripBody = trip.querySelector('.demo-body');
+        var order = [];
+        var node = {};
+        Array.prototype.forEach.call(tripBody.querySelectorAll('li'), function (li) {
+          var name = li.textContent.trim();
+          order.push(name);
+          node[name] = li;
+        });
+
+        var CAR = ['Tent', 'Sleeping bag', 'Firewood', 'Coffee and the little pot'];
+        var PACK = ['Headlamp', 'Rain jacket', 'Water filter'];
+
+        var listOf = function (names) {
+          var ul = document.createElement('ul');
+          names.forEach(function (name) { ul.appendChild(node[name]); });
+          return ul;
+        };
+
+        var grouped = function (fade) {
+          var wrap = document.createElement('div');
+          wrap.className = 'demo-groups';
+          [['In the car', CAR], ['In my pack', PACK]].forEach(function (pair) {
+            var group = document.createElement('div');
+            group.className = 'demo-group';
+            var head = document.createElement('h4');
+            head.textContent = pair[0];
+            if (fade) head.className = 'demo-fade';
+            group.appendChild(head);
+            group.appendChild(listOf(pair[1]));
+            wrap.appendChild(group);
+          });
+          return wrap;
+        };
+
+        wire(trip, {
+          request: 'split into what goes in the car and what stays in my pack',
+          announce: 'The list is now two groups. In the car: ' + CAR.join(', ') +
+            '. In my pack: ' + PACK.join(', ') + '. Saved into the file.',
+          settleAt: 560,
+          restore: function (body) {
+            body.style.height = '';
+            body.style.transition = '';
+            order.forEach(function (name) {
+              node[name].style.transform = '';
+              node[name].style.transition = '';
+            });
+            empty(body);
+            body.appendChild(listOf(order));
+          },
+          // The same seven items are carried into the new grouping rather than
+          // rebuilt, so what moves on screen is the person's own lines.
+          change: function (body, at, instant) {
+            if (instant) {
+              empty(body);
+              body.appendChild(grouped(false));
+              return;
+            }
+            var items = order.map(function (name) { return node[name]; });
+            var before = items.map(function (li) { return li.getBoundingClientRect(); });
+            var startHeight = body.getBoundingClientRect().height;
+
+            empty(body);
+            body.appendChild(grouped(true));
+
+            var after = items.map(function (li) { return li.getBoundingClientRect(); });
+            var endHeight = body.getBoundingClientRect().height;
+
+            items.forEach(function (li, i) {
+              li.style.transition = 'none';
+              li.style.transform = 'translate(' +
+                (before[i].left - after[i].left) + 'px,' +
+                (before[i].top - after[i].top) + 'px)';
+            });
+            body.style.transition = 'none';
+            body.style.height = startHeight + 'px';
+            void body.offsetHeight;
+
+            body.style.transition = 'height .55s ' + EASE;
+            body.style.height = endHeight + 'px';
+            items.forEach(function (li, i) {
+              li.style.transition = 'transform .55s ' + EASE + ' ' + (i * 26) + 'ms';
+              li.style.transform = '';
+            });
+
+            at(950, function () {
+              body.style.height = '';
+              body.style.transition = '';
+              items.forEach(function (li) {
+                li.style.transition = '';
+                li.style.transform = '';
+              });
+            });
+          }
+        });
+      }
+
+      var bread = document.getElementById('demo-bread');
+      if (bread) {
+        var amounts = Array.prototype.slice.call(bread.querySelectorAll('.demo-qty'));
+        var was = amounts.map(function (span) { return span.textContent; });
+
+        wire(bread, {
+          request: 'double this, eight people are coming',
+          announce: 'The recipe now serves 8 and every amount was rewritten. ' +
+            'The oven line is unchanged. Saved into the file.',
+          settleAt: 1100,
+          restore: function () {
+            amounts.forEach(function (span, i) {
+              span.textContent = was[i];
+              span.classList.remove('is-lit');
+            });
+          },
+          change: function (body, at, instant) {
+            amounts.forEach(function (span, i) {
+              if (instant) {
+                span.textContent = span.getAttribute('data-after');
+                return;
+              }
+              at(i * 130, function () {
+                span.textContent = span.getAttribute('data-after');
+                span.classList.add('is-lit');
+                at(900, function () { span.classList.remove('is-lit'); });
+              });
+            });
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -64,7 +64,8 @@
 
     .sitenav a:hover { color: var(--ink); }
     .sitenav .brand { color: var(--ink); font-weight: 700; }
-    .sitenav .navlinks { display: flex; gap: 18px; }
+    .sitenav .navlinks { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+    .navlinks a { white-space: nowrap; }
     .sitenav a[aria-current="page"] { color: var(--accent); }
     a { color: var(--accent); text-underline-offset: 2px; }
     a:hover { text-decoration: none; }
@@ -348,7 +349,9 @@
       <a class="brand" href="/">HTML Clay</a>
       <div class="navlinks">
         <a href="/" aria-current="page">Home</a>
+        <a href="/get-started">Get started</a>
         <a href="/features">Features</a>
+        <a href="/agent-editing">Agent editing</a>
       </div>
     </nav>
 
@@ -710,7 +713,7 @@
     <footer>
       <p>Building your own <span class="filechip">.htmlclay</span> files? Check out <a href="https://hyperclay.com">Hyperclay</a></p>
       <p>Source code: <a href="https://github.com/panphora/htmlclay">github.com/panphora/htmlclay</a></p>
-      <p>Docs: <a href="https://github.com/panphora/htmlclay#readme">getting started</a> and <a href="https://github.com/panphora/htmlclay/blob/main/docs/wire.md">letting a program edit your file</a></p>
+      <p>Docs: <a href="/get-started">getting started</a> and <a href="/agent-editing">letting a program edit your file</a></p>
     </footer>
 
     <footer data-hyper-footer="htmlclay"></footer>
