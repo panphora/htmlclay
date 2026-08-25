@@ -1028,6 +1028,37 @@
       animation: demo-rise .4s ease both;
     }
 
+
+    .demo-get {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-left: 11px;
+      padding: 3px 9px 3px 8px;
+      border: 1px solid #e2dccd;
+      border-radius: 7px;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 12px;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }
+
+    .demo-get svg {
+      width: 13px;
+      height: 13px;
+      opacity: .75;
+    }
+
+    .demo-get:hover {
+      border-color: #cfc6b1;
+      background: #f8f5ee;
+      color: var(--ink);
+    }
+
+    .demo-get:hover svg { opacity: 1; }
+
     .demo-term { margin-top: 12px; }
     .demo-term pre { padding: 13px 15px; font-size: 12.5px; }
 
@@ -1065,6 +1096,7 @@
     @media (max-width: 519px) {
       .demo-groups { grid-template-columns: 1fr; gap: 14px; }
       .demo-barnote { display: none; }
+      .demo-get { margin-left: auto; }
       .demo-ask { flex-wrap: wrap; }
       .demo-input { flex: 1 1 100%; }
       .demo-send { width: 100%; }
@@ -1105,6 +1137,7 @@
           <span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>camping.htmlclay</span>
           <span class="demo-barnote">your file, open in a tab</span>
+          <a class="demo-get" href="/camping.htmlclay" download="camping.htmlclay" title="Download this file and open it in HTML Clay"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5"/><path d="M4.6 7.1 8 10.5l3.4-3.4"/><path d="M2.6 13.4h10.8"/></svg> Download</a>
         </div>
         <div class="demo-page">
           <p class="demo-title">Trip list</p>
@@ -1138,7 +1171,7 @@
         <pre class="termout" tabindex="0"><code><span class="output">[wire] attached as handler to http://127.0.0.1:52341 (/Users/you/Desktop/camping.htmlclay)</span></code></pre>
       </div>
 
-      <p class="demo-cap">That is the whole loop. This one is a demonstration; the rest of the page builds the real thing, on a file of your own.</p>
+      <p class="demo-cap">That is the whole loop. This one is a demonstration; the download in the corner is the real file, and the rest of the page attaches a program to it.</p>
     </section>
 
     <section>
@@ -1312,6 +1345,7 @@ htmlclay wire serve robot-notes.htmlclay -- bash robot.sh</code></pre></div><but
             <span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
             <span>banana-bread.htmlclay</span>
             <span class="demo-barnote">your file, open in a tab</span>
+            <a class="demo-get" href="/banana-bread.htmlclay" download="banana-bread.htmlclay" title="Download this file and open it in HTML Clay"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5"/><path d="M4.6 7.1 8 10.5l3.4-3.4"/><path d="M2.6 13.4h10.8"/></svg> Download</a>
           </div>
           <div class="demo-page">
             <p class="demo-title">Banana bread</p>

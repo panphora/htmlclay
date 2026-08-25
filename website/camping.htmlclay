@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en" autosave>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trip list</title>
+  <style>
+    body {
+      max-width: 32rem;
+      margin: 3rem auto;
+      padding: 0 1.25rem;
+      background: #faf8f3;
+      color: #1b1a17;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 17px;
+      line-height: 1.6;
+    }
+
+    h1 { margin: 0 0 1rem; font-size: 1.5rem; letter-spacing: -0.01em; }
+
+    h2 {
+      margin: 1.3rem 0 0.35rem;
+      color: #c2410c;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    ul { margin: 0; padding: 0; list-style: none; }
+
+    li { position: relative; padding: 0.3rem 0 0.3rem 1.6rem; }
+
+    li::before {
+      content: "";
+      position: absolute;
+      left: 0.2rem;
+      top: 0.72rem;
+      width: 0.7rem;
+      height: 0.7rem;
+      border: 1.5px solid #d3ccbc;
+      border-radius: 3px;
+    }
+
+    form {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 1.6rem;
+      padding-top: 1.1rem;
+      border-top: 1px solid #e7e3d8;
+    }
+
+    input {
+      flex: 1;
+      min-width: 0;
+      padding: 0.5rem 0.7rem;
+      border: 1px solid #e7e3d8;
+      border-radius: 0.55rem;
+      background: #fff;
+      font: inherit;
+      font-size: 1rem;
+    }
+
+    button {
+      padding: 0.5rem 1.1rem;
+      border: 0;
+      border-radius: 0.55rem;
+      background: #161512;
+      color: #faf8f3;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    #ask + p {
+      margin: 0.7rem 0 0;
+      color: #6f6b62;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <h1 editable>Trip list</h1>
+
+  <div id="list" editable>
+    <ul>
+      <li>Tent</li>
+      <li>Sleeping bag</li>
+      <li>Headlamp</li>
+      <li>Firewood</li>
+      <li>Rain jacket</li>
+      <li>Coffee and the little pot</li>
+      <li>Water filter</li>
+    </ul>
+  </div>
+
+  <form id="ask">
+    <input id="said" placeholder="Ask for a change" autocomplete="off">
+    <button>Send</button>
+  </form>
+
+  <script src="https://clayjs.com/clay.js?plugins=sync,wire"></script>
+  <script>
+    clay.ready.then(function () {
+      var ask = document.getElementById("ask");
+      var box = document.getElementById("said");
+
+      // Built here, never typed into the file: everything you can see
+      // in the page is what gets saved.
+      var status = document.createElement("p");
+      status.setAttribute("clay", "no-save no-snapshot no-watch");
+      ask.after(status);
+
+      clay.wire.on(function (request) {
+        status.textContent = request.error
+          || request.text
+          || request.state;
+      });
+
+      ask.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var words = box.value.trim();
+        if (!words) return;
+        box.value = "";
+        status.textContent = "sent";
+        clay.wire.send({ said: words }, { text: words });
+      });
+    });
+  </script>
+</body>
+</html>
