@@ -6,7 +6,7 @@
   "scripts": {
     "test": "go test ./...",
     "predeploy": "npm test",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy && git rev-parse HEAD > .deploy",
     "dev": "wrangler dev"
   },
   "repository": {

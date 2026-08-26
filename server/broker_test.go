@@ -592,7 +592,17 @@ func TestBrokerParkExpiresWhileAnotherTreesDialogIsUp(t *testing.T) {
 	go func() { two <- b.await(context.Background(), second) }()
 	waitParked(t, b, 1)
 
-	clock.Advance(brokerParkMax)
+	// Just short of the deadline first. Advancing straight to it would accept any
+	// shorter deadline as correct, so this half is what pins the duration rather
+	// than merely the existence of an expiry.
+	clock.Advance(brokerParkMax - time.Second)
+	select {
+	case <-two:
+		t.Fatal("the waiter expired before brokerParkMax")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	clock.Advance(time.Second)
 	if testutil.Receive(t, 10*time.Second, "the queued waiter to give up", two) {
 		t.Error("a waiter held past brokerParkMax must resolve to deny")
 	}

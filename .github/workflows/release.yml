@@ -28,7 +28,7 @@ jobs:
           CGO_ENABLED: ${{ runner.os == 'macOS' && '1' || '0' }}
 
   # ── License gate: the LICENSE must still ablate to plain MIT ──
-  # The Clay License converts by deleting a labelled clause list, so a release
+  # The First Million Stays Yours License converts by deleting a labelled clause list, so a release
   # whose residue is no longer MIT would ship a promise it cannot keep.
   license:
     runs-on: ubuntu-latest

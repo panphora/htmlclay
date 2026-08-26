@@ -762,6 +762,27 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A truncation in progress must not be overwritten. os.WriteFile truncates and
+	// then writes, so a writer paused in that gap leaves zero bytes on disk that
+	// are not a document at all; watchEmptyQuiet exists to wait exactly that out.
+	// Saving over them in the meantime is worse than a stale tab: rename unlinks
+	// the inode the external writer still has open, so its later write lands on a
+	// file with no name and is lost, with no version of it anywhere. An autosave
+	// firing on its own debounce is the ordinary way to reach this, and the tab has
+	// no idea the file was emptied underneath it.
+	//
+	// The refusal lifts on its own, because it is keyed on the watcher's pending
+	// candidate: within watchEmptyQuiet either the writer's real bytes arrive or
+	// the empty state publishes, and a save that still means to overwrite then goes
+	// through against a document the page has actually been shown.
+	if readErr == nil && stale && len(current) == 0 && s.watcher.emptyPending(f.AbsPath) {
+		f.Unlock()
+		s.logger.Printf("Refusing to save over a truncation in progress: %s", f.RelPath)
+		s.writeError(w, http.StatusConflict,
+			"the file was just emptied on disk; retry once that change reaches the page")
+		return
+	}
+
 	// B1: version the existing content on the first save of a file, so the
 	// pre-Hyperclay state survives, then version the INCOMING bytes before writing
 	// them. Versioning the outgoing pre-write bytes would mean the most recent

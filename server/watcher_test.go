@@ -3,8 +3,11 @@ package server
 import (
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -361,6 +364,13 @@ func TestExternalChangeWithNoAudienceIsNotRecorded(t *testing.T) {
 	// Nobody is subscribed, which is the shape a wire handler's watch lease
 	// produces: a watched file with no tab open.
 	e := &watchEntry{file: f, refs: 1}
+	// Registered so the arriving subscriber below goes through the real watch()
+	// path. watch takes the existing-entry branch, which sets rearm and returns
+	// without starting a ticker, so this stays hand-driven.
+	wt.mu.Lock()
+	wt.entries[f.AbsPath] = e
+	wt.mu.Unlock()
+
 	wt.check(e)
 	e.pendingAt = e.pendingAt.Add(-2 * wt.quiet)
 	wt.check(e) // this poll publishes, into an empty hub
@@ -373,13 +383,12 @@ func TestExternalChangeWithNoAudienceIsNotRecorded(t *testing.T) {
 	}
 
 	// A tab arriving afterwards rearms the read, so it learns about the change
-	// instead of inheriting a file the watcher has quietly written off. watch is
-	// what sets rearm in production; that it does so is TestWatcherLifecycleFollowsSubscribers'
-	// job, and starting a poll loop here would put the ticker back in charge of
-	// how many reads happen.
+	// instead of inheriting a file the watcher has quietly written off. Setting
+	// rearm by hand here would let watch stop setting it with this test still
+	// green, so the subscriber arrives through watch itself.
 	live := newSubscriber(f.AbsPath, laneLive)
 	srv.hub.add(live)
-	e.rearm = true
+	wt.watch(f)
 
 	wt.check(e)
 	e.pendingAt = e.pendingAt.Add(-2 * wt.quiet)
@@ -527,6 +536,7 @@ func setupEmptyFileTest(t *testing.T) (*Server, *session.File, *subscriber, *sub
 	}
 	f.Lock()
 	key, _ := srv.ensureHistoryKeyLocked(f, original)
+	f.NoteFirstObservation(versions.Hash(original))
 	f.RecordServerWrite(versions.Hash(original))
 	f.Unlock()
 	if key == "" {
@@ -603,6 +613,33 @@ func TestWatcherDoesNotPublishATruncateAtTheNormalInterval(t *testing.T) {
 	if string(newest) != changed {
 		t.Fatalf("newest version is %q, want the external bytes", newest)
 	}
+}
+
+// A poke says our own writer finished, so it lets an ordinary candidate skip most
+// of its quiet interval. It must not do that for an EMPTY candidate: the writer a
+// truncate guards against is the one we cannot see, and a poke says nothing about
+// it. The first version of this shortened the hold anyway, because the generic
+// first-observation backdating ran before the empty branch could refuse the poke.
+func TestWatcherPokeDoesNotShortenTheEmptyHold(t *testing.T) {
+	srv, f, live, saved, _ := setupEmptyFileTest(t)
+	wt := srv.watcher
+	// Margins chosen so the backdating is the only thing that could carry the
+	// candidate over the line: aged by 2 minutes it is far short of emptyQuiet,
+	// but a backdate of one quiet interval would put it past.
+	wt.quiet = time.Hour
+	wt.emptyQuiet = time.Hour + time.Minute
+
+	if err := os.WriteFile(f.AbsPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	e := &watchEntry{file: f, refs: 1}
+	e.poke = true
+	wt.check(e)
+	e.pendingAt = e.pendingAt.Add(-2 * time.Minute)
+	wt.check(e)
+
+	expectNoFrame(t, live, 50*time.Millisecond)
+	expectNoFrame(t, saved, 50*time.Millisecond)
 }
 
 // The other half, and the reason the truncate guard is an interval rather than a
@@ -828,4 +865,93 @@ func TestWatcherPokeWithNoChangeIsStillSpent(t *testing.T) {
 	wt.check(e)
 	wt.check(e)
 	expectNoFrame(t, live, 50*time.Millisecond)
+}
+
+// stageTruncation puts the watcher in the state a poll reaches a moment after an
+// external writer has truncated the file and not yet written: the entry is
+// registered, so the save path can see it, and holding an empty candidate.
+func stageTruncation(t *testing.T, srv *Server, f *session.File) *watchEntry {
+	t.Helper()
+	if err := os.WriteFile(f.AbsPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	wt := srv.watcher
+	e := &watchEntry{file: f, refs: 1}
+	wt.mu.Lock()
+	wt.entries[f.AbsPath] = e
+	wt.mu.Unlock()
+	wt.check(e)
+	if !wt.emptyPending(f.AbsPath) {
+		t.Fatal("the watcher is not holding an empty candidate, so nothing below tests the guard")
+	}
+	return e
+}
+
+func postSave(t *testing.T, srv *Server, f *session.File, body string) int {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(body))
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("token", f.Token)
+	w := httptest.NewRecorder()
+	srv.handleSave(w, req)
+	return w.Code
+}
+
+const truncationDoc = "<!DOCTYPE html>\n<html><body>what the tab still holds</body></html>"
+
+// The window watchEmptyQuiet opens has to be safe, or holding the empty candidate
+// for longer is just a longer chance to destroy the writer's work. An autosave
+// firing while a truncation is pending must not overwrite it: rename would unlink
+// the inode the external writer still has open, and its later write would land on
+// a file with no name and be lost with no version of it anywhere.
+func TestSaveWillNotOverwriteATruncationInProgress(t *testing.T) {
+	srv, f, _, _, _ := setupEmptyFileTest(t)
+	stageTruncation(t, srv, f)
+
+	if code := postSave(t, srv, f, truncationDoc); code != http.StatusConflict {
+		t.Fatalf("a save landing on a pending truncation = %d, want %d", code, http.StatusConflict)
+	}
+	onDisk, err := os.ReadFile(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onDisk) != 0 {
+		t.Fatalf("the truncated file was overwritten with %d bytes; the external writer's inode is now unlinked", len(onDisk))
+	}
+}
+
+// And it lifts on its own. Once the empty state has published, the page has been
+// shown what is on disk, so a save that still means to overwrite is an informed
+// one and must go through.
+func TestSaveResumesOnceTheTruncationHasPublished(t *testing.T) {
+	srv, f, live, _, _ := setupEmptyFileTest(t)
+	wt := srv.watcher
+	e := stageTruncation(t, srv, f)
+
+	e.pendingAt = e.pendingAt.Add(-2 * wt.emptyQuiet)
+	wt.check(e)
+	waitFrame(t, live, 2*time.Second)
+
+	if wt.emptyPending(f.AbsPath) {
+		t.Fatal("the candidate is still pending after publishing")
+	}
+	if code := postSave(t, srv, f, truncationDoc); code != http.StatusOK {
+		t.Fatalf("a save after the truncation published = %d, want 200", code)
+	}
+}
+
+// The guard is keyed on a watcher that is actually watching. With nothing watching
+// nothing would ever publish the candidate, so a guard that still fired here could
+// never lift and would wedge the file against every future save.
+func TestSaveIsNotRefusedWhenNothingIsWatching(t *testing.T) {
+	srv, f, _, _, _ := setupEmptyFileTest(t)
+	if err := os.WriteFile(f.AbsPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if srv.watcher.emptyPending(f.AbsPath) {
+		t.Fatal("nothing should be watching this file")
+	}
+	if code := postSave(t, srv, f, truncationDoc); code != http.StatusOK {
+		t.Fatalf("a save with no watcher = %d, want 200: the guard must not be able to wedge a file", code)
+	}
 }

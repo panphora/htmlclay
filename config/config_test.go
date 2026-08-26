@@ -362,6 +362,36 @@ func TestConcurrentMutatorsAndSaveAreRaceFree(t *testing.T) {
 		t.Errorf("reloaded %d site ports, want exactly 8", len(ports))
 	}
 
+	// The transient folders pin RemoveTrustedFolder, which nothing else here
+	// touches. Their goroutine runs sequentially, so the toggling is deterministic:
+	// /trusted/0..3 are visited 38 times (even, so they end absent) and /trusted/4..7
+	// 37 times (odd, so they end present carrying the identity their last add set).
+	live := map[string]string{}
+	for _, tf := range reloaded.TrustedFolderList() {
+		live[tf.Path] = tf.Identity
+	}
+	for k := 0; k < 8; k++ {
+		dir := fmt.Sprintf("/trusted/%d", k)
+		identity, present := live[dir]
+		if k < 4 {
+			if present {
+				t.Errorf("%s survived, but its adds and removes cancel out", dir)
+			}
+			continue
+		}
+		if !present {
+			t.Errorf("%s is missing, but its last visit was an add", dir)
+			continue
+		}
+		lastAdd := iters - 1
+		for lastAdd%8 != k {
+			lastAdd--
+		}
+		if want := fmt.Sprintf("id:%d", lastAdd); identity != want {
+			t.Errorf("%s carries identity %q, want %q", dir, identity, want)
+		}
+	}
+
 	var pinnedIdentity string
 	var found bool
 	for _, tf := range reloaded.TrustedFolderList() {
