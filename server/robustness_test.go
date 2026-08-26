@@ -2,19 +2,17 @@ package server
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/panphora/htmlclay/htmlutil"
-	"github.com/panphora/htmlclay/logging"
-	"github.com/panphora/htmlclay/session"
+	"github.com/panphora/htmlclay/internal/testutil"
 	"github.com/panphora/htmlclay/versions"
 )
 
@@ -233,82 +231,6 @@ func TestRestoreRefusesWhenTheLiveFileCannotBeRead(t *testing.T) {
 	}
 }
 
-// Blocker 3. Two copies of one file, first-opened concurrently, must not both
-// keep the id. Checking ownership and claiming it in separate store transactions
-// let both see no owner, so neither got a fresh id and both landed in one logical
-// history.
-func TestConcurrentFirstOpensOfOneIDForkDistinctIdentities(t *testing.T) {
-	for attempt := 0; attempt < 20; attempt++ {
-		homeDir, _ := filepath.EvalSymlinks(t.TempDir())
-		body := pageWithID(testUUID, "shared")
-		paths := []string{
-			filepath.Join(homeDir, "one.htmlclay"),
-			filepath.Join(homeDir, "two.htmlclay"),
-		}
-		for _, p := range paths {
-			if err := os.WriteFile(p, []byte(body), 0644); err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		mgr := newTestManager(t, homeDir)
-		files := make([]*session.File, 0, len(paths))
-		for _, p := range paths {
-			f, err := mgr.Register(p, session.ViaOsOpen)
-			if err != nil {
-				t.Fatal(err)
-			}
-			files = append(files, f)
-		}
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
-
-		var wg sync.WaitGroup
-		served := make([]*httptest.ResponseRecorder, len(paths))
-		for i, p := range paths {
-			wg.Add(1)
-			go func(idx int, rel string) {
-				defer wg.Done()
-				req := httptest.NewRequest("GET", "/"+rel, nil)
-				req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
-				req.SetPathValue("path", rel)
-				w := httptest.NewRecorder()
-				srv.handleServeFile(w, req)
-				served[idx] = w
-			}(i, filepath.Base(p))
-		}
-		wg.Wait()
-
-		// Serving never rewrites disk, so both copies still carry the shared id
-		// there. The fork lives in the tracked key and the bytes served.
-		ids := make([]string, 0, len(paths))
-		for i, f := range files {
-			f.Lock()
-			key := f.HistoryKey()
-			f.Unlock()
-			id, ok := versions.IDFromKey(key)
-			if !ok {
-				t.Fatalf("attempt %d: %s tracks %q, want an id: key", attempt, paths[i], key)
-			}
-			if got := htmlutil.ReadHTMLClayID(served[i].Body.Bytes()); got != id {
-				t.Fatalf("attempt %d: %s served id %q but tracks %q", attempt, paths[i], got, id)
-			}
-			ids = append(ids, id)
-		}
-		srv.hub.shutdown()
-		srv.watcher.shutdown()
-		ln.Close()
-
-		if ids[0] == ids[1] {
-			t.Fatalf("attempt %d: two copies opened concurrently kept one identity (%s), "+
-				"so both share a single history", attempt, ids[0])
-		}
-	}
-}
-
 // Blocker 4a. The watcher must not be able to mark a file observed. When observed
 // was a stored flag, an origin-trusted SSE subscription naming a never-served
 // file let the watcher set it, and that file's first real GET then skipped both
@@ -338,89 +260,71 @@ func TestWatcherObservationDoesNotSkipFirstOpenWork(t *testing.T) {
 	}
 }
 
-// Blocker 4b. The first-open snapshot is published inside f.Lock(). Publishing it
-// after the unlock let two concurrent GETs interleave: one captured H0 and was
-// descheduled, a save then published H0 and H1, and the descheduled GET published
-// its stale H0, leaving history ending below the successful save.
-// A plain .html file is used so no htmlclayid injection can change the file
-// underneath the comparison: the only writer here is the save.
-func TestFirstOpenSnapshotCannotLandAfterALaterSave(t *testing.T) {
-	// This is a probabilistic detector, not a deterministic one: the unfixed code
-	// only loses the race when the serving goroutine is descheduled between
-	// releasing the file lock and publishing, which no finite loop can force. It
-	// was confirmed to fail on the unfixed code; the fix's real guarantee is
-	// structural, that the publish and the record update are one critical section.
-	attempts := 120
-	if testing.Short() {
-		attempts = 10
+// Blocker 4b. The first-open snapshot must publish while the file lock is still
+// held. Publishing it after the unlock let two concurrent GETs interleave: one
+// captured H0 and was descheduled, a save then published H0 and H1, and the
+// descheduled GET published its stale H0, leaving history ending below the
+// successful save.
+//
+// The version of this test that shipped first fired 120 rounds of thirteen
+// goroutines hoping to catch that deschedule, and said in its own comment that no
+// finite loop can force it. What it wanted to assert is a critical section, and a
+// critical section can be observed directly: at the instant the snapshot
+// publishes, the file lock must not be available to anyone else. A save takes the
+// same lock, so a probe that comes back busy is proof no save can land in that
+// gap, and it is proof on the first attempt rather than on a lucky one.
+func TestFirstOpenSnapshotPublishesUnderTheFileLock(t *testing.T) {
+	fx := setupFileTest(t, "notes.htmlclay", pageWithID(testUUID, "original"))
+
+	var snapshots, underLock int32
+	fx.srv.beforeFirstOpenSnapshot = func() {
+		atomic.AddInt32(&snapshots, 1)
+		// TryLock reports on the lock itself, not on who holds it, so a false here
+		// means the publish is inside someone's critical section: this handler's.
+		if fx.file.TryLock() {
+			fx.file.Unlock()
+			return
+		}
+		atomic.AddInt32(&underLock, 1)
 	}
-	for attempt := 0; attempt < attempts; attempt++ {
-		fx := setupFileTest(t, "notes.htmlclay", pageWithID(testUUID, "original"))
 
-		// Other files served at the same time share the one store lock. That
-		// contention is what turns the gap after the file lock is released into a
-		// window a concurrent save can land inside: the snapshot publish queues for
-		// the store while the save takes the file lock and gets its versions in
-		// first. Each noise file carries its own identity, so they contend for the
-		// store and nothing else.
-		noise := make([]string, 0, 8)
-		for i := 0; i < 8; i++ {
-			name := fmt.Sprintf("noise-%d.htmlclay", i)
-			p := filepath.Join(fx.home, name)
-			id, err := htmlutil.GenerateHTMLClayID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(p, []byte(pageWithID(id, name)), 0644); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := fx.srv.sessions.Register(p, session.ViaOsOpen); err != nil {
-				t.Fatal(err)
-			}
-			noise = append(noise, name)
-		}
+	if w := fx.serve(t, "notes.htmlclay"); w.Code != 200 {
+		t.Fatalf("serve: %d", w.Code)
+	}
 
-		var wg sync.WaitGroup
-		start := make(chan struct{})
-		for _, name := range noise {
-			wg.Add(1)
-			go func(n string) {
-				defer wg.Done()
-				<-start
-				fx.serve(t, n)
-			}(name)
-		}
-		for i := 0; i < 4; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				<-start
-				fx.serve(t, "notes.htmlclay")
-			}()
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			fx.save(t, page("saved"))
-		}()
-		close(start)
-		wg.Wait()
+	if got := atomic.LoadInt32(&snapshots); got != 1 {
+		t.Fatalf("a first serve takes exactly one snapshot, the hook ran %d times", got)
+	}
+	if atomic.LoadInt32(&underLock) != 1 {
+		t.Fatal("the first-open snapshot published with the file lock free, so a save can " +
+			"interleave between the record update and the publish and leave history " +
+			"ending below it")
+	}
 
-		onDisk, err := os.ReadFile(fx.file.AbsPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		entries := fx.history(t)
-		if len(entries) == 0 {
-			t.Fatalf("attempt %d: no history at all", attempt)
-		}
-		newest := fx.versionBody(t, entries[0].Name)
-		if versions.Hash([]byte(newest)) != versions.Hash(onDisk) {
-			t.Fatalf("attempt %d: history ends at a version that is not what is on disk, "+
-				"so restoring the latest is wrong.\n newest: %q\n on disk: %q",
-				attempt, newest, onDisk)
-		}
+	// The snapshot still has to be a real one; a hook that fired over a publish
+	// that never happened would satisfy everything above.
+	if entries := fx.history(t); len(entries) != 1 {
+		t.Fatalf("the first serve stored %d versions, want 1", len(entries))
+	}
+
+	// The outcome the blocker was actually about, kept from the probabilistic
+	// version that this replaced: after a serve and a save, history must end at
+	// what is on disk. The probe above pins the mechanism; this pins the result, so
+	// reordering NoteFirstObservation, Backup and SetProvisional inside the lock
+	// cannot pass unnoticed just because the lock is still held.
+	fx.save(t, page("saved"))
+	onDisk, err := os.ReadFile(fx.file.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := fx.history(t)
+	if len(entries) == 0 {
+		t.Fatal("no history after a save")
+	}
+	// List is newest-first.
+	if newest := fx.versionBody(t, entries[0].Name); versions.Hash([]byte(newest)) != versions.Hash(onDisk) {
+		t.Fatalf("history ends at a version that is not what is on disk, so restoring the latest is wrong.\n newest: %q\n on disk: %q",
+			newest, onDisk)
 	}
 }
 
@@ -556,14 +460,10 @@ func TestFramesCarryAnSSEID(t *testing.T) {
 
 	h.relay("/tmp/a.html", "<html>peer</html>", "c1", nil)
 
-	select {
-	case raw := <-sub.ch:
-		id, payload := splitFrame(t, raw)
-		if seq, _ := payload["seq"].(float64); int64(seq) != id {
-			t.Fatalf("SSE id %d does not match the payload seq %v", id, payload["seq"])
-		}
-	case <-time.After(time.Second):
-		t.Fatal("no frame")
+	raw := testutil.Receive(t, 10*time.Second, "a frame", sub.ch)
+	id, payload := splitFrame(t, raw)
+	if seq, _ := payload["seq"].(float64); int64(seq) != id {
+		t.Fatalf("SSE id %d does not match the payload seq %v", id, payload["seq"])
 	}
 }
 
@@ -622,11 +522,7 @@ func TestEvictedSubscriberRecoversItsEventsOnReconnect(t *testing.T) {
 	for i := 0; i < subQueueSize+3; i++ {
 		h.relay("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "c1", nil)
 	}
-	select {
-	case <-sub.done:
-	case <-time.After(time.Second):
-		t.Fatal("the overflowing subscriber was never evicted")
-	}
+	testutil.Receive(t, 10*time.Second, "the overflowing subscriber to be evicted", sub.done)
 
 	// Drain what it did receive, then reconnect from there.
 	var lastSeen int64
@@ -673,9 +569,12 @@ func TestWatcherDoesNotRecordAfterTheLastSubscriberLeaves(t *testing.T) {
 	}
 	h.srv.watcher.unwatch(h.file)
 
-	// Run the orphaned check to completion, twice, so it clears its quiet interval.
+	// Twice, because one no-op could be an accident of ordering. Nothing here
+	// sleeps: unwatch sets e.removed, and check reads that through entryState on
+	// its first line and returns, so no candidate is ever staged and there is no
+	// quiet interval left to wait out. The sleep that used to sit between these
+	// two calls was waiting for a timer that this path never starts.
 	h.srv.watcher.check(entry)
-	time.Sleep(2 * h.srv.watcher.quiet)
 	h.srv.watcher.check(entry)
 
 	h.file.Lock()

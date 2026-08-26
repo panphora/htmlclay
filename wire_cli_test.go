@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/panphora/htmlclay/config"
+	"github.com/panphora/htmlclay/internal/testutil"
 )
 
 // safeBuffer is a buffer a test reads while a subcommand goroutine writes it.
@@ -82,26 +83,19 @@ func (h *wireHarness) background(args ...string) <-chan int {
 
 func waitForText(t *testing.T, b *safeBuffer, want string) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Contains(b.String(), want) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %q; saw:\n%s", want, b.String())
+	testutil.Eventually(t, 15*time.Second, testutil.Lazy(func() string {
+		return fmt.Sprintf("%q in output; saw:\n%s", want, b.String())
+	}), func() bool {
+		return strings.Contains(b.String(), want)
+	})
 }
 
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", path)
+	testutil.Eventually(t, 15*time.Second, path, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
 }
 
 // fakeOrigin binds a loopback server the CLI can be pointed at, and returns its
@@ -124,13 +118,9 @@ func fakeOrigin(t *testing.T, h http.Handler) int {
 
 func waitForExit(t *testing.T, done <-chan int) int {
 	t.Helper()
-	select {
-	case code := <-done:
-		return code
-	case <-time.After(15 * time.Second):
-		t.Fatal("subcommand did not exit")
-		return -1
-	}
+	// 15s rather than the in-process 10s: this one waits on process startup and
+	// signal delivery.
+	return testutil.Receive(t, 15*time.Second, "the subcommand to exit", done)
 }
 
 // wireFrames parses a listener's stdout, which is one JSON envelope per line.

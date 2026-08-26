@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/panphora/htmlclay/internal/testutil"
 )
 
 func TestIconEmbedded(t *testing.T) {
@@ -61,13 +63,9 @@ func TestEveryRowIsClickableBeyondTheInitialPool(t *testing.T) {
 	// The last row is the one a fixed pool could never place.
 	last := rows[count-1]
 	placed[last.Path].item.ClickedCh <- struct{}{}
-	select {
-	case got := <-clicked:
-		if got != last.Path {
-			t.Errorf("clicking the last row reported %q, want %q", got, last.Path)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("clicking row %d of %d never reached the remove hook", count, count)
+	got := testutil.Receive(t, 10*time.Second, "a row click to reach the remove hook", clicked)
+	if got != last.Path {
+		t.Errorf("clicking the last row reported %q, want %q", got, last.Path)
 	}
 }
 

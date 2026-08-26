@@ -291,7 +291,6 @@
       display: grid;
       gap: 0;
       margin-top: 17px;
-      border-top: 1px solid var(--line);
     }
 
     .mini-list div {
@@ -778,7 +777,7 @@
     .copywrap { position: relative; }
     .copybtn {
       position: absolute;
-      top: 9px;
+      top: 4.5px;
       right: 10px;
       padding: 5px 11px;
       border: 1px solid var(--line);
@@ -859,11 +858,6 @@
     .demo-inline { margin: 26px 0 28px; }
 
     .demo-doc .code-bar { justify-content: flex-start; }
-
-    .demo-barnote {
-      margin-left: auto;
-      color: #9c968a;
-    }
 
     .demo-page { padding: 20px 20px 16px; }
 
@@ -1033,7 +1027,7 @@
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      margin-left: 11px;
+      margin-left: auto;
       padding: 3px 9px 3px 8px;
       border: 1px solid #e2dccd;
       border-radius: 7px;
@@ -1095,8 +1089,6 @@
 
     @media (max-width: 519px) {
       .demo-groups { grid-template-columns: 1fr; gap: 14px; }
-      .demo-barnote { display: none; }
-      .demo-get { margin-left: auto; }
       .demo-ask { flex-wrap: wrap; }
       .demo-input { flex: 1 1 100%; }
       .demo-send { width: 100%; }
@@ -1136,7 +1128,6 @@
         <div class="code-bar">
           <span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>camping.htmlclay</span>
-          <span class="demo-barnote">your file, open in a tab</span>
           <a class="demo-get" href="/camping.htmlclay" download="camping.htmlclay" title="Download this file and open it in HTML Clay"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5"/><path d="M4.6 7.1 8 10.5l3.4-3.4"/><path d="M2.6 13.4h10.8"/></svg> Download</a>
         </div>
         <div class="demo-page">
@@ -1344,7 +1335,6 @@ htmlclay wire serve robot-notes.htmlclay -- bash robot.sh</code></pre></div><but
           <div class="code-bar">
             <span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
             <span>banana-bread.htmlclay</span>
-            <span class="demo-barnote">your file, open in a tab</span>
             <a class="demo-get" href="/banana-bread.htmlclay" download="banana-bread.htmlclay" title="Download this file and open it in HTML Clay"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5"/><path d="M4.6 7.1 8 10.5l3.4-3.4"/><path d="M2.6 13.4h10.8"/></svg> Download</a>
           </div>
           <div class="demo-page">

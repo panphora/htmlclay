@@ -7,19 +7,20 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/panphora/htmlclay/platform"
 )
 
-// portIsBound reports whether anything is listening on 127.0.0.1:port.
-func portIsBound(port int) bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
+// requirePortFree proves nothing is listening by successfully taking the address.
+// A failed dial cannot prove that: it is equally consistent with a slow local
+// stack. Binding is the only positive evidence, so it is what this asserts.
+func requirePortFree(t *testing.T, port int) {
+	t.Helper()
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		return false
+		t.Fatalf("port %d is still bound: %v", port, err)
 	}
-	conn.Close()
-	return true
+	ln.Close()
 }
 
 // failingConfirm fails the test if any native dialog is raised, and counts the
@@ -52,9 +53,7 @@ func TestBookmarkedURLSurvivesARestart(t *testing.T) {
 	port := s.port
 	first.shutdown()
 
-	if portIsBound(port) {
-		t.Fatal("the first app left its port bound after shutdown")
-	}
+	requirePortFree(t, port)
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
 	var prompts int32
@@ -106,15 +105,11 @@ func TestRememberedAdHocPortServesOnlyTheRecoveryPage(t *testing.T) {
 	first := newTestAppWithConfigDir(t, home, cfgBase)
 	s, rel := first.openForTest(t, loose)
 	bookmark := fileURL(s.port, rel)
-	port := s.port
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
 	second.startSites()
 
-	if !portIsBound(port) {
-		t.Fatal("a remembered ad-hoc port must be held so the bookmark answers")
-	}
 	code, body := fetch(t, bookmark)
 	if code != 404 {
 		t.Fatalf("a parked port must answer 404, got %d", code)
@@ -165,9 +160,7 @@ func TestTrustedFolderWithABrokenPinNeverBinds(t *testing.T) {
 	}
 	second.startSites()
 
-	if portIsBound(port) {
-		t.Fatalf("a trusted folder that failed its identity check must leave port %d unbound", port)
-	}
+	requirePortFree(t, port)
 	second.mu.Lock()
 	defer second.mu.Unlock()
 	if len(second.sites) != 0 {

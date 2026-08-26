@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/testutil"
 	"github.com/panphora/htmlclay/logging"
 	"github.com/panphora/htmlclay/session"
 	"github.com/panphora/htmlclay/versions"
@@ -59,14 +60,9 @@ func splitFrame(t *testing.T, raw []byte) (int64, map[string]interface{}) {
 
 func waitFrame(t *testing.T, sub *subscriber, within time.Duration) map[string]interface{} {
 	t.Helper()
-	select {
-	case raw := <-sub.ch:
-		_, out := splitFrame(t, raw)
-		return out
-	case <-time.After(within):
-		t.Fatal("timed out waiting for a frame")
-		return nil
-	}
+	raw := testutil.Receive(t, within, "a frame", sub.ch)
+	_, out := splitFrame(t, raw)
+	return out
 }
 
 func expectNoFrame(t *testing.T, sub *subscriber, within time.Duration) {
@@ -187,13 +183,9 @@ func TestExternalChangeEmbedsDiskHTMLUnescaped(t *testing.T) {
 
 	h.publishExternalChange("/tmp/a.html", "changed", "<html><body>disk</body></html>")
 
-	select {
-	case raw := <-live.ch:
-		if !strings.Contains(string(raw), "<html><body>disk</body></html>") {
-			t.Fatalf("frame does not carry literal HTML (escaped?): %q", raw)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for the notification frame")
+	raw := testutil.Receive(t, 10*time.Second, "the notification frame", live.ch)
+	if !strings.Contains(string(raw), "<html><body>disk</body></html>") {
+		t.Fatalf("frame does not carry literal HTML (escaped?): %q", raw)
 	}
 }
 
@@ -233,11 +225,7 @@ func TestSlowSubscriberIsEvictedAndUnblocked(t *testing.T) {
 		h.relay("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "c1", nil)
 	}
 
-	select {
-	case <-sub.done:
-	case <-time.After(time.Second):
-		t.Fatal("a subscriber that overflowed its bounded queue was never unblocked")
-	}
+	testutil.Receive(t, 10*time.Second, "an overflowed subscriber to be unblocked", sub.done)
 	if h.subscriberCount("/tmp/a.html") != 0 {
 		t.Fatal("evicted subscriber is still registered")
 	}
@@ -253,11 +241,7 @@ func TestHubShutdownClosesEveryStream(t *testing.T) {
 	h.shutdown()
 
 	for name, sub := range map[string]*subscriber{"a": a, "b": b} {
-		select {
-		case <-sub.done:
-		case <-time.After(time.Second):
-			t.Fatalf("subscriber %s was not closed by shutdown", name)
-		}
+		testutil.Receive(t, 10*time.Second, "subscriber "+name+" to be closed by shutdown", sub.done)
 	}
 	if h.subscriberCount("/tmp/a.html") != 0 || h.subscriberCount("/tmp/b.html") != 0 {
 		t.Fatal("subscribers survived shutdown")
@@ -511,13 +495,9 @@ func TestSSEStreamFlushesOverARealConnection(t *testing.T) {
 	}
 
 	// Wait for the subscriber to register before relaying.
-	deadline := time.Now().Add(2 * time.Second)
-	for srv.hub.subscriberCount(f.AbsPath) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if srv.hub.subscriberCount(f.AbsPath) == 0 {
-		t.Fatal("stream never registered a subscriber")
-	}
+	waitFor(t, 10*time.Second, "the SSE stream to register a subscriber", func() bool {
+		return srv.hub.subscriberCount(f.AbsPath) > 0
+	})
 
 	srv.hub.relay(f.AbsPath, "<html>peer</html>", "c1", nil)
 
@@ -552,21 +532,17 @@ func TestSSEStreamFlushesOverARealConnection(t *testing.T) {
 		}
 	}()
 
-	select {
-	case r := <-got:
-		if r.err != nil {
-			t.Fatalf("reading the stream failed: %v", r.err)
-		}
-		payload, _ := strings.CutPrefix(strings.TrimSpace(r.line), "data: ")
-		var out map[string]interface{}
-		if err := json.Unmarshal([]byte(payload), &out); err != nil {
-			t.Fatalf("frame is not valid JSON: %v (%q)", err, payload)
-		}
-		if out["html"] != "<html>peer</html>" {
-			t.Fatalf("unexpected frame: %q", r.line)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no frame arrived; the stream is not being flushed")
+	r := testutil.Receive(t, 10*time.Second, "a frame; the stream is not being flushed", got)
+	if r.err != nil {
+		t.Fatalf("reading the stream failed: %v", r.err)
+	}
+	payload, _ := strings.CutPrefix(strings.TrimSpace(r.line), "data: ")
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &out); err != nil {
+		t.Fatalf("frame is not valid JSON: %v (%q)", err, payload)
+	}
+	if out["html"] != "<html>peer</html>" {
+		t.Fatalf("unexpected frame: %q", r.line)
 	}
 }
 
@@ -596,20 +572,25 @@ func TestShutdownClosesActiveStreamsPromptly(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for srv.hub.subscriberCount(f.AbsPath) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	// This readiness wait MUST fail the test when it expires. It used to exit the
+	// loop silently, and a machine too busy to establish the stream within two
+	// seconds then reached Shutdown with nothing subscribed: Shutdown returned
+	// immediately, the assertion below passed, and the test reported success
+	// having exercised none of the behaviour it exists for. A shutdown test that
+	// cannot fail is worse than a flaky one, because nothing ever prompts a look.
+	waitFor(t, 10*time.Second, "the SSE stream to register a subscriber", func() bool {
+		return srv.hub.subscriberCount(f.AbsPath) > 0
+	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// The error is the whole signal. A regression that leaves the stream open
+	// holds http.Server.Shutdown until this context expires, and Shutdown then
+	// returns the deadline error. Measuring elapsed time instead would also fail
+	// when the machine simply stalled, which says nothing about the stream.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	start := time.Now()
 	if err := srv.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("shutdown took %v; the active stream held it open", elapsed)
+		t.Fatalf("shutdown: %v; the active stream held it open", err)
 	}
 }
 
@@ -997,14 +978,7 @@ func watcherRunning(srv *Server) bool {
 
 func waitFor(t *testing.T, within time.Duration, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+	testutil.Eventually(t, within, what, cond)
 }
 
 // The cursor frame was a named event nobody listened for, and droppedThrough was

@@ -389,13 +389,21 @@ func TestCollisionSuffixBreaksTiesWithinOneMillisecond(t *testing.T) {
 	}
 }
 
-// A tight loop lands several backups inside one millisecond, which is exactly the
-// timestamp-collision path. Every name must be distinct, parse, and sort strictly
-// after the one before it.
+// Backups that share one instant take a collision suffix, and must still be
+// distinct, parse, and sort strictly after the one before them.
+//
+// The clock is pinned rather than raced. A tight loop only *hopes* two backups
+// land in the same millisecond, and on a machine slow enough to spread 40 writes
+// across 40 milliseconds the collision path is never entered at all: every name
+// gets Seq 0, every assertion below still holds, and the test passes without
+// testing anything. Pinning makes the collision the only possible outcome.
 func TestTimestampCollisionsStayOrdered(t *testing.T) {
 	s := newStore(t)
 	path := "/home/u/burst.html"
 	key := Key(path, nil)
+
+	instant := time.Date(2026, 8, 25, 14, 30, 0, 0, time.UTC)
+	s.now = func() time.Time { return instant }
 
 	const n = 40
 	for i := 0; i < n; i++ {
@@ -410,6 +418,17 @@ func TestTimestampCollisionsStayOrdered(t *testing.T) {
 	}
 	if len(entries) != n {
 		t.Fatalf("expected %d versions, got %d", n, len(entries))
+	}
+
+	// Every one of them really did collide, which is the fact the old loop left to
+	// the scheduler. List is newest-first, so the suffixes run n-1 down to 0.
+	for i, e := range entries {
+		if !e.Time.Equal(instant) {
+			t.Fatalf("entry %d is stamped %v, want the pinned %v", i, e.Time, instant)
+		}
+		if want := n - 1 - i; e.Seq != want {
+			t.Fatalf("entry %d has suffix %d, want %d", i, e.Seq, want)
+		}
 	}
 
 	seen := make(map[string]bool, n)
@@ -1025,5 +1044,69 @@ func TestSyncDirReportsAMissingDirectory(t *testing.T) {
 	}
 	if err := SyncDir(filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Fatal("SyncDir silently accepted a directory that does not exist")
+	}
+}
+
+// Two files carrying the same id, first opened together, must fork into distinct
+// identities. That only holds because the lookup that finds no resident history
+// and the claim that acts on it are one transaction under the store lock.
+//
+// Racing two goroutines cannot show this. Whichever finishes first makes the
+// other's answer correct, so the old server-level test passed on the broken
+// split-transaction code whenever the scheduler happened to serialize the two
+// calls, which is most of the time. This asserts the boundary itself: at the
+// moment between the lookup and the claim, the store lock is still held.
+func TestIdentityLookupAndClaimAreOneTransaction(t *testing.T) {
+	home := t.TempDir()
+	one := filepath.Join(home, "one.htmlclay")
+	two := filepath.Join(home, "two.htmlclay")
+	for _, p := range []string{one, two} {
+		if err := os.WriteFile(p, doc("shared"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := newStore(t)
+
+	boundary := 0
+	unlocked := false
+	s.afterIdentityLookup = func() {
+		boundary++
+		// TryLock succeeding here would mean the lookup's conclusion was published
+		// to any other caller before this one acted on it, which is exactly the
+		// window a concurrent first open used to slip through.
+		if s.mu.TryLock() {
+			unlocked = true
+			s.mu.Unlock()
+		}
+	}
+
+	firstID, provisional, err := s.ResolveIdentity(one, validUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provisional {
+		t.Fatal("the first file to claim a disk id owns it outright")
+	}
+	if firstID != strings.ToLower(validUUID) {
+		t.Fatalf("first identity = %q, want the disk id", firstID)
+	}
+
+	secondID, provisional, err := s.ResolveIdentity(two, validUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !provisional {
+		t.Fatal("the second file to carry the same disk id is a clone, so its id is provisional")
+	}
+	if secondID == firstID {
+		t.Fatal("two files sharing one disk id kept one identity instead of forking")
+	}
+
+	if boundary != 2 {
+		t.Fatalf("the lookup-to-claim boundary ran %d times, want once per resolution", boundary)
+	}
+	if unlocked {
+		t.Fatal("the store lock was released between the lookup and the claim")
 	}
 }

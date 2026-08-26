@@ -295,6 +295,9 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 		// backup still captures the pre-existing state, because no history
 		// exists yet.
 		if s.sessions.Via(f.AbsPath) != session.ViaTrusted {
+			if s.beforeFirstOpenSnapshot != nil {
+				s.beforeFirstOpenSnapshot()
+			}
 			// The snapshot stores the raw disk bytes, not the injected ones, so it
 			// dedups against the first save's pre-write backup instead of doubling
 			// every file.
@@ -417,6 +420,14 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	if session.HasHiddenComponent(s.sessions.HomeDir(), absPath) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
+	}
+
+	// The exact instant a swapped directory component would take effect: the path
+	// has been resolved and cleared, and the capability open has not happened yet.
+	// Nil in production; a test installs it to hold a request here while it stages
+	// the swap, which is the only way to reach this window on purpose.
+	if s.beforeAssetCapabilityOpen != nil {
+		s.beforeAssetCapabilityOpen()
 	}
 
 	file, authorized, err := s.sessions.OpenAsset(absPath)
@@ -846,6 +857,13 @@ func replaceFile(tmpPath, targetPath string) error {
 	return err
 }
 
+// beforeAtomicReplace runs inside atomicWriteFile once the replacement bytes are
+// fully on disk in the temp file and before the rename that publishes them. That
+// is the one instant at which a reader could see a torn file if the write were
+// not staged, so it is the instant a test wants to hold. Tests only; nil
+// everywhere else.
+var beforeAtomicReplace func()
+
 func atomicWriteFile(targetPath string, data []byte) error {
 	dir := filepath.Dir(targetPath)
 	tmp, err := os.CreateTemp(dir, ".htmlclay-save-*")
@@ -874,6 +892,10 @@ func atomicWriteFile(targetPath string, data []byte) error {
 
 	if info, err := os.Stat(targetPath); err == nil {
 		os.Chmod(tmpPath, info.Mode())
+	}
+
+	if beforeAtomicReplace != nil {
+		beforeAtomicReplace()
 	}
 
 	if err := replaceFile(tmpPath, targetPath); err != nil {

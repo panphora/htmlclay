@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/panphora/htmlclay/config"
+	"github.com/panphora/htmlclay/internal/testutil"
 	"github.com/panphora/htmlclay/logging"
 	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/server"
@@ -523,15 +525,19 @@ func TestOpenPrefersOpenedRootOverGrantedRoot(t *testing.T) {
 		t.Fatalf("grant: %v", err)
 	}
 
-	// Loop to defeat map-iteration randomness: the old first-match rule passed
-	// this roughly half the time.
-	for i := 0; i < 25; i++ {
+	// a.sites is a slice, so its order is fixed per run; the old loop repeated one
+	// order 25 times. What the preference rule has to survive is the opened site
+	// appearing before AND after the granted one, so check both directly.
+	for _, order := range []string{"opened last", "opened first"} {
 		a.mu.Lock()
 		got := a.siteForLocked(notes)
 		a.mu.Unlock()
 		if got != siteC {
-			t.Fatalf("iteration %d: the opened root must win over the broad grant", i)
+			t.Fatalf("%s: the opened root must win over the broad grant", order)
 		}
+		a.mu.Lock()
+		slices.Reverse(a.sites)
+		a.mu.Unlock()
 	}
 }
 
@@ -794,13 +800,9 @@ func TestPromptCannotTrustDownloads(t *testing.T) {
 	}
 	// Refusing silently would be its own bug: the user asked for something durable
 	// and got something that lasts until they quit, so they have to be told.
-	select {
-	case msg := <-told:
-		if !strings.Contains(msg, downloads) {
-			t.Errorf("the notice should name the folder it refused, got %q", msg)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("a refused prompt-trust must tell the user")
+	msg := testutil.Receive(t, 10*time.Second, "a refused prompt-trust to tell the user", told)
+	if !strings.Contains(msg, downloads) {
+		t.Errorf("the notice should name the folder it refused, got %q", msg)
 	}
 	if extra := len(told); extra != 0 {
 		t.Errorf("a refused prompt-trust must tell the user exactly once, got %d extra messages", extra)
@@ -842,13 +844,11 @@ func hasFolder(list []config.TrustedFolder, want string) bool {
 // does not prove the config write landed.
 func waitForTrusted(t *testing.T, a *app, dir string) {
 	t.Helper()
-	for i := 0; i < 500; i++ {
-		if hasFolder(a.rt.cfg.TrustedFolderList(), dir) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("the prompt's Trust this folder choice must record %s: trusted list = %v", dir, a.rt.cfg.TrustedFolderList())
+	testutil.Eventually(t, 10*time.Second, testutil.Lazy(func() string {
+		return fmt.Sprintf("the prompt's Trust this folder choice to record %s; trusted list = %v", dir, a.rt.cfg.TrustedFolderList())
+	}), func() bool {
+		return hasFolder(a.rt.cfg.TrustedFolderList(), dir)
+	})
 }
 
 // The production wiring, end to end. The broker's trust hook must be the app's own
@@ -965,168 +965,6 @@ func TestUntrustingAPromptTrustedFolderEndsTheRead(t *testing.T) {
 	}
 }
 
-// A burst of out-of-scope subresource requests under one common dir, arriving
-// together, produces exactly one prompt and one installed read root, and every
-// request resumes with a token-free 200 on Allow. This is the end-to-end form of
-// the broker's batch-to-one-prompt invariant, fired as concurrent real GETs.
-func TestConcurrentOutOfScopeAssetsResumeTogetherOnAllow(t *testing.T) {
-	home, _ := filepath.EvalSymlinks(t.TempDir())
-	page := filepath.Join(home, "work", "review", "fable", "index.html")
-	writeTestFile(t, page, "<html><body>fable</body></html>")
-	shared := filepath.Join(home, "work", "review", "shared")
-	const n = 8
-	names := make([]string, n)
-	for i := 0; i < n; i++ {
-		names[i] = fmt.Sprintf("a%d.js", i)
-		writeTestFile(t, filepath.Join(shared, names[i]), fmt.Sprintf("console.log(%d)", i))
-	}
-
-	var prompts int32
-	entered := make(chan struct{})
-	var enterOnce sync.Once
-	release := make(chan struct{})
-	a := newTestApp(t, home)
-	a.rt.confirm = func(string, string, bool) (platform.ConfirmChoice, error) {
-		atomic.AddInt32(&prompts, 1)
-		enterOnce.Do(func() { close(entered) })
-		<-release
-		return platform.ConfirmAllowOnce, nil
-	}
-	s, _ := a.openForTest(t, page)
-
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	codes := make([]int, n)
-	tokens := make([]bool, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			<-start
-			rel := filepath.Join("work", "review", "shared", names[i])
-			resp, err := http.Get(fileURL(s.port, rel))
-			if err != nil {
-				codes[i] = -1
-				return
-			}
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
-			codes[i] = resp.StatusCode
-			tokens[i] = strings.Contains(string(body), "htmlclaytoken")
-		}(i)
-	}
-	// Release all N requests at once so they are genuinely concurrent, then hold the
-	// one prompt open while they pile up behind it. With the prompt blocked no grant
-	// exists yet, so every request must park rather than be served, and the single
-	// Allow has to resolve the whole batch. A sequential run could never reach this
-	// state, so this actually exercises batch-to-one-prompt.
-	close(start)
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("permission prompt was never raised")
-	}
-	time.Sleep(150 * time.Millisecond) // let the other waiters park behind the held prompt
-	close(release)
-	wg.Wait()
-
-	for i := 0; i < n; i++ {
-		if codes[i] != 200 {
-			t.Errorf("waiter %d should resume 200 on allow, got %d", i, codes[i])
-		}
-		if tokens[i] {
-			t.Errorf("granted asset %d must be served without a save token", i)
-		}
-	}
-	if got := atomic.LoadInt32(&prompts); got != 1 {
-		t.Errorf("a burst under one common dir must prompt exactly once, got %d", got)
-	}
-	// One prompt installs one root, at the batch's common dir and no broader.
-	root, _, ok := s.sessions.AssetRoot(filepath.Join(shared, names[0]))
-	if !ok || root != shared {
-		t.Errorf("exactly one read root should be installed, at %s: got %q (ok=%v)", shared, root, ok)
-	}
-}
-
-// The deny half of the same invariant: a concurrent burst under one common dir
-// prompts exactly once, installs no read root, and every request gets the fixed
-// path-free 403. The 403 body carries no filesystem path, so a denied read is not
-// an oracle for where the assets live.
-func TestConcurrentOutOfScopeAssetsRefuseTogetherOnDeny(t *testing.T) {
-	home, _ := filepath.EvalSymlinks(t.TempDir())
-	page := filepath.Join(home, "work", "review", "fable", "index.html")
-	writeTestFile(t, page, "<html><body>fable</body></html>")
-	shared := filepath.Join(home, "work", "review", "shared")
-	const n = 8
-	names := make([]string, n)
-	for i := 0; i < n; i++ {
-		names[i] = fmt.Sprintf("a%d.js", i)
-		writeTestFile(t, filepath.Join(shared, names[i]), fmt.Sprintf("console.log(%d)", i))
-	}
-
-	var prompts int32
-	entered := make(chan struct{})
-	var enterOnce sync.Once
-	release := make(chan struct{})
-	a := newTestApp(t, home)
-	a.rt.confirm = func(string, string, bool) (platform.ConfirmChoice, error) {
-		atomic.AddInt32(&prompts, 1)
-		enterOnce.Do(func() { close(entered) })
-		<-release
-		return platform.ConfirmDeny, nil
-	}
-	s, _ := a.openForTest(t, page)
-
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	codes := make([]int, n)
-	leaked := make([]bool, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			<-start
-			rel := filepath.Join("work", "review", "shared", names[i])
-			resp, err := http.Get(fileURL(s.port, rel))
-			if err != nil {
-				codes[i] = -1
-				return
-			}
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
-			codes[i] = resp.StatusCode
-			leaked[i] = strings.Contains(string(body), home)
-		}(i)
-	}
-	// Same barrier as the allow case: fire all N together, hold the single prompt
-	// open until the others have parked behind it, then let the one Deny resolve the
-	// whole batch. Proves N concurrent parks collapse to one prompt, not N.
-	close(start)
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("permission prompt was never raised")
-	}
-	time.Sleep(150 * time.Millisecond)
-	close(release)
-	wg.Wait()
-
-	for i := 0; i < n; i++ {
-		if codes[i] != 403 {
-			t.Errorf("waiter %d should refuse with 403 on deny, got %d", i, codes[i])
-		}
-		if leaked[i] {
-			t.Errorf("the 403 body for waiter %d must carry no filesystem path", i)
-		}
-	}
-	if got := atomic.LoadInt32(&prompts); got != 1 {
-		t.Errorf("a denied burst must prompt exactly once, got %d", got)
-	}
-	if root, _, ok := s.sessions.AssetRoot(filepath.Join(shared, names[0])); ok {
-		t.Errorf("a denied burst must install no read root, got %q", root)
-	}
-}
-
 // A symlink inside a served tree that resolves into htmlclay's own config tree is
 // refused. The internal-path denial is structural on the serve path, so a page
 // cannot reach the config/versions tree by planting a symlink to it, even from an
@@ -1158,80 +996,6 @@ func TestServeAssetSymlinkIntoConfigTreeRefused(t *testing.T) {
 	if strings.Contains(body, "mode") {
 		t.Error("config-tree contents must never be served")
 	}
-}
-
-// The racy sibling of the test above. os.Root follows relative in-root symlinks, so
-// a directory component swapped for such a symlink BETWEEN the serve-path resolution
-// check and the capability open could redirect the read into the config tree even
-// though the pre-check saw a benign path. A flipper races `swap` between a benign
-// real dir and a relative symlink into the config tree while requests hammer it; the
-// served body must never carry the secret. Only a leak can fail this, so the timing
-// race can surface the TOCTOU but never mask it.
-func TestServeAssetSymlinkSwapRaceNeverLeaksConfig(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks require privileges on windows")
-	}
-	home, _ := filepath.EvalSymlinks(t.TempDir())
-	configDir := filepath.Join(home, "Library", "Application Support", "htmlclay")
-	writeTestFile(t, filepath.Join(configDir, "config.json"), `{"secret":"SECRETVALUE"}`)
-	page := filepath.Join(home, "Library", "page.html")
-	writeTestFile(t, page, "<html><body>p</body></html>")
-
-	swap := filepath.Join(home, "Library", "swap")
-	relTarget := filepath.Join("Application Support", "htmlclay") // relative: stays inside the ~/Library root
-	benign := func() {
-		os.RemoveAll(swap)
-		os.MkdirAll(swap, 0755)
-		os.WriteFile(filepath.Join(swap, "config.json"), []byte("benign"), 0644)
-	}
-	attack := func() {
-		os.RemoveAll(swap)
-		os.Symlink(relTarget, swap)
-	}
-	benign()
-
-	a := newTestApp(t, home)
-	a.rt.configDir = configDir
-	a.rt.guard = func(dir string) bool {
-		return session.EqualOrUnder(dir, configDir) || session.EqualOrUnder(configDir, dir)
-	}
-	s, _ := a.openForTest(t, page) // opened root ~/Library covers the config dir
-
-	stop := make(chan struct{})
-	var flipper sync.WaitGroup
-	flipper.Add(1)
-	go func() {
-		defer flipper.Done()
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if i%2 == 0 {
-				attack()
-			} else {
-				benign()
-			}
-		}
-	}()
-
-	url := fileURL(s.port, filepath.Join("Library", "swap", "config.json"))
-	for i := 0; i < 400; i++ {
-		resp, err := http.Get(url)
-		if err != nil {
-			continue
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if strings.Contains(string(body), "SECRETVALUE") {
-			close(stop)
-			flipper.Wait()
-			t.Fatalf("serve path leaked the config tree through a symlink swap on iteration %d", i)
-		}
-	}
-	close(stop)
-	flipper.Wait()
 }
 
 // Untrusting a folder is complete: it drops the folder from the trusted list,

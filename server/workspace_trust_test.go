@@ -12,11 +12,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/panphora/htmlclay/htmlutil"
+	"github.com/panphora/htmlclay/internal/testutil"
 	"github.com/panphora/htmlclay/logging"
 	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/session"
@@ -113,6 +115,19 @@ func listen(t *testing.T) net.Listener {
 	return ln
 }
 
+// waitQueuedPrompts blocks until n runPrompt callers are parked behind a dialog.
+// This is the observable that replaces "sleep and assume they got there": a
+// caller that has been started but not yet scheduled is not queued, and only the
+// broker knows the difference.
+func waitQueuedPrompts(t *testing.T, b *broker, n int) {
+	t.Helper()
+	testutil.Eventually(t, 10*time.Second, fmt.Sprintf("%d prompt(s) queued behind the dialog", n), func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.queuedPrompts == n
+	})
+}
+
 // One native dialog at a time: a runPrompt dialog must wait for a grant prompt
 // in flight, and vice versa.
 func TestRunPromptSerializesWithGrantPrompt(t *testing.T) {
@@ -127,40 +142,77 @@ func TestRunPromptSerializesWithGrantPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The grant dialog holds the screen until the test lets go, so "the second
+	// dialog waited" is a fact rather than an inference from elapsed time. The old
+	// shape slept 300ms hoping the grant prompt had started, and when it had not,
+	// runPrompt simply took the slot first: the two dialogs then ran in the wrong
+	// order, never overlapped, and the test passed without staging any contention.
+	grantEntered := make(chan struct{})
+	releaseGrant := make(chan struct{})
 	var inPrompt atomic.Int32
 	var overlapped atomic.Bool
-	enter := func() {
-		if inPrompt.Add(1) > 1 {
-			overlapped.Store(true)
-		}
-		time.Sleep(50 * time.Millisecond)
-		inPrompt.Add(-1)
+
+	var order []string
+	var orderMu sync.Mutex
+	record := func(what string) {
+		orderMu.Lock()
+		order = append(order, what)
+		orderMu.Unlock()
 	}
 
 	b := newBroker(mgr, logging.NewStdout(), func(string, string, bool) (platform.ConfirmChoice, error) {
-		enter()
+		if inPrompt.Add(1) > 1 {
+			overlapped.Store(true)
+		}
+		record("grant enter")
+		close(grantEntered)
+		<-releaseGrant
+		record("grant exit")
+		inPrompt.Add(-1)
 		return platform.ConfirmDeny, nil
 	})
+	holdBatchOpen(b)
 
 	grantDone := make(chan struct{})
 	go func() {
 		defer close(grantDone)
 		b.await(t.Context(), asset)
 	}()
-
-	// Give the grant prompt time to arm and start.
-	time.Sleep(300 * time.Millisecond)
+	waitParked(t, b, 1)
+	// flush runs the dialog on the caller's goroutine, and this dialog is held
+	// open on purpose, so it cannot be the test's own goroutine that closes the
+	// batch.
+	go b.flush()
+	testutil.Receive(t, 10*time.Second, "the grant dialog to open", grantEntered)
 
 	promptDone := make(chan struct{})
 	go func() {
 		defer close(promptDone)
-		b.runPrompt(enter)
+		b.runPrompt(func() {
+			if inPrompt.Add(1) > 1 {
+				overlapped.Store(true)
+			}
+			record("runPrompt enter")
+			inPrompt.Add(-1)
+		})
 	}()
 
-	<-grantDone
-	<-promptDone
+	// It is queued behind the dialog, not merely started. Without this the test
+	// cannot tell waiting from not having got there yet.
+	waitQueuedPrompts(t, b, 1)
+
+	close(releaseGrant)
+	testutil.Receive(t, 10*time.Second, "the grant to finish", grantDone)
+	testutil.Receive(t, 10*time.Second, "the queued prompt to finish", promptDone)
+
 	if overlapped.Load() {
 		t.Fatal("two native prompts were on screen at once")
+	}
+	orderMu.Lock()
+	got := strings.Join(order, ", ")
+	orderMu.Unlock()
+	if got != "grant enter, grant exit, runPrompt enter" {
+		t.Fatalf("dialogs ran as %q, want the queued one strictly after the grant", got)
 	}
 }
 
@@ -375,10 +427,12 @@ func TestWorkspaceRequestDenySuppressesQueuedAsks(t *testing.T) {
 	}
 
 	var asks atomic.Int32
+	firstAsk := make(chan struct{})
 	release := make(chan struct{})
 	srv.SetHooks(Hooks{
 		TrustRequest: func(requestingFile string, openedByUser bool) (string, bool) {
 			if asks.Add(1) == 1 {
+				close(firstAsk)
 				<-release
 				// The refusal the handler records a few instructions after this
 				// returns, recorded here instead so the interleaving under test is
@@ -403,19 +457,18 @@ func TestWorkspaceRequestDenySuppressesQueuedAsks(t *testing.T) {
 	}
 
 	go post(tokens[0])
-	deadline := time.Now().Add(2 * time.Second)
-	for asks.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if asks.Load() != 1 {
-		t.Fatal("the first ask never reached the dialog")
-	}
+	testutil.Receive(t, 10*time.Second, "the first ask to reach the dialog", firstAsk)
+
 	for _, tok := range tokens[1:] {
 		go post(tok)
 	}
-	// Generous margin for the queued asks to clear the outer refusal check and
-	// park inside runPrompt before the first one is answered.
-	time.Sleep(300 * time.Millisecond)
+	// Both really are parked inside runPrompt, which is the state this test is
+	// about. The old sleep was a guess, and when it was short the other two asks
+	// arrived AFTER the deny was recorded, failed the outer check, and returned
+	// 403 without ever queueing: every assertion below still held, and the inner
+	// check could have been deleted without the test noticing.
+	waitQueuedPrompts(t, srv.broker, 2)
+
 	close(release)
 
 	for range tokens {

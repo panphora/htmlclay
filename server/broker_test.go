@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/testutil"
 	"github.com/panphora/htmlclay/logging"
 	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/session"
@@ -47,6 +48,54 @@ func brokerManager(t *testing.T) (*session.Manager, string) {
 	return newTestManager(t, home), home
 }
 
+// holdBatchOpen stops the debounce timer from closing a batch on its own, so a
+// test that means to group N waiters can wait until all N have actually parked
+// and then close the batch itself. Racing the real 250ms window instead makes
+// the assertion depend on how promptly N goroutines get scheduled: a partial
+// flush moves some waiters out of b.waiters and into a prompt, and the count the
+// test is waiting for is then never reached.
+func holdBatchOpen(b *broker) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.debounce = time.Hour
+	b.maxBatch = time.Hour
+}
+
+// releaseBatch restores the real batch window after holdBatchOpen. Needed by any
+// test whose SECOND act depends on a flush happening on its own: flush rearms the
+// timer from b.debounce after the dialog resolves, so a batch still held open
+// leaves a post-prompt waiter parked until brokerParkMax, and the test passes
+// 130 seconds later having proved nothing about the debounce path.
+func releaseBatch(b *broker) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.debounce = brokerDebounce
+	b.maxBatch = brokerMaxBatch
+}
+
+// waitPrompting blocks until the broker has a dialog up. Pair it with
+// holdBatchOpen and an explicit `go b.flush()`: waiting on the real debounce
+// timer instead makes the test depend on a 250ms timer callback being scheduled,
+// which is the first thing a saturated machine stops doing promptly.
+func waitPrompting(t *testing.T, b *broker) {
+	t.Helper()
+	waitFor(t, 10*time.Second, "a prompt to be up", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.prompting
+	})
+}
+
+// waitParked blocks until exactly n waiters are parked.
+func waitParked(t *testing.T, b *broker, n int) {
+	t.Helper()
+	waitFor(t, 10*time.Second, "parked waiters", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return len(b.waiters) == n
+	})
+}
+
 // Many out-of-scope requests under one parent, arriving together, must produce a
 // single prompt for their common ancestor, and all must succeed after Allow.
 func TestBrokerBatchesToOnePrompt(t *testing.T) {
@@ -68,6 +117,8 @@ func TestBrokerBatchesToOnePrompt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	holdBatchOpen(b)
+
 	var wg sync.WaitGroup
 	results := make([]bool, len(paths))
 	for i, p := range paths {
@@ -77,6 +128,10 @@ func TestBrokerBatchesToOnePrompt(t *testing.T) {
 			results[i] = b.await(context.Background(), p)
 		}(i, p)
 	}
+	// All three are parked before the batch closes, which is the arrival the
+	// grouping is about. Whether they get there inside 250ms is not.
+	waitParked(t, b, len(paths))
+	b.flush()
 	wg.Wait()
 
 	for i, ok := range results {
@@ -128,23 +183,35 @@ func TestBrokerNeverPromptsForHome(t *testing.T) {
 // A canceled request stops waiting and does not leak into the next batch.
 func TestBrokerContextCancel(t *testing.T) {
 	mgr, home := brokerManager(t)
-	// A confirm that blocks forever would hold the prompt; use a slow deny so the
-	// waiter is parked when we cancel.
-	b := newBroker(mgr, logging.NewStdout(), func(string, string, bool) (platform.ConfirmChoice, error) {
-		time.Sleep(2 * time.Second)
-		return platform.ConfirmDeny, nil
-	})
+	b := newBroker(mgr, logging.NewStdout(), failIfPrompted(t))
+	// Holding the batch open is what puts the waiter in the state this is about:
+	// parked, with no prompt raised. Cancelling before it has parked exercises
+	// nothing, and sleeping to avoid that only trades one guess for another.
+	holdBatchOpen(b)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan bool, 1)
 	go func() { done <- b.await(ctx, filepath.Join(home, "x", "y.js")) }()
+	waitParked(t, b, 1)
+
 	cancel()
-	select {
-	case allow := <-done:
-		if allow {
-			t.Error("canceled request must not be allowed")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("canceled request should return promptly")
+	if testutil.Receive(t, 10*time.Second, "a canceled request to return", done) {
+		t.Error("canceled request must not be allowed")
+	}
+	// The canceled waiter left with it, so it cannot surface in a later batch.
+	b.mu.Lock()
+	left := len(b.waiters)
+	b.mu.Unlock()
+	if left != 0 {
+		t.Errorf("a canceled request left %d waiter(s) behind", left)
+	}
+}
+
+// failIfPrompted is a confirm for tests that must never reach a prompt at all.
+func failIfPrompted(t *testing.T) brokerConfirm {
+	return func(string, string, bool) (platform.ConfirmChoice, error) {
+		t.Error("no prompt should have been raised")
+		return platform.ConfirmDeny, nil
 	}
 }
 
@@ -212,6 +279,8 @@ func TestBrokerShutdownReleasesParkedWaiters(t *testing.T) {
 		return platform.ConfirmDeny, nil
 	})
 
+	holdBatchOpen(b)
+
 	const n = 5
 	done := make(chan bool, n)
 	for i := 0; i < n; i++ {
@@ -219,22 +288,13 @@ func TestBrokerShutdownReleasesParkedWaiters(t *testing.T) {
 			done <- b.await(context.Background(), filepath.Join(home, "vendor", fmt.Sprintf("a%d.js", i)))
 		}(i)
 	}
-	waitFor(t, 2*time.Second, "broker state", func() bool {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return len(b.waiters) == n
-	})
+	waitParked(t, b, n)
 
 	b.shutdown()
 
 	for i := 0; i < n; i++ {
-		select {
-		case allow := <-done:
-			if allow {
-				t.Error("shutdown must release parked waiters as denied")
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("shutdown did not release a parked waiter")
+		if testutil.Receive(t, 10*time.Second, "shutdown to release a parked waiter", done) {
+			t.Error("shutdown must release parked waiters as denied")
 		}
 	}
 	if b.await(context.Background(), filepath.Join(home, "vendor", "later.js")) {
@@ -253,28 +313,21 @@ func TestBrokerParkCapDeniesOverflow(t *testing.T) {
 	})
 	defer b.shutdown()
 
+	holdBatchOpen(b)
+
 	done := make(chan bool, brokerParkCap+1)
 	for i := 0; i < brokerParkCap; i++ {
 		go func(i int) {
 			done <- b.await(context.Background(), filepath.Join(home, "vendor", fmt.Sprintf("a%d.js", i)))
 		}(i)
 	}
-	waitFor(t, 2*time.Second, "broker state", func() bool {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return len(b.waiters) == brokerParkCap
-	})
+	waitParked(t, b, brokerParkCap)
 
 	// The overflow request is denied immediately, without blocking.
 	overflow := make(chan bool, 1)
 	go func() { overflow <- b.await(context.Background(), filepath.Join(home, "vendor", "overflow.js")) }()
-	select {
-	case allow := <-overflow:
-		if allow {
-			t.Error("a request over the park cap must be denied")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("a request over the park cap must be denied immediately, not parked")
+	if testutil.Receive(t, 10*time.Second, "an over-cap request to be denied without parking", overflow) {
+		t.Error("a request over the park cap must be denied")
 	}
 }
 
@@ -290,17 +343,24 @@ func TestBrokerSuppressionDuringPromptNoReprompt(t *testing.T) {
 		return platform.ConfirmDeny, nil
 	})
 
+	holdBatchOpen(b)
 	first := make(chan bool, 1)
 	go func() { first <- b.await(context.Background(), filepath.Join(home, "vendor", "a.js")) }()
-	waitFor(t, 2*time.Second, "broker state", func() bool { return atomic.LoadInt32(&prompts) == 1 })
+	waitParked(t, b, 1)
+	go b.flush()
+	waitFor(t, 10*time.Second, "the first prompt to be raised", func() bool {
+		return atomic.LoadInt32(&prompts) == 1
+	})
 
+	// armLocked is a no-op while prompting, so this waiter stays parked until the
+	// dialog resolves. The count is stable once reached rather than a moment the
+	// poll has to catch.
 	second := make(chan bool, 1)
 	go func() { second <- b.await(context.Background(), filepath.Join(home, "vendor", "b.js")) }()
-	waitFor(t, 2*time.Second, "broker state", func() bool {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return len(b.waiters) == 1
-	})
+	waitParked(t, b, 1)
+	// The second waiter is denied by the flush that rearms after this dialog, so
+	// that rearm has to use the real window and not the held-open one.
+	releaseBatch(b)
 
 	close(gate) // resolve the first prompt: Deny → suppress the vendor tree
 
@@ -329,22 +389,17 @@ func TestBrokerWakesWaiterParkedDuringPrompt(t *testing.T) {
 		return platform.ConfirmAllowOnce, nil
 	})
 
+	holdBatchOpen(b)
 	first := make(chan bool, 1)
 	go func() { first <- b.await(context.Background(), filepath.Join(proj, "x.js")) }()
-	waitFor(t, 2*time.Second, "broker state", func() bool {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return b.prompting
-	})
+	waitParked(t, b, 1)
+	go b.flush()
+	waitPrompting(t, b)
 
 	// Park a second waiter under a subfolder the pending grant (home/proj) will cover.
 	second := make(chan bool, 1)
 	go func() { second <- b.await(context.Background(), filepath.Join(proj, "sub", "y.js")) }()
-	waitFor(t, 2*time.Second, "broker state", func() bool {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return len(b.waiters) == 1
-	})
+	waitParked(t, b, 1)
 
 	close(gate) // Allow → grant home/proj, which covers both waiters
 
@@ -382,13 +437,9 @@ func TestTrustFolderChoiceGrantsAndTrusts(t *testing.T) {
 	if !ok {
 		t.Fatal("the trust-folder choice must install the read root")
 	}
-	select {
-	case dir := <-trusted:
-		if dir != root {
-			t.Errorf("trust must be handed the granted folder: got %q, want %q", dir, root)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the trust-folder choice must hand the folder to the trust hook")
+	dir := testutil.Receive(t, 10*time.Second, "the trust-folder choice to hand the folder to the trust hook", trusted)
+	if dir != root {
+		t.Errorf("trust must be handed the granted folder: got %q, want %q", dir, root)
 	}
 	if extra := len(trusted); extra != 0 {
 		t.Errorf("expected exactly one trust call, got %d extra", extra)
@@ -501,5 +552,176 @@ func TestBrokerGrantFailureDeniesAndSuppresses(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&prompts); got != 1 {
 		t.Errorf("a failed grant should suppress the root, not re-prompt: got %d prompts", got)
+	}
+}
+
+// A waiter queued behind ANOTHER tree's dialog self-resolves to deny once it has
+// been parked for brokerParkMax. That is the case the constant's own comment
+// calls out as not covered by the batch-plus-dialog budget, and until the broker
+// took a clock it could not be tested at all: the deadline is 130 seconds.
+func TestBrokerParkExpiresWhileAnotherTreesDialogIsUp(t *testing.T) {
+	mgr, home := brokerManager(t)
+	first := filepath.Join(home, "one", "a.js")
+	second := filepath.Join(home, "two", "b.js")
+	mustWrite(t, first)
+	mustWrite(t, second)
+
+	gate := make(chan struct{})
+	// Signalled from inside confirm, not from b.prompting. flush sets that flag and
+	// then does real work — a symlink resolution among it — before calling confirm,
+	// so waiting on the flag returns while the prompt counter this test asserts on
+	// is still zero.
+	entered := make(chan struct{}, 4)
+	var prompts int32
+	b, clock := manualBroker(t, mgr, func(string, string, bool) (platform.ConfirmChoice, error) {
+		atomic.AddInt32(&prompts, 1)
+		entered <- struct{}{}
+		<-gate
+		return platform.ConfirmDeny, nil
+	})
+
+	one := make(chan bool, 1)
+	go func() { one <- b.await(context.Background(), first) }()
+	waitParked(t, b, 1)
+	clock.Advance(brokerDebounce)
+	testutil.Receive(t, 10*time.Second, "the first tree's dialog to be raised", entered)
+
+	// Parks under a different tree, so the dialog on screen is not its own and
+	// prompts are serialized behind it.
+	two := make(chan bool, 1)
+	go func() { two <- b.await(context.Background(), second) }()
+	waitParked(t, b, 1)
+
+	clock.Advance(brokerParkMax)
+	if testutil.Receive(t, 10*time.Second, "the queued waiter to give up", two) {
+		t.Error("a waiter held past brokerParkMax must resolve to deny")
+	}
+	if got := atomic.LoadInt32(&prompts); got != 1 {
+		t.Errorf("the expired waiter must never raise its own dialog, got %d prompts", got)
+	}
+	// Expiring is only half of it: a waiter that returns deny but stays in the list
+	// is still queued to be prompted for later, which is the opposite of expired.
+	b.mu.Lock()
+	left := len(b.waiters)
+	b.mu.Unlock()
+	if left != 0 {
+		t.Errorf("the expired waiter is still parked: %d waiters remain", left)
+	}
+
+	close(gate)
+	testutil.Receive(t, 10*time.Second, "the prompted waiter to drain", one)
+}
+
+// The batch window extends while requests keep arriving, and maxBatch caps when
+// the LAST extension may start, not when the flush lands. A reset granted just
+// under maxBatch still runs a full debounce after it, so the real bound is close
+// to maxBatch+debounce. Both halves are asserted here so neither can be tightened
+// or dropped without a red test.
+func TestBrokerBatchExtendsPastMaxBatchByOneDebounce(t *testing.T) {
+	mgr, home := brokerManager(t)
+	var prompts int32
+	b, clock := manualBroker(t, mgr, countingConfirm(platform.ConfirmDeny, &prompts))
+
+	results := make(chan bool, 16)
+	park := func(name string) {
+		p := filepath.Join(home, "proj", name)
+		mustWrite(t, p)
+		go func() { results <- b.await(context.Background(), p) }()
+	}
+
+	// Each arrival lands just inside the open window, so each one extends it.
+	step := brokerDebounce - 10*time.Millisecond
+	park("first.js")
+	waitParked(t, b, 1)
+
+	parked, elapsed := 1, time.Duration(0)
+	for elapsed < brokerMaxBatch {
+		clock.Advance(step)
+		elapsed += step
+		park(fmt.Sprintf("%d.js", parked))
+		parked++
+		waitParked(t, b, parked)
+		// Read off the timer, not the waiter count: without this, deleting the
+		// Reset in armLocked still passes whenever the fired flush is slow enough
+		// to be scheduled after the last arrival parked.
+		requireBatchOpen(t, b, clock, fmt.Sprintf("after the arrival at %v", elapsed))
+	}
+
+	if elapsed <= brokerMaxBatch {
+		t.Fatalf("the batch must be carried past maxBatch, stopped at %v", elapsed)
+	}
+	if got := atomic.LoadInt32(&prompts); got != 0 {
+		t.Fatalf("at %v the window was still open, but %d prompts had already gone up", elapsed, got)
+	}
+
+	// The extension granted just under the cap still owes a full debounce.
+	clock.Advance(brokerDebounce - step)
+	for i := 0; i < parked; i++ {
+		if testutil.Receive(t, 10*time.Second, "every waiter in the batch to resolve", results) {
+			t.Error("a denied batch must deny every waiter it grouped")
+		}
+	}
+	if got := atomic.LoadInt32(&prompts); got != 1 {
+		t.Errorf("the whole batch must close as one prompt, got %d", got)
+	}
+}
+
+// Arming is skipped while a dialog is up, so a waiter that parks under a second
+// tree has no window of its own. Only the rearm on the first dialog's completion
+// can open one, and this is the test that fails if that rearm goes away: no
+// amount of clock movement raises the second prompt without it.
+func TestBrokerRearmsTheBatchAfterADialogCloses(t *testing.T) {
+	mgr, home := brokerManager(t)
+	one := filepath.Join(home, "one", "a.js")
+	two := filepath.Join(home, "two", "b.js")
+	mustWrite(t, one)
+	mustWrite(t, two)
+
+	gate := make(chan struct{})
+	// As above: entering confirm is the event, not the prompting flag, which is set
+	// well before it and would let the count assertion below read a stale zero.
+	entered := make(chan struct{}, 4)
+	var prompts int32
+	b, clock := manualBroker(t, mgr, func(string, string, bool) (platform.ConfirmChoice, error) {
+		if atomic.AddInt32(&prompts, 1) == 1 {
+			entered <- struct{}{}
+			<-gate
+			return platform.ConfirmDeny, nil
+		}
+		entered <- struct{}{}
+		return platform.ConfirmDeny, nil
+	})
+
+	first := make(chan bool, 1)
+	go func() { first <- b.await(context.Background(), one) }()
+	waitParked(t, b, 1)
+	clock.Advance(brokerDebounce)
+	testutil.Receive(t, 10*time.Second, "the first tree's dialog to be raised", entered)
+
+	second := make(chan bool, 1)
+	go func() { second <- b.await(context.Background(), two) }()
+	waitParked(t, b, 1)
+
+	// The claim in this test's name rests on this: armLocked returns early while a
+	// dialog is up, so the second tree has no window of its own to close.
+	requireNoBatchArmed(t, b, clock, "while the first tree's dialog is up")
+
+	clock.Advance(4 * brokerDebounce)
+	if got := atomic.LoadInt32(&prompts); got != 1 {
+		t.Fatalf("no second dialog may open while the first is up, got %d prompts", got)
+	}
+
+	close(gate)
+	if testutil.Receive(t, 10*time.Second, "the prompted waiter", first) {
+		t.Error("a denied tree must deny its own waiter")
+	}
+
+	waitRearmed(t, b, clock)
+	clock.Advance(brokerDebounce)
+	if testutil.Receive(t, 10*time.Second, "the waiter that parked during the dialog", second) {
+		t.Error("the second tree was denied too, so its waiter must be denied")
+	}
+	if got := atomic.LoadInt32(&prompts); got != 2 {
+		t.Errorf("the second tree needs a dialog of its own, got %d prompts", got)
 	}
 }

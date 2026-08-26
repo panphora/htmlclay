@@ -163,25 +163,109 @@ func TestRevokeAll(t *testing.T) {
 	}
 }
 
+// Concurrent registrations and lookups of the same paths. Run under -race.
+//
+// The version that shipped first spawned 200 goroutines, discarded every return
+// value, and asserted nothing, so it passed on a Manager that returned an error
+// every time. What the overlap is actually worth checking is that Register is
+// idempotent per path: the loop reuses 26 names across 100 iterations, so four
+// goroutines register each path at once, and they must all end up with the one
+// file rather than each minting its own token.
 func TestConcurrentAccess(t *testing.T) {
 	mgr, home := setupManager(t)
 
-	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		name := filepath.Join(home, "file"+string(rune('A'+i%26))+".htmlclay")
-		os.WriteFile(name, []byte("<html></html>"), 0644)
+	const iters = 100
+	paths := make([]string, iters)
+	for i := 0; i < iters; i++ {
+		paths[i] = filepath.Join(home, "file"+string(rune('A'+i%26))+".htmlclay")
+		if err := os.WriteFile(paths[i], []byte("<html></html>"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
+	// A path registered before the barrier, so the lookup half has something it must
+	// ALWAYS find. Pointing every lookup at a path being registered concurrently
+	// makes a miss legitimate, and a LookupByPath that returned nothing forever
+	// would then satisfy the test.
+	stable := filepath.Join(home, "stable.htmlclay")
+	if err := os.WriteFile(stable, []byte("<html></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stableFile, err := mgr.Register(stable, ViaOsOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	tokens := make(map[string]map[string]bool) // path -> tokens seen
+	var registered, lookups, mismatched, stableMisses int
+	var firstErr error
+
+	// A start barrier, so the goroutines contend instead of trickling out behind
+	// however long the spawn loop took.
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, name := range paths {
 		wg.Add(2)
 		go func(p string) {
 			defer wg.Done()
-			mgr.Register(p, ViaOsOpen)
+			<-start
+			f, err := mgr.Register(p, ViaOsOpen)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
+			registered++
+			if tokens[p] == nil {
+				tokens[p] = map[string]bool{}
+			}
+			tokens[p][f.Token] = true
 		}(name)
 		go func(p string) {
 			defer wg.Done()
-			mgr.LookupByPath(p)
+			<-start
+			f, ok := mgr.LookupByPath(p)
+			sf, stableOK := mgr.LookupByPath(stable)
+			mu.Lock()
+			defer mu.Unlock()
+			lookups++
+			// A miss on p is legitimate: the lookup may run before that path's
+			// registration. A hit for a different file never is.
+			if ok && f.AbsPath != p {
+				mismatched++
+			}
+			// A miss on the stable path never is. It was registered before the
+			// barrier, and concurrent registrations of other files must not be able
+			// to hide it.
+			if !stableOK || sf.Token != stableFile.Token {
+				stableMisses++
+			}
 		}(name)
 	}
+	close(start)
 	wg.Wait()
+
+	if firstErr != nil {
+		t.Fatalf("concurrent Register failed: %v", firstErr)
+	}
+	if registered != iters || lookups != iters {
+		t.Fatalf("registered=%d lookups=%d, want %d of each", registered, lookups, iters)
+	}
+	if mismatched != 0 {
+		t.Errorf("%d lookups returned a file registered under a different path", mismatched)
+	}
+	if stableMisses != 0 {
+		t.Errorf("%d of %d lookups failed to find a file registered before the barrier", stableMisses, iters)
+	}
+	for p, seen := range tokens {
+		if len(seen) != 1 {
+			t.Errorf("%s was registered as %d distinct files; concurrent Register of one path must be idempotent", filepath.Base(p), len(seen))
+		}
+	}
 }
 
 func TestContainWithinHome(t *testing.T) {

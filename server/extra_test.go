@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +13,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/panphora/htmlclay/internal/testutil"
+	"github.com/panphora/htmlclay/logging"
+	"github.com/panphora/htmlclay/platform"
 	"github.com/panphora/htmlclay/session"
+	"github.com/panphora/htmlclay/versions"
+	"net"
+	"sync/atomic"
+	"time"
 )
 
 func TestExtractFilePath(t *testing.T) {
@@ -58,7 +67,91 @@ func TestAtomicWriteFilePreservesMode(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteFileConcurrentNoTorn(t *testing.T) {
+// atomicWriteFile must never let a reader see a half-written file. Staging is what
+// guarantees it: the new bytes land in a temp file, and the target changes only by
+// rename, which is atomic on POSIX.
+//
+// This holds a writer at the one instant a torn read would be possible, with every
+// replacement byte already on disk and the rename not yet run, and reads the target
+// there. The concurrent test below cannot prove this: racing writers that all
+// finish still leave one writer's bytes intact at the end, so it passes on a build
+// that writes the target directly.
+func TestAtomicWriteFilePublishesOnlyByRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("rename-over-open is a POSIX guarantee; Windows takes the per-file lock instead")
+	}
+	path := filepath.Join(t.TempDir(), "f.htmlclay")
+	before := []byte("the original contents")
+	after := []byte(strings.Repeat("replacement ", 4096))
+	if err := os.WriteFile(path, before, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rename replaces the directory entry, so a descriptor opened before the swap
+	// keeps reading the original inode. An in-place write to the same inode changes
+	// what this descriptor sees. That is the difference between publishing the new
+	// bytes and overwriting the file a reader already has open, and it is the half
+	// that reading the path cannot tell apart.
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+
+	staged := make(chan struct{})
+	release := make(chan struct{})
+	// Once, because a second concurrent entry would close a closed channel and take
+	// the whole package down rather than fail this test.
+	var stagedOnce sync.Once
+	beforeAtomicReplace = func() {
+		stagedOnce.Do(func() { close(staged) })
+		<-release
+	}
+	t.Cleanup(func() { beforeAtomicReplace = nil })
+
+	done := make(chan error, 1)
+	go func() { done <- atomicWriteFile(path, after) }()
+
+	testutil.Receive(t, 10*time.Second, "the write to reach the rename", staged)
+	mid, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(mid, before) {
+		if bytes.Equal(mid, after) {
+			t.Fatal("the target already held the replacement before the rename, so the write is not staged")
+		}
+		t.Fatalf("a reader at the rename boundary saw neither the old file nor the new one: %d bytes, want the %d-byte original", len(mid), len(before))
+	}
+	close(release)
+
+	if err := testutil.Receive(t, 10*time.Second, "the staged write to finish", done); err != nil {
+		t.Fatal(err)
+	}
+	final, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(final, after) {
+		t.Fatalf("after the rename the target holds %d bytes, want the %d-byte replacement", len(final), len(after))
+	}
+
+	viaHeld, err := io.ReadAll(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(viaHeld, before) {
+		t.Fatalf("a descriptor opened before the write now reads %d bytes, want the %d-byte original: "+
+			"the target was written in place rather than replaced, so a reader holding it open saw the change under them",
+			len(viaHeld), len(before))
+	}
+}
+
+// Concurrent writers must all succeed, leave the target holding exactly one of
+// their bodies, and leave no temp files behind. This is a stress test, and it is
+// named for what it proves rather than for the torn read, which
+// TestAtomicWriteFilePublishesOnlyByRename establishes on its own.
+func TestAtomicWriteFileConcurrentWritersLeaveNoTempFiles(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("atomicWriteFile always runs under the per-file lock in the app; lock-free concurrent rename-over-open is a POSIX-only guarantee")
 	}
@@ -73,26 +166,37 @@ func TestAtomicWriteFileConcurrentNoTorn(t *testing.T) {
 		contents[fmt.Sprintf("content-%02d-%s", i, strings.Repeat("x", 4096))] = true
 	}
 
+	// A start barrier, so the writers overlap instead of trickling out behind
+	// however long the loop took to spawn them.
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
+	var completed int
 	for c := range contents {
 		wg.Add(1)
 		go func(body string) {
 			defer wg.Done()
-			if err := atomicWriteFile(path, []byte(body)); err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
+			<-start
+			err := atomicWriteFile(path, []byte(body))
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if err == nil {
+				completed++
 			}
 		}(c)
 	}
+	close(start)
 	wg.Wait()
 
 	if firstErr != nil {
 		t.Fatalf("concurrent atomicWriteFile error: %v", firstErr)
+	}
+	if completed != n {
+		t.Fatalf("%d of %d writers completed", completed, n)
 	}
 
 	final, err := os.ReadFile(path)
@@ -632,5 +736,203 @@ func TestSidecarEncoding(t *testing.T) {
 func TestTabLimitIsDocumented(t *testing.T) {
 	if maxUsefulTabs != 6 {
 		t.Fatalf("documented tab limit = %d, want the browser's 6", maxUsefulTabs)
+	}
+}
+
+// os.Root follows relative in-root symlinks, so a directory component swapped
+// for such a symlink BETWEEN the serve path being resolved and the capability
+// open that acts on it can redirect the read into the internal tree while the
+// pre-checks saw an entirely benign path. Only the descriptor-bound RealPath
+// check can catch that, because it reports where the held inode lives rather
+// than what a name currently points at.
+//
+// The swap is staged, not raced. The old form flipped a directory in a loop
+// while firing 400 requests and hoped one of them landed inside the window; a
+// run where none did passed with the RealPath check deleted, which is the whole
+// thing this test exists to protect.
+func TestServeAssetSymlinkSwapIsCaughtByTheDescriptorCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on windows")
+	}
+	fx := setupAssetTest(t, "unused.txt", []byte("x"))
+
+	// Inside the opened root, which is what makes the relative symlink followable
+	// and the attack worth defending against.
+	internal := filepath.Join(fx.home, "assets", "internal")
+	if err := os.MkdirAll(internal, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(internal, "config.json"), []byte(`{"secret":"SECRETVALUE"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fx.srv.SetInternalDir(internal)
+
+	swap := filepath.Join(fx.home, "assets", "swap")
+	if err := os.MkdirAll(swap, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(swap, "config.json"), []byte("benign"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	swaps := 0
+	fx.srv.beforeAssetCapabilityOpen = func() {
+		// Every resolution check has now passed, against the benign directory.
+		swaps++
+		if err := os.RemoveAll(swap); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("internal", swap); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := serveAssetRequest(t, fx, "assets/swap/config.json", nil)
+
+	if swaps != 1 {
+		t.Fatalf("the swap ran %d times, want exactly 1: the request did not reach the window", swaps)
+	}
+	if strings.Contains(w.Body.String(), "SECRETVALUE") {
+		t.Fatal("the serve path leaked the internal tree through a swapped directory component")
+	}
+	if w.Code != 404 {
+		t.Fatalf("swapped asset = %d, want 404", w.Code)
+	}
+}
+
+// setupBatchAssetTest builds a server whose only opened root is one page's own
+// folder, so every asset under the sibling shared/ directory is out of scope and
+// has to park for permission. Returns the shared dir and the request-relative
+// paths of the assets in it.
+func setupBatchAssetTest(t *testing.T, confirm brokerConfirm) (*Server, string, []string) {
+	t.Helper()
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	pageDir := filepath.Join(home, "work", "review", "fable")
+	if err := os.MkdirAll(pageDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	page := filepath.Join(pageDir, "index.html")
+	if err := os.WriteFile(page, []byte("<html><body>fable</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	shared := filepath.Join(home, "work", "review", "shared")
+	if err := os.MkdirAll(shared, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var rels []string
+	for i := 0; i < 8; i++ {
+		name := fmt.Sprintf("a%d.js", i)
+		if err := os.WriteFile(filepath.Join(shared, name), []byte(fmt.Sprintf("console.log(%d)", i)), 0644); err != nil {
+			t.Fatal(err)
+		}
+		rels = append(rels, filepath.Join("work", "review", "shared", name))
+	}
+
+	mgr := newTestManager(t, home)
+	if _, err := mgr.Register(page, session.ViaOsOpen); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
+	srv.broker.confirm = confirm
+	t.Cleanup(func() { srv.broker.shutdown(); srv.hub.shutdown(); srv.watcher.shutdown() })
+	return srv, shared, rels
+}
+
+type assetResult struct {
+	code     int
+	hasToken bool
+}
+
+// fireAssets issues every request concurrently and returns a channel of results.
+// The goroutines never touch t: a failed assertion belongs to the test goroutine.
+func fireAssets(srv *Server, rels []string) <-chan assetResult {
+	out := make(chan assetResult, len(rels))
+	for _, rel := range rels {
+		go func(rel string) {
+			req := httptest.NewRequest("GET", "/"+rel, nil)
+			req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+			req.SetPathValue("path", rel)
+			w := httptest.NewRecorder()
+			srv.handleServeFile(w, req)
+			out <- assetResult{code: w.Code, hasToken: strings.Contains(w.Body.String(), "htmlclaytoken")}
+		}(rel)
+	}
+	return out
+}
+
+// A burst of out-of-scope asset requests under one common directory produces
+// exactly one prompt, and the single Allow resolves all of them with a token-free
+// 200.
+//
+// The batch is held open until all eight have parked, which is the state the
+// invariant is about. The old form slept 150ms after the prompt opened and hoped;
+// when a request arrived late it found the grant already installed, returned 200
+// without ever parking, and every assertion here still passed. That run proved
+// nothing about batching.
+func TestConcurrentOutOfScopeAssetsResumeTogetherOnAllow(t *testing.T) {
+	var prompts atomic.Int32
+	srv, shared, rels := setupBatchAssetTest(t, func(string, string, bool) (platform.ConfirmChoice, error) {
+		prompts.Add(1)
+		return platform.ConfirmAllowOnce, nil
+	})
+	holdBatchOpen(srv.broker)
+
+	results := fireAssets(srv, rels)
+	waitParked(t, srv.broker, len(rels))
+	go srv.broker.flush()
+
+	for range rels {
+		r := testutil.Receive(t, 10*time.Second, "a parked asset to resume", results)
+		if r.code != 200 {
+			t.Errorf("a resumed asset returned %d, want 200", r.code)
+		}
+		if r.hasToken {
+			t.Error("a granted asset must be served without a save token")
+		}
+	}
+	if got := prompts.Load(); got != 1 {
+		t.Errorf("a burst under one common dir must prompt exactly once, got %d", got)
+	}
+	// One prompt installs one root, at the batch's common dir and no broader.
+	root, _, ok := srv.sessions.AssetRoot(filepath.Join(shared, "a0.js"))
+	if !ok {
+		t.Fatal("the allow installed no read root")
+	}
+	if root != shared {
+		t.Errorf("installed root = %q, want the batch's common dir %q", root, shared)
+	}
+}
+
+// The same batch, refused: one prompt, and every parked request is answered 403
+// by that single Deny rather than raising its own dialog.
+func TestConcurrentOutOfScopeAssetsRefuseTogetherOnDeny(t *testing.T) {
+	var prompts atomic.Int32
+	srv, shared, rels := setupBatchAssetTest(t, func(string, string, bool) (platform.ConfirmChoice, error) {
+		prompts.Add(1)
+		return platform.ConfirmDeny, nil
+	})
+	holdBatchOpen(srv.broker)
+
+	results := fireAssets(srv, rels)
+	waitParked(t, srv.broker, len(rels))
+	go srv.broker.flush()
+
+	for range rels {
+		r := testutil.Receive(t, 10*time.Second, "a parked asset to be refused", results)
+		if r.code != 403 {
+			t.Errorf("a refused asset returned %d, want 403", r.code)
+		}
+	}
+	if got := prompts.Load(); got != 1 {
+		t.Errorf("a denied burst must prompt exactly once, got %d", got)
+	}
+	if _, _, ok := srv.sessions.AssetRoot(filepath.Join(shared, "a0.js")); ok {
+		t.Error("a deny must install no read root")
 	}
 }

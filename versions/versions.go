@@ -179,6 +179,18 @@ type Store struct {
 	index     map[string]history
 	loaded    bool
 	lastPrune map[string]time.Time
+	// now stamps a new version, and nothing else in this file: not the temp-name
+	// uniquifier, not the metadata timestamps, not the prune cutoffs. Same-instant
+	// versions take a collision suffix, which is a path no test can reach while the
+	// wall clock decides whether two backups share a millisecond.
+	now func() time.Time
+	// afterIdentityLookup runs between ResolveIdentity finding no resident history
+	// for a path and the claim that acts on that finding, with s.mu still held.
+	// Two concurrent first opens of one id only fork correctly because those two
+	// steps are one transaction, and no amount of racing real goroutines can
+	// demonstrate that: whichever finishes first makes the other's answer correct.
+	// Tests only; nil everywhere else.
+	afterIdentityLookup func()
 }
 
 // New returns a store rooted at baseDir, which is created lazily on first write.
@@ -190,6 +202,7 @@ func New(baseDir string) *Store {
 		baseDir:   filepath.Join(parent, leaf),
 		index:     make(map[string]history),
 		lastPrune: make(map[string]time.Time),
+		now:       time.Now,
 	}
 }
 
@@ -777,6 +790,10 @@ func (s *Store) ResolveIdentity(absPath, diskID string) (id string, provisional 
 		}
 	}
 
+	if s.afterIdentityLookup != nil {
+		s.afterIdentityLookup()
+	}
+
 	// Rule 2: a valid disk id runs the normal claim.
 	if IsCanonicalUUID(diskID) {
 		lowered := strings.ToLower(diskID)
@@ -933,7 +950,7 @@ func (s *Store) Backup(key, absPath string, content []byte) (bool, error) {
 		}
 	}
 
-	t := time.Now()
+	t := s.now()
 	seq := 0
 	if len(entries) > 0 {
 		newest := entries[len(entries)-1]

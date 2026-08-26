@@ -81,12 +81,24 @@ type broker struct {
 	home     string
 	label    string
 
-	waiters    []*parkWaiter
-	suppressed []string // roots the user denied; descendants deny without re-asking
-	timer      *time.Timer
-	batchAt    time.Time
-	prompting  bool
-	closed     bool
+	// debounce and maxBatch are the batch window. Fields rather than the
+	// constants directly so a test can hold a batch open until every waiter it
+	// means to group has actually parked, instead of racing the real timer.
+	debounce time.Duration
+	maxBatch time.Duration
+	// clock is realClock everywhere but in tests. Every wall-clock read and
+	// every timer in this file goes through it, so a test can step the debounce
+	// window and the park deadline instead of waiting them out.
+	clock clockSource
+
+	waiters []*parkWaiter
+	// queuedPrompts counts runPrompt callers currently blocked on promptDone.
+	queuedPrompts int
+	suppressed    []string // roots the user denied; descendants deny without re-asking
+	timer         clockTimer
+	batchAt       time.Time
+	prompting     bool
+	closed        bool
 	// promptDone wakes runPrompt callers waiting for the prompting flag to
 	// clear. Signaled wherever prompting is set false, and on shutdown.
 	promptDone *sync.Cond
@@ -98,6 +110,9 @@ func newBroker(sessions *session.Manager, logger *logging.Logger, confirm broker
 		logger:   logger,
 		confirm:  confirm,
 		home:     sessions.HomeDir(),
+		debounce: brokerDebounce,
+		maxBatch: brokerMaxBatch,
+		clock:    realClock{},
 	}
 	b.promptDone = sync.NewCond(&b.mu)
 	return b
@@ -111,8 +126,16 @@ func newBroker(sessions *session.Manager, logger *logging.Logger, confirm broker
 // returns false without running fn when the broker is shutting down.
 func (b *broker) runPrompt(fn func()) bool {
 	b.mu.Lock()
-	for b.prompting && !b.closed {
-		b.promptDone.Wait()
+	if b.prompting && !b.closed {
+		// Counted only on the path that actually waits, so the number means
+		// "callers parked behind a dialog right now" and nothing looser. A test
+		// staging this contention has no other way to know the second caller
+		// reached the wait rather than merely having been started.
+		b.queuedPrompts++
+		for b.prompting && !b.closed {
+			b.promptDone.Wait()
+		}
+		b.queuedPrompts--
 	}
 	if b.closed {
 		b.mu.Unlock()
@@ -156,6 +179,10 @@ func (b *broker) await(ctx context.Context, candidate string) bool {
 	w := &parkWaiter{path: candidate, dir: filepath.Dir(candidate), ch: make(chan bool, 1)}
 	b.waiters = append(b.waiters, w)
 	b.armLocked()
+	// Started here rather than in the select below so that parking and arming the
+	// deadline are one step under the lock. The deadline is a claim about how long
+	// this waiter has been parked, so it should begin when it parks.
+	parkMax := b.clock.After(brokerParkMax)
 	b.mu.Unlock()
 
 	select {
@@ -164,7 +191,7 @@ func (b *broker) await(ctx context.Context, candidate string) bool {
 	case <-ctx.Done():
 		b.removeWaiter(w)
 		return false
-	case <-time.After(brokerParkMax):
+	case <-parkMax:
 		b.removeWaiter(w)
 		return false
 	}
@@ -177,12 +204,16 @@ func (b *broker) armLocked() {
 		return
 	}
 	if b.timer == nil {
-		b.batchAt = time.Now()
-		b.timer = time.AfterFunc(brokerDebounce, b.flush)
+		b.batchAt = b.clock.Now()
+		b.timer = b.clock.AfterFunc(b.debounce, b.flush)
 		return
 	}
-	if time.Since(b.batchAt) < brokerMaxBatch {
-		b.timer.Reset(brokerDebounce)
+	// Extending only while the batch is younger than maxBatch caps how long the
+	// first waiter is held, but the cap is on when the last extension may start,
+	// not on when the flush lands: a reset granted just under maxBatch still runs
+	// a full debounce after it, so the true bound is close to maxBatch+debounce.
+	if b.clock.Now().Sub(b.batchAt) < b.maxBatch {
+		b.timer.Reset(b.debounce)
 	}
 }
 
@@ -190,8 +221,8 @@ func (b *broker) rearmLocked() {
 	if b.closed || b.prompting || b.timer != nil || len(b.waiters) == 0 {
 		return
 	}
-	b.batchAt = time.Now()
-	b.timer = time.AfterFunc(brokerDebounce, b.flush)
+	b.batchAt = b.clock.Now()
+	b.timer = b.clock.AfterFunc(b.debounce, b.flush)
 }
 
 // flush prompts once for the oldest waiter's tree. Runs on the timer goroutine.

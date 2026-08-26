@@ -9,8 +9,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/panphora/htmlclay/htmlutil"
+	"github.com/panphora/htmlclay/internal/testutil"
 )
 
 // datasecurity_test.go covers what the data faces must NOT do. Every case here is a property of the
@@ -310,15 +312,105 @@ func TestDataOutOfScopeIsTheInheritedDenial(t *testing.T) {
 	}
 }
 
-// Saves hold f.Lock() across read, backup, atomic replace and state update, and a data request takes
-// the same mutex before reading. So every response must be a WHOLE pre-save or post-save document,
-// never a mixture, and no save may fail because reads are in flight.
+// A save holds f.Lock() across read, backup, atomic replace and state update, and
+// a data request takes the same mutex before reading, so no data response can be
+// assembled from inside a save.
 //
-// The tear detector is that each document's title and paragraph carry the SAME marker, so any
-// response pairing one document's title with another's is a mixture. The seed write matters: the
-// harness fixture has a title and paragraph that differ, which the detector would read as 320 torn
-// responses before a single save had landed.
-func TestDataReadsDuringConcurrentSaves(t *testing.T) {
+// serveRegistered's own comment records that the rename, not this mutex, is what
+// makes a response a whole pre-save or post-save document, and that the lock is
+// kept as the guarantee that would survive a write path that stopped being a
+// rename. TestAtomicWriteFilePublishesOnlyByRename pins the rename. This pins the
+// lock, by holding a save at its rename and showing a read cannot get past it.
+func TestDataReadCannotLandInsideASave(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	page := func(marker string) string {
+		return `<!DOCTYPE html><html htmlclaytoken="` + f.Token +
+			`"><head><title>` + marker + `</title></head><body><p>` + marker + `</p></body></html>`
+	}
+	if err := os.WriteFile(f.AbsPath, []byte(page("AAA")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	staged := make(chan struct{})
+	release := make(chan struct{})
+	// Once, because a second concurrent entry would close a closed channel and take
+	// the whole package down rather than fail this test.
+	var stagedOnce sync.Once
+	beforeAtomicReplace = func() {
+		stagedOnce.Do(func() { close(staged) })
+		<-release
+	}
+	t.Cleanup(func() { beforeAtomicReplace = nil })
+
+	saved := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(page("BBB")))
+		req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+		req.SetPathValue("token", f.Token)
+		w := httptest.NewRecorder()
+		srv.handleSave(w, req)
+		saved <- w.Code
+	}()
+
+	testutil.Receive(t, 10*time.Second, "the save to reach its rename", staged)
+	if f.TryLock() {
+		f.Unlock()
+		t.Fatal("a save must hold the file lock across its rename, or a reader can land between the rename and the state update")
+	}
+
+	read := make(chan string, 1)
+	dispatched := make(chan struct{})
+	go func() {
+		close(dispatched)
+		w := get(t, srv, `/test.htmlclay?data={t:"title",p:"p"}`, "test.htmlclay")
+		read <- w.Body.String()
+	}()
+	// Wait for the reader to be running before opening the window below. Without
+	// this the window can expire while the goroutine has not been scheduled at all,
+	// and a build whose read takes no lock would look indistinguishable from one
+	// that blocked. The residual is the few instructions between this signal and
+	// the lock acquisition inside the handler.
+	testutil.Receive(t, 10*time.Second, "the reader goroutine to start", dispatched)
+
+	// Expiry is success here, and a longer wait can only make the assertion harder
+	// to satisfy: a read must not be able to complete while a save holds the lock.
+	select {
+	case got := <-read:
+		t.Fatalf("a data read completed inside a save's critical section, returning %s", got)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	close(release)
+	if code := testutil.Receive(t, 10*time.Second, "the save to finish", saved); code != 200 {
+		t.Fatalf("save: %d", code)
+	}
+
+	body := testutil.Receive(t, 10*time.Second, "the queued read to finish", read)
+	var got struct{ T, P string }
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("read after the save returned %s: %v", body, err)
+	}
+	// One marker on both the title and the paragraph, so a response pairing one
+	// document's title with another's shows up as a mismatch here.
+	if got.T != got.P {
+		t.Fatalf("the read saw a mixture: title %q, paragraph %q", got.T, got.P)
+	}
+	if got.T != "BBB" {
+		t.Fatalf("the read was queued behind the save, so it must see the saved document, got %q", got.T)
+	}
+}
+
+// The same paths under the race detector, with many readers against a continuous
+// writer. What it proves is no data race and no failed request across the real
+// save and read stacks; the tear property is pinned deterministically by
+// TestDataReadCannotLandInsideASave above.
+//
+// It does NOT prove any read met an active save: a legal schedule runs the saves
+// and the reads without overlapping, and the counts below cannot tell that apart.
+// They are here so the test cannot pass having read nothing, which is a weaker
+// claim than a staged interleaving and is deliberately all this one makes.
+func TestDataReadsDuringConcurrentSavesStress(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	page := func(marker string) string {
@@ -339,14 +431,16 @@ func TestDataReadsDuringConcurrentSaves(t *testing.T) {
 	}
 
 	var mu sync.Mutex
-	var torn, failed, saveFailures int
+	var torn, failed, saveFailures, reads, saves int
 	note := func(p *int) { mu.Lock(); *p++; mu.Unlock() }
 
+	start := make(chan struct{})
 	stop := make(chan struct{})
 	var writer sync.WaitGroup
 	writer.Add(1)
 	go func() {
 		defer writer.Done()
+		<-start
 		markers := []string{"AAA", "BBB"}
 		for i := 0; ; i++ {
 			select {
@@ -358,15 +452,18 @@ func TestDataReadsDuringConcurrentSaves(t *testing.T) {
 				note(&saveFailures)
 				return
 			}
+			note(&saves)
 		}
 	}()
 
-	var readers sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		readers.Add(1)
+	const readerCount, each = 8, 40
+	var readersWG sync.WaitGroup
+	for i := 0; i < readerCount; i++ {
+		readersWG.Add(1)
 		go func() {
-			defer readers.Done()
-			for j := 0; j < 40; j++ {
+			defer readersWG.Done()
+			<-start
+			for j := 0; j < each; j++ {
 				w := get(t, srv, `/test.htmlclay?data={t:"title",p:"p"}`, "test.htmlclay")
 				if w.Code != 200 {
 					note(&failed)
@@ -377,6 +474,7 @@ func TestDataReadsDuringConcurrentSaves(t *testing.T) {
 					note(&failed)
 					continue
 				}
+				note(&reads)
 				if got.T != got.P {
 					note(&torn)
 				}
@@ -384,12 +482,23 @@ func TestDataReadsDuringConcurrentSaves(t *testing.T) {
 		}()
 	}
 
-	readers.Wait()
+	// A start barrier, so the readers and the writer run against each other rather
+	// than trickling out behind however long the spawn loop took.
+	close(start)
+	readersWG.Wait()
 	close(stop)
 	writer.Wait()
 
 	if torn != 0 || failed != 0 || saveFailures != 0 {
 		t.Errorf("torn=%d failed=%d saveFailures=%d; every data read must see a whole document",
 			torn, failed, saveFailures)
+	}
+	// Without these the test passes just as happily having read nothing and saved
+	// nothing, which is what an all-green stress test with no counts is worth.
+	if reads != readerCount*each {
+		t.Errorf("%d reads completed, want %d", reads, readerCount*each)
+	}
+	if saves == 0 {
+		t.Error("the writer never completed a save, so nothing overlapped a read")
 	}
 }

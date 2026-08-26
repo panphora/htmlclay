@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,16 +74,22 @@ func TestConcurrentWrites(t *testing.T) {
 	}
 	defer l.Close()
 
+	const goroutines, perGoroutine = 100, 100
+	// A start barrier, so the writers genuinely overlap rather than being spread
+	// out by however long it takes to spawn a hundred goroutines.
+	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := 0; i < goroutines; i++ {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			<-start
+			for j := 0; j < perGoroutine; j++ {
 				l.Printf("goroutine %d line %d", n, j)
 			}
 		}(i)
 	}
+	close(start)
 	wg.Wait()
 
 	data, err := os.ReadFile(path)
@@ -90,11 +97,31 @@ func TestConcurrentWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Every line must arrive, not just every line that arrived must be intact.
+	// Checking only the surviving lines lets a lock that drops writes pass: the
+	// remainder are all well-formed, so nothing complains. 10,000 lines is well
+	// under the 10MB rotation threshold, so they are all in this one file.
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != goroutines*perGoroutine {
+		t.Fatalf("log holds %d lines, want %d: writes were lost", len(lines), goroutines*perGoroutine)
+	}
+	seen := make(map[string]bool, goroutines*perGoroutine)
 	for _, line := range lines {
-		if !strings.Contains(line, "goroutine") {
-			t.Errorf("corrupted line: %q", line)
-			break
+		i := strings.Index(line, "goroutine ")
+		if i < 0 {
+			t.Fatalf("corrupted line: %q", line)
+		}
+		if !seen[line[i:]] {
+			seen[line[i:]] = true
+			continue
+		}
+		t.Fatalf("duplicated line: %q", line)
+	}
+	for n := 0; n < goroutines; n++ {
+		for j := 0; j < perGoroutine; j++ {
+			if want := fmt.Sprintf("goroutine %d line %d", n, j); !seen[want] {
+				t.Fatalf("missing %q", want)
+			}
 		}
 	}
 }

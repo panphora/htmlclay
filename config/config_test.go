@@ -236,16 +236,48 @@ func TestMissingTrustedFolderSurvivesLoad(t *testing.T) {
 // Before the mutex, a SitePorts write concurrent with Save's marshal panicked with
 // "concurrent map iteration and map write", and a TrustedFolders append tore under
 // marshal. Run under -race; it must be clean and must not panic.
+//
+// The counts and the reload at the end are what stop this passing while proving
+// nothing. Without them a build whose mutators all returned early, or whose Save
+// wrote nothing, would look exactly as green as a correct one.
 func TestConcurrentMutatorsAndSaveAreRaceFree(t *testing.T) {
 	baseDir := t.TempDir()
-	cfg, _, _ := LoadFrom(baseDir, noIdentity)
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A folder only the identity goroutine ever touches, so its final identity is
+	// deterministic. Every other trusted folder is added and removed concurrently,
+	// and a re-add installs an identity of its own, which would mask a
+	// SetTrustedIdentity that did nothing at all.
+	const pinned = "/trusted/pinned"
+	if !cfg.AddTrustedFolder(pinned, "initial") {
+		t.Fatal("the pinned folder was already present")
+	}
 
 	const iters = 300
+	var mu sync.Mutex
+	var saves, saveErrs int
+	noteSave := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			saveErrs++
+			return
+		}
+		saves++
+	}
+
+	// A start barrier, so the four goroutines contend from the same instant
+	// instead of trickling out behind however long the spawn loop took.
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	run := func(f func(i int)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start
 			for i := 0; i < iters; i++ {
 				f(i)
 			}
@@ -254,28 +286,98 @@ func TestConcurrentMutatorsAndSaveAreRaceFree(t *testing.T) {
 
 	run(func(i int) {
 		cfg.RememberSitePort(fmt.Sprintf("/root/%d", i%8), i)
-		_ = cfg.Save()
+		noteSave(cfg.Save())
 	})
 	run(func(i int) {
 		d := fmt.Sprintf("/trusted/%d", i%8)
 		if !cfg.AddTrustedFolder(d, fmt.Sprintf("id:%d", i)) {
 			cfg.RemoveTrustedFolder(d)
 		}
-		_ = cfg.Save()
+		noteSave(cfg.Save())
 	})
 	run(func(i int) {
-		cfg.SetStartOnLogin(i%2 == 0)
-		cfg.SetTrustedIdentity(fmt.Sprintf("/trusted/%d", i%8), fmt.Sprintf("re:%d", i))
-		_ = cfg.Save()
+		// i%2 == 1, so the last iteration leaves it TRUE. With the sense flipped the
+		// final value is false, which is also the default, and a setter that did
+		// nothing would be indistinguishable from one that worked.
+		cfg.SetStartOnLogin(i%2 == 1)
+		cfg.SetTrustedIdentity(pinned, fmt.Sprintf("re:%d", i))
+		noteSave(cfg.Save())
 	})
+	reads := 0
 	run(func(i int) {
 		_ = cfg.StartOnLoginEnabled()
 		_ = cfg.SitePort("/root/1")
 		_ = cfg.SitePortList()
 		_ = cfg.TrustedFolderList()
+		mu.Lock()
+		reads++
+		mu.Unlock()
 	})
 
+	close(start)
 	wg.Wait()
+
+	if saveErrs != 0 {
+		t.Errorf("%d of %d saves failed", saveErrs, saves+saveErrs)
+	}
+	if want := 3 * iters; saves != want {
+		t.Errorf("%d saves completed, want %d", saves, want)
+	}
+	if reads != iters {
+		t.Errorf("%d read passes completed, want %d", reads, iters)
+	}
+
+	// Every one of those saves marshalled a map another goroutine was writing. If
+	// any of them had torn, the file on disk would not parse back, and the eight
+	// ports and eight trusted folders the mutators settled on would not survive.
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatalf("the config written under concurrent mutation does not load back: %v", err)
+	}
+	// Compared against the concrete expected state, not against the in-memory
+	// config. Comparing the two would let a mutator that did nothing pass, because
+	// both sides would then be equally empty.
+	ports := reloaded.SitePortList()
+	for k := 0; k < 8; k++ {
+		dir := fmt.Sprintf("/root/%d", k)
+		// The port goroutine runs its loop sequentially, so the surviving value is
+		// the last i below iters with i%8 == k.
+		want := iters - 1
+		for want%8 != k {
+			want--
+		}
+		got, ok := ports[dir]
+		if !ok {
+			t.Errorf("%s is missing from the reloaded ports", dir)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s reloaded as port %d, want %d", dir, got, want)
+		}
+	}
+	if len(ports) != 8 {
+		t.Errorf("reloaded %d site ports, want exactly 8", len(ports))
+	}
+
+	var pinnedIdentity string
+	var found bool
+	for _, tf := range reloaded.TrustedFolderList() {
+		if tf.Path == pinned {
+			pinnedIdentity, found = tf.Identity, true
+		}
+	}
+	if !found {
+		t.Fatalf("%s did not survive the round trip", pinned)
+	}
+	if want := fmt.Sprintf("re:%d", iters-1); pinnedIdentity != want {
+		t.Errorf("%s reloaded with identity %q, want %q", pinned, pinnedIdentity, want)
+	}
+	if !reloaded.StartOnLoginEnabled() {
+		t.Error("start-on-login reloaded false, but the last write set it true")
+	}
 }
 
 // Trusted folders round-trip with their identity fingerprints, and dead entries

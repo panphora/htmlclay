@@ -16,19 +16,26 @@ import (
 )
 
 type Server struct {
-	httpServer   *http.Server
-	listener     net.Listener
-	sessions     *session.Manager
-	port         int
-	logger       *logging.Logger
-	versions     *versions.Store
-	internalDir  string
-	broker       *broker
-	ls           *LiveSync
-	ownsLiveSync bool
-	hub          *hub
-	watcher      *watcher
-	coord        *streamCoordinator
+	httpServer  *http.Server
+	listener    net.Listener
+	sessions    *session.Manager
+	port        int
+	logger      *logging.Logger
+	versions    *versions.Store
+	internalDir string
+	broker      *broker
+	// beforeAssetCapabilityOpen runs between an asset path being resolved and the
+	// capability open that acts on it. Tests only; nil everywhere else.
+	beforeAssetCapabilityOpen func()
+	// beforeFirstOpenSnapshot runs at the instant the first-open snapshot is about
+	// to be published, so a test can observe the state the publish happens in.
+	// Tests only; nil everywhere else.
+	beforeFirstOpenSnapshot func()
+	ls                      *LiveSync
+	ownsLiveSync            bool
+	hub                     *hub
+	watcher                 *watcher
+	coord                   *streamCoordinator
 	// wire is per-server, unlike the shared live-sync runtime above: a site is
 	// the lifetime boundary for an instruction channel, so untrusting a folder
 	// (which closes the site) cannot leave a live wire into it.

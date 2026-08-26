@@ -86,6 +86,12 @@ type File struct {
 func (f *File) Lock()   { f.writeMu.Lock() }
 func (f *File) Unlock() { f.writeMu.Unlock() }
 
+// TryLock takes the file lock if it is free and reports whether it did. It exists
+// for tests that assert a critical section really is critical: a probe inside the
+// section learns from a false that no save can interleave there. Production takes
+// the lock outright, and nothing outside a test should call this.
+func (f *File) TryLock() bool { return f.writeMu.TryLock() }
+
 // LastServerWrite returns the hash of the bytes this server last wrote.
 // Caller must hold Lock().
 func (f *File) LastServerWrite() string { return f.lastServerWrite }

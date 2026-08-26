@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,18 +25,24 @@ type watchHarness struct {
 // These tests deliberately run the watcher at a 10ms poll, and Windows refuses to
 // delete a file another handle has open. The watcher's read lasts microseconds, so
 // retrying clears it. Unix deletes on the first try and never sleeps.
+//
+// The deadline is a hang guard rather than part of what any caller asserts, so it
+// is generous on purpose: a loaded runner that holds the handle for a while costs
+// nothing here, and a fixed short retry budget turns that delay into a failure
+// about Windows file sharing rather than about the watcher.
 func removeWatched(t *testing.T, path string) {
 	t.Helper()
-	var err error
-	for _, backoff := range []time.Duration{0, 5, 15, 40, 100} {
-		if backoff > 0 {
-			time.Sleep(backoff * time.Millisecond)
-		}
-		if err = os.Remove(path); err == nil {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := os.Remove(path)
+		if err == nil {
 			return
 		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal(err)
 }
 
 func setupWatchTest(t *testing.T, initial string) *watchHarness {
@@ -214,31 +221,63 @@ func TestWatcherAtomicReplacementWithSameContentIsSilent(t *testing.T) {
 // A file still being written keeps restarting the quiet interval, so nothing is
 // published while it keeps changing.
 //
+// The polls are driven by hand and the interval is aged by hand, because the
+// wall clock cannot state this property. Racing a writing goroutine against a
+// running ticker asserts only "no gap between two writes outlasted the quiet
+// interval", which is the scheduler's decision rather than the watcher's: a
+// writer descheduled between os.WriteFile's truncate and its write leaves a
+// zero-byte file sitting still, and the watcher then correctly publishes it.
+// That failure says nothing about the code under test.
+//
 // Deliberately NOT asserted here: that a truncated mid-write file is never
 // broadcast. No finite quiet interval can prove a paused non-atomic writer has
 // finished, and HasHTMLTag accepts `<html><body>partial`. The promise is
-// best-effort stability with a documented paused-writer residual.
+// best-effort stability with a documented paused-writer residual. Its zero-byte
+// case is covered, by TestWatcherDoesNotPublishATruncateAtTheNormalInterval.
 func TestWatcherWaitsWhileContentKeepsChanging(t *testing.T) {
-	initial := "<!DOCTYPE html>\n<html><body>one</body></html>"
-	h := setupWatchTest(t, initial)
+	srv, f := setupLiveSyncTest(t)
+	wt := srv.watcher
+	// An interval no elapsed time in this test can cross, so the only thing that
+	// can move the candidate past it is the aging below.
+	wt.quiet = time.Hour
 
-	h.file.Lock()
-	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
-	h.file.Unlock()
+	live := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(live)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; i < 25; i++ {
-			os.WriteFile(h.file.AbsPath, []byte("<html><body>chunk"+string(rune('a'+i))+"</body></html>"), 0644)
-			time.Sleep(15 * time.Millisecond)
+	original, err := os.ReadFile(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Lock()
+	f.RecordServerWrite(versions.Hash(original))
+	f.Unlock()
+
+	// Nothing has called watch, so no poll loop exists and every check below is
+	// one deliberate poll.
+	e := &watchEntry{file: f, refs: 1}
+
+	for i := 0; i < 5; i++ {
+		chunk := fmt.Sprintf("<!DOCTYPE html>\n<html><body>chunk %d</body></html>", i)
+		if err := os.WriteFile(f.AbsPath, []byte(chunk), 0644); err != nil {
+			t.Fatal(err)
 		}
-	}()
+		// The candidate left by the previous pass has been held past a whole
+		// interval by the aging at the end of the loop. New bytes must restart it
+		// anyway: a watcher that replaced the hash without resetting the clock
+		// publishes on the very next look.
+		wt.check(e)
+		wt.check(e)
+		e.pendingAt = e.pendingAt.Add(-2 * wt.quiet)
+	}
+	expectNoFrame(t, live, 50*time.Millisecond)
 
-	expectNoFrame(t, h.live, 300*time.Millisecond)
-	<-done
 	// Once it stops moving, the settled content is published exactly once.
-	waitFrame(t, h.live, 2*time.Second)
+	wt.check(e)
+	if notice := waitFrame(t, live, 2*time.Second); notice["type"] != "notification" {
+		t.Fatalf("live lane got %v, want a notification", notice)
+	}
+	wt.check(e)
+	expectNoFrame(t, live, 50*time.Millisecond)
 }
 
 // The watcher polls currently-subscribed files only: it starts on the first
@@ -295,42 +334,64 @@ func watchedPath(wt *watcher, path string) bool {
 // subscribed, and recording the hash there would hide the change: the retained
 // frame ages out, and every later poll sees content the watcher believes it has
 // already reported.
+// The polls are driven by hand because the first half asserts an absence, and an
+// absence is only evidence once the thing that would have caused it has actually
+// happened. Sleeping 300ms and finding the record unadvanced proves nothing if
+// the publish had not run yet, and the second half then produces the expected
+// frame either way: the whole test passed with the record-on-empty-delivery bug
+// present.
 func TestExternalChangeWithNoAudienceIsNotRecorded(t *testing.T) {
-	h := newWatchHarness(t, "<!DOCTYPE html>\n<html><body>one</body></html>", false)
+	srv, f := setupLiveSyncTest(t)
+	wt := srv.watcher
+	wt.quiet = time.Hour
 
-	h.file.Lock()
-	data, _ := os.ReadFile(h.file.AbsPath)
-	h.file.RecordServerWrite(versions.Hash(data))
-	h.file.Unlock()
+	original, err := os.ReadFile(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Lock()
+	f.RecordServerWrite(versions.Hash(original))
+	f.Unlock()
 
 	changed := "<!DOCTYPE html>\n<html><body>the agent wrote this</body></html>"
-	if err := os.WriteFile(h.file.AbsPath, []byte(changed), 0644); err != nil {
+	if err := os.WriteFile(f.AbsPath, []byte(changed), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Well past the 40ms quiet interval and many 10ms polls.
-	time.Sleep(300 * time.Millisecond)
+	// Nobody is subscribed, which is the shape a wire handler's watch lease
+	// produces: a watched file with no tab open.
+	e := &watchEntry{file: f, refs: 1}
+	wt.check(e)
+	e.pendingAt = e.pendingAt.Add(-2 * wt.quiet)
+	wt.check(e) // this poll publishes, into an empty hub
 
-	h.file.Lock()
-	stable := h.file.LastStableObservation()
-	h.file.Unlock()
+	f.Lock()
+	stable := f.LastStableObservation()
+	f.Unlock()
 	if stable == versions.Hash([]byte(changed)) {
 		t.Fatal("suppression advanced for a change nobody received")
 	}
 
 	// A tab arriving afterwards rearms the read, so it learns about the change
-	// instead of inheriting a file the watcher has quietly written off.
-	live := newSubscriber(h.file.AbsPath, laneLive)
-	h.srv.hub.add(live)
-	h.srv.watcher.watch(h.file)
+	// instead of inheriting a file the watcher has quietly written off. watch is
+	// what sets rearm in production; that it does so is TestWatcherLifecycleFollowsSubscribers'
+	// job, and starting a poll loop here would put the ticker back in charge of
+	// how many reads happen.
+	live := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(live)
+	e.rearm = true
+
+	wt.check(e)
+	e.pendingAt = e.pendingAt.Add(-2 * wt.quiet)
+	wt.check(e)
 
 	notice := waitFrame(t, live, 2*time.Second)
 	if notice["type"] != "notification" {
 		t.Fatalf("late subscriber got %v, want a notification", notice)
 	}
-	h.file.Lock()
-	stable = h.file.LastStableObservation()
-	h.file.Unlock()
+	f.Lock()
+	stable = f.LastStableObservation()
+	f.Unlock()
 	if stable != versions.Hash([]byte(changed)) {
 		t.Fatal("delivery to a real subscriber did not advance suppression")
 	}
@@ -380,6 +441,17 @@ func TestWatcherReadGateSkipsAnIdenticalFingerprint(t *testing.T) {
 	}
 	if err := os.Chtimes(f.AbsPath, before.ModTime(), before.ModTime()); err != nil {
 		t.Fatal(err)
+	}
+	// The gate compares a fingerprint, so the case only exists if the filesystem
+	// actually reproduced one. Without this check, a filesystem that rounds the
+	// timestamp makes the watcher correctly notice a changed fingerprint and the
+	// test fails for having failed to stage itself.
+	after, err := os.Stat(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.Skip("the filesystem did not preserve size and mtime, so the case cannot be staged")
 	}
 
 	wt.check(e)
@@ -431,6 +503,144 @@ func TestWatcherVersionsAnExternalChange(t *testing.T) {
 	}
 	if string(newest) != changed {
 		t.Fatalf("newest version is %q, want the external bytes", newest)
+	}
+}
+
+// setupEmptyFileTest gives a hand-driven watcher a file with a resolved history
+// key, so the versioning half of an empty-file assertion is real rather than
+// skipped for want of a key. quiet and emptyQuiet are hours apart, so a test can
+// age a candidate past one without reaching the other.
+func setupEmptyFileTest(t *testing.T) (*Server, *session.File, *subscriber, *subscriber, string) {
+	t.Helper()
+	srv, f := setupLiveSyncTest(t)
+	srv.watcher.quiet = time.Hour
+	srv.watcher.emptyQuiet = 5 * time.Hour
+
+	live := newSubscriber(f.AbsPath, laneLive)
+	saved := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(live)
+	srv.hub.add(saved)
+
+	original, err := os.ReadFile(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Lock()
+	key, _ := srv.ensureHistoryKeyLocked(f, original)
+	f.RecordServerWrite(versions.Hash(original))
+	f.Unlock()
+	if key == "" {
+		t.Fatal("no history key was resolved, so this would not test versioning")
+	}
+	return srv, f, live, saved, key
+}
+
+// A writer paused between its truncate and its write leaves an empty file holding
+// perfectly still, and at the normal interval that is indistinguishable from
+// settled content. Publishing it blanks the reader's tab. The empty candidate must
+// therefore survive the NORMAL interval without being published, and the writer's
+// real bytes must then publish on their own.
+func TestWatcherDoesNotPublishATruncateAtTheNormalInterval(t *testing.T) {
+	srv, f, live, saved, key := setupEmptyFileTest(t)
+	wt := srv.watcher
+	original, err := os.ReadFile(f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The writer has truncated and not yet written.
+	if err := os.WriteFile(f.AbsPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	e := &watchEntry{file: f, refs: 1}
+	wt.check(e)
+	// Past the normal interval, nowhere near the empty one.
+	e.pendingAt = e.pendingAt.Add(-2 * wt.quiet)
+	wt.check(e)
+
+	expectNoFrame(t, live, 50*time.Millisecond)
+	expectNoFrame(t, saved, 50*time.Millisecond)
+	entries, err := srv.versions.List(key, f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a truncate was versioned: %d entry/entries", len(entries))
+	}
+	f.Lock()
+	stable := f.LastStableObservation()
+	f.Unlock()
+	if stable != versions.Hash(original) {
+		t.Fatal("an unpublished empty read advanced the suppression record")
+	}
+
+	// The writer finishes. Nothing about the held candidate holds this back.
+	changed := "<!DOCTYPE html>\n<html><body>the write landed</body></html>"
+	if err := os.WriteFile(f.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	wt.check(e)
+	e.pendingAt = e.pendingAt.Add(-2 * wt.quiet)
+	wt.check(e)
+
+	if notice := waitFrame(t, live, 2*time.Second); notice["type"] != "notification" {
+		t.Fatalf("live lane got %v, want a notification", notice)
+	}
+	if content := waitFrame(t, saved, 2*time.Second); content["html"] != changed {
+		t.Fatalf("saved lane html = %v", content["html"])
+	}
+	entries, err = srv.versions.List(key, f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("want exactly the one real version, got %d", len(entries))
+	}
+	newest, err := srv.versions.Read(key, f.AbsPath, entries[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(newest) != changed {
+		t.Fatalf("newest version is %q, want the external bytes", newest)
+	}
+}
+
+// The other half, and the reason the truncate guard is an interval rather than a
+// refusal: a file that is GENUINELY emptied stays empty, so once it has held still
+// past the longer interval it publishes and versions like any other change. A flat
+// refusal loses this case permanently, because publishConfirmed clears the pending
+// candidate and the stat gate then skips an unchanging file on every later poll.
+func TestWatcherPublishesAGenuinelyEmptyFileAfterTheLongerInterval(t *testing.T) {
+	srv, f, live, saved, key := setupEmptyFileTest(t)
+	wt := srv.watcher
+
+	if err := os.WriteFile(f.AbsPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	e := &watchEntry{file: f, refs: 1}
+	wt.check(e)
+	// Past the empty interval this time, which is the only difference.
+	e.pendingAt = e.pendingAt.Add(-2 * wt.emptyQuiet)
+	wt.check(e)
+
+	if notice := waitFrame(t, live, 2*time.Second); notice["type"] != "notification" {
+		t.Fatalf("live lane got %v, want a notification", notice)
+	}
+	if content := waitFrame(t, saved, 2*time.Second); content["html"] != "" {
+		t.Fatalf("saved lane html = %v, want the empty document", content["html"])
+	}
+	entries, err := srv.versions.List(key, f.AbsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("a genuinely empty file must still be versioned, got %d entries", len(entries))
+	}
+	f.Lock()
+	stable := f.LastStableObservation()
+	f.Unlock()
+	if stable != versions.Hash(nil) {
+		t.Fatal("publishing the empty file did not advance the suppression record, so it will resurface as foreign")
 	}
 }
 
@@ -530,30 +740,47 @@ func TestWatcherPokeForAnUnwatchedFileIsHarmless(t *testing.T) {
 // A poke arriving before the write is first seen still takes a confirming read.
 // Publishing on a single read is what the quiet interval exists to prevent, and
 // the poke shortens that interval rather than replacing it.
+//
+// The polls are driven by hand because the assertion is about their NUMBER, and
+// with a ticker running that is the scheduler's to decide: the loop starts when
+// the harness calls watch, not when the negative assertion does, so a late test
+// goroutine can put the confirming poll inside the window that exists to exclude
+// it.
 func TestWatcherPokeStillTakesAConfirmingRead(t *testing.T) {
-	initial := "<!DOCTYPE html>\n<html><body>one</body></html>"
-	h := newWatchHarness(t, initial, true, func(wt *watcher) {
-		// Slow polls and an interval nothing here can wait out: the only route to
-		// a publish is the poke, and the polls are far enough apart to count.
-		wt.poll = 500 * time.Millisecond
-		wt.quiet = 10 * time.Second
-	})
+	srv, f := setupLiveSyncTest(t)
+	wt := srv.watcher
+	// An interval nothing here can wait out: the only route to a publish is the poke.
+	wt.quiet = 10 * time.Second
 
-	h.file.Lock()
-	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
-	h.file.Unlock()
+	live := newSubscriber(f.AbsPath, laneLive)
+	saved := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(live)
+	srv.hub.add(saved)
 
-	changed := "<!DOCTYPE html>\n<html><body>the agent wrote this</body></html>"
-	if err := os.WriteFile(h.file.AbsPath, []byte(changed), 0644); err != nil {
+	original, err := os.ReadFile(f.AbsPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	h.srv.watcher.poke(h.file.AbsPath)
+	f.Lock()
+	f.RecordServerWrite(versions.Hash(original))
+	f.Unlock()
+
+	changed := "<!DOCTYPE html>\n<html><body>the agent wrote this</body></html>"
+	if err := os.WriteFile(f.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := &watchEntry{file: f, refs: 1, poke: true}
 
 	// The first poll is this candidate's first and only look at the file.
-	expectNoFrame(t, h.live, 600*time.Millisecond)
+	wt.check(e)
+	expectNoFrame(t, live, 50*time.Millisecond)
 
-	// The second poll finds the same bytes and publishes.
-	content := waitFrame(t, h.saved, 3*time.Second)
+	// The poke leaves half a poll on the clock; the confirming poll arrives one
+	// whole poll later, which is what the running loop would have done.
+	e.pendingAt = e.pendingAt.Add(-wt.poll)
+	wt.check(e)
+	content := waitFrame(t, saved, 2*time.Second)
 	if content["html"] != changed {
 		t.Fatalf("saved lane html = %v", content["html"])
 	}
@@ -562,21 +789,43 @@ func TestWatcherPokeStillTakesAConfirmingRead(t *testing.T) {
 // A poke that finds nothing to publish is spent all the same. Retaining it until
 // something arrived would let a terminal frame shorten the quiet interval of a
 // write it has nothing to do with.
+//
+// Driven by hand so that "the poke has been consumed" is a fact the test can
+// check rather than a duration it has to guess: a sleep long enough for a poll
+// on an idle machine is not long enough on a loaded one, and a poke that
+// outlived the sleep would shorten the later write's interval instead.
 func TestWatcherPokeWithNoChangeIsStillSpent(t *testing.T) {
-	initial := "<!DOCTYPE html>\n<html><body>one</body></html>"
-	h := newWatchHarness(t, initial, true, func(wt *watcher) {
-		wt.quiet = 30 * time.Second
-	})
+	srv, f := setupLiveSyncTest(t)
+	wt := srv.watcher
+	wt.quiet = 30 * time.Second
 
-	h.file.Lock()
-	h.file.RecordServerWrite(versions.Hash([]byte(initial)))
-	h.file.Unlock()
+	live := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(live)
 
-	h.srv.watcher.poke(h.file.AbsPath)
-	expectNoFrame(t, h.live, 200*time.Millisecond) // several polls, nothing to publish
-
-	if err := os.WriteFile(h.file.AbsPath, []byte("<html><body>a later, unrelated write</body></html>"), 0644); err != nil {
+	original, err := os.ReadFile(f.AbsPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	expectNoFrame(t, h.live, 400*time.Millisecond)
+	f.Lock()
+	f.RecordServerWrite(versions.Hash(original))
+	f.Unlock()
+
+	e := &watchEntry{file: f, refs: 1, poke: true}
+
+	// The poke finds the file exactly as the server last wrote it: nothing to
+	// publish, and spent anyway.
+	wt.check(e)
+	expectNoFrame(t, live, 50*time.Millisecond)
+	if e.poke {
+		t.Fatal("a poke that found nothing to publish must still be spent")
+	}
+
+	// A later, unrelated write gets a whole quiet interval, not the leftovers of
+	// a poke it has nothing to do with.
+	if err := os.WriteFile(f.AbsPath, []byte("<html><body>a later, unrelated write</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	wt.check(e)
+	wt.check(e)
+	expectNoFrame(t, live, 50*time.Millisecond)
 }

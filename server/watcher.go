@@ -18,12 +18,23 @@ const (
 	// watchQuiet is how long a candidate must hold still before it is published.
 	// Any content change restarts the interval.
 	watchQuiet = 500 * time.Millisecond
+	// watchEmptyQuiet is the interval an EMPTY candidate must hold still for. It is
+	// much longer than watchQuiet because zero bytes are more often an artifact than
+	// a change: os.WriteFile truncates, then writes, and a writer descheduled
+	// between the two leaves a zero-byte file holding perfectly still, which at
+	// watchQuiet is indistinguishable from settled content. Publishing that blanks
+	// the reader's tab. A file that is genuinely empty stays empty, so the
+	// discriminator is time rather than content, and an empty file still publishes,
+	// just later.
+	watchEmptyQuiet = 3 * time.Second
 )
 
 // Honest limit, and it is a limit rather than a guarantee: no finite quiet
 // interval can prove a paused non-atomic writer has finished, and HasHTMLTag
 // accepts `<html><body>partial`. What the watcher promises is best-effort
-// stability with a documented paused-writer residual. External editors also
+// stability with a documented paused-writer residual. The one case held to a
+// different standard is a paused writer's truncate, whose zero bytes must hold
+// still for watchEmptyQuiet rather than watchQuiet. External editors also
 // ignore session.File's lock, which is only an in-process mutex, so a write
 // landing between the final revalidation and the enqueue is an unavoidable
 // residual race.
@@ -97,6 +108,8 @@ type watcher struct {
 	logger *logging.Logger
 	poll   time.Duration
 	quiet  time.Duration
+	// emptyQuiet is the quiet interval for a zero-byte candidate. See watchEmptyQuiet.
+	emptyQuiet time.Duration
 
 	// versions is the backup store. The watcher writes to it and never resolves an
 	// identity in it: see publishConfirmed.
@@ -107,11 +120,12 @@ type watcher struct {
 
 func newWatcher(store *versions.Store, logger *logging.Logger) *watcher {
 	return &watcher{
-		entries:  make(map[string]*watchEntry),
-		logger:   logger,
-		poll:     watchPoll,
-		quiet:    watchQuiet,
-		versions: store,
+		entries:    make(map[string]*watchEntry),
+		logger:     logger,
+		poll:       watchPoll,
+		quiet:      watchQuiet,
+		emptyQuiet: watchEmptyQuiet,
+		versions:   store,
 	}
 }
 
@@ -328,7 +342,17 @@ func (wt *watcher) check(e *watchEntry) {
 		}
 		return
 	}
-	if !poke && time.Since(e.pendingAt) < wt.quiet {
+	// An empty candidate is held to watchEmptyQuiet instead, and a poke does not
+	// shorten it. A poke says our own writer finished; the writer this guards
+	// against is the one we cannot see, paused between its truncate and its write.
+	// A real write lands within the longer interval and replaces this candidate, so
+	// a truncate never reaches publish while a genuinely empty file still does.
+	quiet := wt.quiet
+	if len(data) == 0 {
+		quiet = wt.emptyQuiet
+		poke = false
+	}
+	if !poke && time.Since(e.pendingAt) < quiet {
 		return
 	}
 
