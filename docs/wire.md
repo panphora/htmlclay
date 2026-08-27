@@ -18,7 +18,7 @@ formatter, or a person typing. The wire has no opinion.
 - clayjs 0.6.0 or later, loaded with the `wire` plugin
 
 ```html
-<script src="https://clayjs.com/clay.js?plugins=sync,wire"></script>
+<script src="https://clayjs.com/v1/clay.js?plugins=sync,wire"></script>
 ```
 
 `sync` is not required, but you want it: without live sync the page never sees

@@ -1,10 +1,10 @@
 .PHONY: build test clean sync-conformance sync-selector-parity differential dist-macos dist-macos-unsigned dist-linux dist-windows
 
 # Where the conformance corpus is generated. Only needed by sync-conformance; the vendored copy
-# under dataapi/testdata is checked in so `go test` never needs node or a sibling checkout.
+# under internal/dataapi/testdata is checked in so `go test` never needs node or a sibling checkout.
 HYPER_HTML_API ?= ../hyper-html-api
 
-VERSION ?= $(shell grep 'var version' main.go | sed 's/.*"\(.*\)"/\1/')
+VERSION ?= $(shell grep 'var version' cmd/htmlclay/main.go | sed 's/.*"\(.*\)"/\1/')
 LDFLAGS = -s -w -X main.version=$(VERSION)
 BINARY = htmlclay
 # macOS needs cgo for the systray and the Apple Event handler; elsewhere the
@@ -18,7 +18,7 @@ ifeq ($(shell uname -s),Darwin)
 endif
 
 build:
-	CGO_ENABLED=$(CGO) go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) .
+	CGO_ENABLED=$(CGO) go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/htmlclay
 ifeq ($(shell uname -s),Darwin)
 	codesign -f -s - $(BINARY)
 endif
@@ -33,12 +33,12 @@ test:
 sync-conformance:
 	@test -d "$(HYPER_HTML_API)/conformance" || \
 		{ echo "no conformance dir at $(HYPER_HTML_API); set HYPER_HTML_API=<path to hyper-html-api>"; exit 1; }
-	rm -rf dataapi/testdata/conformance
-	mkdir -p dataapi/testdata
-	cp -R "$(HYPER_HTML_API)/conformance" dataapi/testdata/conformance
+	rm -rf internal/dataapi/testdata/conformance
+	mkdir -p internal/dataapi/testdata
+	cp -R "$(HYPER_HTML_API)/conformance" internal/dataapi/testdata/conformance
 	@printf 'Copied from %s by `make sync-conformance`. Do not edit here; edit the source and re-sync.\n\n' \
-		"hyper-html-api/conformance" > dataapi/testdata/conformance/VERSION
-	@cat dataapi/testdata/conformance/MANIFEST.json >> dataapi/testdata/conformance/VERSION
+		"hyper-html-api/conformance" > internal/dataapi/testdata/conformance/VERSION
+	@cat internal/dataapi/testdata/conformance/MANIFEST.json >> internal/dataapi/testdata/conformance/VERSION
 
 # Re-records what cheerio answers for every selector construct the gate has an opinion about. The
 # gate is the one part of dataapi with no JS counterpart, so this baseline is its only real proof;
@@ -46,8 +46,8 @@ sync-conformance:
 sync-selector-parity:
 	@test -d "$(HYPER_HTML_API)/node_modules/cheerio" || \
 		{ echo "no cheerio at $(HYPER_HTML_API); set HYPER_HTML_API=<path to hyper-html-api>"; exit 1; }
-	HYPER_HTML_API="$(HYPER_HTML_API)" node scripts/gen-selector-parity.mjs dataapi/testdata/selector-parity.json
-	@echo "synced $$(ls dataapi/testdata/conformance/cases/*.meta | wc -l | tr -d ' ') cases"
+	HYPER_HTML_API="$(HYPER_HTML_API)" node scripts/gen-selector-parity.mjs internal/dataapi/testdata/selector-parity.json
+	@echo "synced $$(ls internal/dataapi/testdata/conformance/cases/*.meta | wc -l | tr -d ' ') cases"
 
 # Cross-language differential: random (document, rules) pairs through cheerio and then through the Go
 # port. A DEVELOPMENT harness, never a CI gate — htmlclay vendors no JS engine, so a test that skipped
@@ -64,13 +64,13 @@ clean:
 	rm -f *.dmg
 
 dist-macos:
-	bash dist/macos/build.sh
+	bash packaging/macos/build.sh
 
 dist-macos-unsigned:
-	bash dist/macos/build.sh --unsigned
+	bash packaging/macos/build.sh --unsigned
 
 dist-linux:
-	bash dist/linux/build.sh
+	bash packaging/linux/build.sh
 
 dist-windows:
-	powershell -File dist/windows/build.ps1
+	powershell -File packaging/windows/build.ps1

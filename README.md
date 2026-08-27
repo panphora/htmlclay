@@ -143,7 +143,7 @@ Every other document format has self-saving figured out. Photoshop files open, e
 
 HTML can't do this because browsers run it in a sandbox designed for the web. But a file you downloaded and double-clicked isn't the web — you trust it the same way you trust a `.docx`. HTML Clay bridges this gap safely by running a tiny local server that handles file reads and writes.
 
-For a deeper exploration of the problem and the landscape of existing solutions, see [brainstorm/blog-post.md](brainstorm/blog-post.md).
+For a deeper exploration of the problem and the landscape of existing solutions, see [docs/malleable-html-file.md](docs/malleable-html-file.md).
 
 ---
 
@@ -234,31 +234,35 @@ Deliberate, and each one measured against the platform's own engine rather than 
 | CORS | none | enabled |
 
 The full ledger, with the measurement behind every row, is in
-`dataapi/testdata/selector-parity.json`: one list of constructs that must match the platform exactly,
+`internal/dataapi/testdata/selector-parity.json`: one list of constructs that must match the platform exactly,
 and one of constructs HTML Clay refuses, each recorded with the answer the platform gives so the cost
 of the refusal is written down rather than guessed at.
 
 ### Package structure
 
 ```
-main.go              CLI entry point, startup, shutdown
-sites.go             The site registry: which origin owns a file, and its lifecycle
-folders.go           The declared trusted-folder list and the flows that change it
-recovery.go          A remembered port bound with no capability at all
-open.go              Opening a file and handing it to the browser
-server/              HTTP server, request handlers, security middleware
-session/             Cryptographic token generation, file↔token mapping, held read roots
-trust/               The rules about which folders may be trusted, and on whose say-so
-browser/             Opening a URL in the system's default browser
-htmlutil/            Inject/strip htmlclaytoken and htmlclayid attributes in <html> tag
-config/              Persist settings to OS config dir (~/Library/Application Support, ~/.config, %APPDATA%)
-platform/            Single-instance enforcement (Unix socket / TCP on Windows), Start on Login, file associations
-tray/                System tray icon and menu
-logging/             File-based logger with 10MB rotation
-update/              Version check against htmlclay.com
-dist/macos/          macOS .app bundle build script, Info.plist, codesigning
-dist/linux/          Desktop entry, MIME type registration, icons, install and uninstall scripts
-dist/windows/        Icon and version resources (winres.json), zip README, fallback registration script
+cmd/htmlclay/        The executable. main.go starts and stops it, sites.go owns the site registry,
+                     folders.go the trusted-folder list, open.go hands a file to the browser,
+                     recovery.go the remembered-port page, wire_cli.go the `htmlclay wire` subcommand
+internal/server/     HTTP server, request handlers, security middleware
+internal/session/    Cryptographic token generation, file↔token mapping, held read roots
+internal/trust/      The rules about which folders may be trusted, and on whose say-so
+internal/dataapi/    Reading a document as JSON, with its vendored conformance corpus
+internal/versions/   Save history: every write keeps a restorable previous version
+internal/browser/    Opening a URL in the system's default browser
+internal/htmlutil/   Inject/strip htmlclaytoken and htmlclayid attributes in <html> tag
+internal/config/     Persist settings to OS config dir (~/Library/Application Support, ~/.config, %APPDATA%)
+internal/platform/   Single-instance enforcement (Unix socket / TCP on Windows), Start on Login, file associations
+internal/tray/       System tray icon and menu
+internal/logging/    File-based logger with 10MB rotation
+internal/update/     Version check against htmlclay.com
+packaging/           Per-OS packaging. packaging_test.go sits here rather than at the root: it
+                     pins the couplings between these assets and the code that reads them
+packaging/macos/     macOS .app bundle build script, Info.plist, codesigning
+packaging/linux/     Desktop entry, MIME type registration, icons, install and uninstall scripts
+packaging/windows/   Icon and version resources (winres.json), zip README, fallback registration script
+packaging/icons/     The icon source set and the generator that renders every platform's icons
+website/             htmlclay.com, deployed from this repo
 ```
 
 ### Security model
@@ -309,6 +313,16 @@ The app lives in the system tray with controls for:
 
 Requires Go 1.26+. Linux and Windows build as pure Go (no system libraries needed); macOS builds use cgo for the system tray and Finder integration.
 
+To install the binary straight from the module:
+
+```bash
+go install github.com/panphora/htmlclay/cmd/htmlclay@latest
+```
+
+That gives you the tray app, the local server, and the `htmlclay wire` CLI. On Windows it also gives you the `.htmlclay` double-click association, which the binary registers itself on launch. On macOS and Linux that association lives outside the binary, in the `.app` bundle and the freedesktop MIME entry the packaged builds install, so download a build from [htmlclay.com](https://htmlclay.com) if you want double-click to work.
+
+To build from a checkout instead:
+
 ```bash
 # Build the binary
 make build
@@ -331,10 +345,10 @@ make clean
 
 ### Platform support
 
-Supports macOS, Linux, and Windows. Each platform has build scripts and OS integration assets in `dist/`. The `browser/`, `platform/`, and `tray/` packages use platform-specific build files (`_darwin.go`, `_linux.go`, `_windows.go`).
+Supports macOS, Linux, and Windows. Each platform has build scripts and OS integration assets in `packaging/`. The `internal/browser/`, `internal/platform/`, and `internal/tray/` packages use platform-specific build files (`_darwin.go`, `_linux.go`, `_windows.go`).
 
 **File associations.** macOS reads them from the `.app` bundle's `Info.plist`. Linux gets them from the
-freedesktop MIME database, which `dist/linux/install.sh` writes into `~/.local/share` with no sudo.
+freedesktop MIME database, which `packaging/linux/install.sh` writes into `~/.local/share` with no sudo.
 Windows writes them itself, under `HKCU\Software\Classes`, on every launch, so a binary that moved
 keeps a working association.
 
@@ -356,7 +370,7 @@ on a machine with neither tool.
 ./scripts/release.sh --minor   # or --major, or --patch (the default)
 ```
 
-That bumps the version in `main.go`, tags and pushes, triggers the CI release workflow (test on three platforms, sign, notarize, upload to R2), publishes the website, and installs the new build into `/Applications`.
+That bumps the version in `cmd/htmlclay/main.go`, tags and pushes, triggers the CI release workflow (test on three platforms, sign, notarize, upload to R2), publishes the website, and installs the new build into `/Applications`.
 
 Three things about this repo are easy to trip over.
 
@@ -364,11 +378,11 @@ Three things about this repo are easy to trip over.
 
 **Download links are stamped after CI, not during the version bump.** `scripts/stamp-website.js` writes the version into `website/index.html`, anchored on the `data-version` and `data-mac-dmg` attributes, so new spots on the page need no change to the script. Stamping during the bump would auto-deploy links to a dmg that CI has not uploaded yet, leaving them broken for the few minutes a build takes.
 
-**`htmlclay-release-info.json` on R2 is not a website file.** It is the feed the in-app update checker polls, and its URL is compiled into every shipped binary (`update/update.go`). Removing it would silently and permanently break update checks for installs already in the wild.
+**`htmlclay-release-info.json` on R2 is not a website file.** It is the feed the in-app update checker polls, and its URL is compiled into every shipped binary (`internal/update/update.go`). Removing it would silently and permanently break update checks for installs already in the wild.
 
 To reinstall the current release locally without cutting a new one:
 
 ```bash
-bash scripts/install-local.sh          # version from main.go
+bash scripts/install-local.sh          # version from cmd/htmlclay/main.go
 bash scripts/install-local.sh 1.1.0    # or an explicit version
 ```

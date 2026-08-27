@@ -54,7 +54,7 @@ jobs:
       - name: Build
         run: |
           GOOS=linux GOARCH=${{ matrix.goarch }} \
-            go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay .
+            go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay ./cmd/htmlclay
         env:
           CGO_ENABLED: "0"
 
@@ -63,15 +63,15 @@ jobs:
           stage=htmlclay-linux-${{ matrix.goarch }}
           mkdir -p "$stage"
           cp htmlclay "$stage/"
-          cp dist/linux/htmlclay.desktop \
-             dist/linux/htmlclay-mime.xml \
-             dist/linux/htmlclay.png \
-             dist/linux/htmlclay.svg \
-             dist/linux/application-x-htmlclay.png \
-             dist/linux/application-x-htmlclay.svg \
-             dist/linux/install-icon.sh \
-             dist/linux/install.sh \
-             dist/linux/uninstall.sh \
+          cp packaging/linux/htmlclay.desktop \
+             packaging/linux/htmlclay-mime.xml \
+             packaging/linux/htmlclay.png \
+             packaging/linux/htmlclay.svg \
+             packaging/linux/application-x-htmlclay.png \
+             packaging/linux/application-x-htmlclay.svg \
+             packaging/linux/install-icon.sh \
+             packaging/linux/install.sh \
+             packaging/linux/uninstall.sh \
              "$stage/"
           chmod +x "$stage/install.sh" "$stage/install-icon.sh" "$stage/uninstall.sh"
           tar czf "$stage.tar.gz" -C "$stage" .
@@ -98,14 +98,14 @@ jobs:
 
       # Two icon groups, not one: resource 1 is the app icon Explorer draws on
       # htmlclay.exe, resource 2 is the document icon that the DefaultIcon
-      # registry value names by ID (platform/register_windows.go). goversioninfo
+      # registry value names by ID (internal/platform/register_windows.go). goversioninfo
       # embeds a single -icon and numbers it itself, which is why this is
       # go-winres; the IDs have to be ours to name.
       - name: Embed icon and version resources
         run: |
           go run github.com/tc-hib/go-winres@v0.3.1 make `
-            --in dist/windows/winres.json `
-            --out resource `
+            --in packaging/windows/winres.json `
+            --out cmd/htmlclay/resource `
             --arch ${{ matrix.goarch }} `
             --file-version "${{ inputs.version }}" --product-version "${{ inputs.version }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -115,7 +115,7 @@ jobs:
         run: |
           $env:CGO_ENABLED = "0"
           $env:GOARCH = "${{ matrix.goarch }}"
-          go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay.exe .
+          go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay.exe ./cmd/htmlclay
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: pwsh
 
@@ -152,7 +152,7 @@ jobs:
       - name: Package
         run: |
           Compress-Archive `
-            -Path htmlclay.exe,dist\windows\README.txt,dist\windows\register.bat `
+            -Path htmlclay.exe,packaging\windows\README.txt,packaging\windows\register.bat `
             -DestinationPath htmlclay-windows-${{ matrix.goarch }}.zip
         shell: pwsh
 
@@ -205,7 +205,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: bash dist/macos/build.sh --universal
+        run: bash packaging/macos/build.sh --universal
 
       - uses: actions/upload-artifact@v4
         with:

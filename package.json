@@ -21,10 +21,6 @@
     "url": "https://github.com/panphora/htmlclay/issues"
   },
   "homepage": "https://htmlclay.com",
-  "dependencies": {
-    "dotenv": "^17.3.1",
-    "fast-xml-parser": "^5.5.9"
-  },
   "devDependencies": {
     "wrangler": "^4.98.0"
   },

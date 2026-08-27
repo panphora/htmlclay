@@ -83,7 +83,7 @@ success "GitHub CLI authenticated"
 section "Step 2: Version Bump"
 # ══════════════════════════════════════════════════
 
-CURRENT_VERSION=$(grep 'var version' main.go | sed 's/.*"\(.*\)"/\1/')
+CURRENT_VERSION=$(grep 'var version' cmd/htmlclay/main.go | sed 's/.*"\(.*\)"/\1/')
 log "Current version: ${CURRENT_VERSION}"
 
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
@@ -95,9 +95,9 @@ esac
 
 success "Version: ${CURRENT_VERSION} → ${NEW_VERSION} (${BUMP_TYPE})"
 
-# Update version in main.go
-sed -i '' "s/var version = \"${CURRENT_VERSION}\"/var version = \"${NEW_VERSION}\"/" main.go
-success "Updated main.go"
+# Update version in cmd/htmlclay/main.go
+sed -i '' "s/var version = \"${CURRENT_VERSION}\"/var version = \"${NEW_VERSION}\"/" cmd/htmlclay/main.go
+success "Updated cmd/htmlclay/main.go"
 
 # The website is stamped after CI, not here. Pushing to main auto-deploys the
 # site, so stamping now would advertise downloads minutes before they exist.
@@ -106,7 +106,7 @@ success "Updated main.go"
 section "Step 3: Commit & Push"
 # ══════════════════════════════════════════════════
 
-git add main.go website/index.html
+git add cmd/htmlclay/main.go website/index.html
 git commit -m "chore: release v${NEW_VERSION}"
 success "Committed version bump"
 

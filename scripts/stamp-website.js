@@ -23,7 +23,7 @@ const DOWNLOAD_BASE = 'https://download.htmlclay.com/';
 
 const version =
   process.argv[2] ||
-  readFileSync(join(ROOT, 'main.go'), 'utf8').match(/var version = "(.*)"/)[1];
+  readFileSync(join(ROOT, 'cmd/htmlclay/main.go'), 'utf8').match(/var version = "(.*)"/)[1];
 
 const dmgName = `HTMLClay-${version}-universal.dmg`;
 

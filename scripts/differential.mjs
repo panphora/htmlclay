@@ -120,7 +120,7 @@ let report;
 try {
   const out = execFileSync(
     "go",
-    ["test", "./dataapi/", "-run", "TestDifferential", "-count=1", "-v"],
+    ["test", "./internal/dataapi/", "-run", "TestDifferential", "-count=1", "-v"],
     { env: { ...process.env, HTMLCLAY_DIFFERENTIAL: casesPath }, encoding: "utf8" },
   );
   report = out;

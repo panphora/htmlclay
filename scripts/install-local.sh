@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Installs a released HTMLClay build into /Applications and relaunches it.
 # The DMG is the notarized artifact CI published to R2, so this installs
-# exactly what users download. Defaults to the version in main.go.
+# exactly what users download. Defaults to the version in cmd/htmlclay/main.go.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -20,7 +20,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
   exit 1
 fi
 
-VERSION="${1:-$(grep 'var version' main.go | sed 's/.*"\(.*\)"/\1/')}"
+VERSION="${1:-$(grep 'var version' cmd/htmlclay/main.go | sed 's/.*"\(.*\)"/\1/')}"
 DMG_NAME="HTMLClay-${VERSION}-universal.dmg"
 DMG_URL="https://download.htmlclay.com/${DMG_NAME}"
 

@@ -4,18 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Get started | HTML Clay</title>
-  <meta name="description" content="Install HTML Clay, copy one small file, and have a checklist on your own disk that keeps every change. About five minutes.">
+  <meta name="description" content="Install HTML Clay, copy one small checklist, and verify that each change is written into the file on your disk.">
   <link rel="canonical" href="https://htmlclay.com/get-started">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
   <meta property="og:type" content="website">
   <meta property="og:title" content="Your first file">
-  <meta property="og:description" content="Install HTML Clay, copy one small file, and have a checklist on your own disk that keeps every change. About five minutes.">
+  <meta property="og:description" content="Install HTML Clay, copy one small checklist, and verify that each change is written into the file on your disk.">
   <meta property="og:url" content="https://htmlclay.com/get-started">
   <meta property="og:image" content="https://htmlclay.com/og.png">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Your first file">
-  <meta name="twitter:description" content="Install HTML Clay, copy one small file, and have a checklist on your own disk that keeps every change. About five minutes.">
+  <meta name="twitter:description" content="Install HTML Clay, copy one small checklist, and verify that each change is written into the file on your disk.">
 
   <style>
     :root {
@@ -855,41 +855,42 @@
   <script src="prism.min.js"></script>
 </head>
 <body>
-  <main class="wrap">
-    <nav class="sitenav">
-      <a class="brand" href="/">HTML Clay</a>
-      <div class="navlinks">
-        <a href="/">Home</a>
-        <a href="/get-started" aria-current="page">Get started</a>
-        <a href="/features">Features</a>
-        <a href="/agent-editing">Agent editing</a>
-      </div>
-    </nav>
-
-    <div class="hero">
-      <p class="eyebrow">Get started</p>
-      <h1>Your first file</h1>
-      <p class="lede">You downloaded an app. In about five minutes you will have something better: a file of your own that opens like a web page and saves like a document. No account, nothing to configure, nothing to learn first.</p>
+<main class="wrap">
+  <nav class="sitenav">
+    <a class="brand" href="/">HTML Clay</a>
+    <div class="navlinks">
+      <a href="/">Home</a>
+      <a href="/get-started" aria-current="page">Get started</a>
+      <a href="/features">Features</a>
+      <a href="/agent-editing">Agent editing</a>
     </div>
+  </nav>
 
-    <section class="step" aria-labelledby="s1">
-      <h2 id="s1"><span class="stepnum">1</span> Install the app</h2>
-      <p class="section-lede">One download, once. It is free and there is no account.</p>
+  <div class="hero">
+    <p class="eyebrow">Get started</p>
+    <h1>Your first file</h1>
+    <p class="lede">Install HTML Clay, copy a checklist, change it, then reopen it. Your changes will be in the file on your disk, not in an account or browser storage.</p>
+  </div>
 
-      <p><b>On a Mac,</b> open the disk image and drag HTML Clay into Applications, then open it once. Look up by the clock: a small icon in the menu bar is the whole app. There is no window.</p>
-      <p><b>On Windows,</b> unzip the download and run <code>htmlclay.exe</code> once. It sets up <span class="filechip">.htmlclay</span> files for your account, with no administrator prompt, and sits in the system tray.</p>
-      <p><b>On Linux,</b> unpack the tarball and run <code>bash install.sh</code>. It installs into <code>~/.local/bin</code> and never asks for sudo.</p>
+  <section class="step" aria-labelledby="s1">
+    <h2 id="s1"><span class="stepnum">1</span> Install HTML Clay</h2>
+    <p class="section-lede">The download is free and there is no account.</p>
 
-      <p class="fine-print">Linux also wants <code>zenity</code> or <code>kdialog</code> installed, because those draw the permission dialogs. Without either, a file from outside a folder you trust is refused rather than asked about.</p>
+    <p style="margin-top: 22px"><a class="btn" href="/#downloads">Choose your download</a></p>
 
-      <p style="margin-top: 22px"><a class="btn" href="/#downloads">Download HTML Clay</a></p>
-    </section>
+    <p><b>On a Mac,</b> open the disk image, drag HTML Clay into Applications, and open it once. The app lives in the menu bar and has no main window.</p>
+    <p><b>On Windows,</b> unzip the download somewhere you will keep it, then run <code>htmlclay.exe</code> once. It registers <span class="filechip">.htmlclay</span> files for your account without an administrator prompt, then stays in the system tray.</p>
+    <p><b>On Linux,</b> unpack the tarball, open a terminal in that folder, and run <code>bash install.sh</code>. The default installation goes in <code>~/.local/bin</code>.</p>
+  </section>
 
-    <section class="step" aria-labelledby="s2">
-      <h2 id="s2"><span class="stepnum">2</span> Make the file</h2>
-      <p class="section-lede">Copy this. All of it. It is a checklist, and its first three items are the rest of this page.</p>
+  <section class="step" aria-labelledby="s2">
+    <h2 id="s2"><span class="stepnum">2</span> Make the file</h2>
+    <p class="section-lede">Use a plain text editor, then copy the complete checklist below.</p>
 
-      <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>my-list.htmlclay</span></div><pre tabindex="0"><code class="language-markup">&lt;!DOCTYPE html&gt;
+    <p>In TextEdit on a Mac, choose Format, then Make Plain Text. In Notepad on Windows, set Save as type to All files.</p>
+    <p>Keep your internet connection on while using this starter. It loads its editing library, ClayJS, from clayjs.com. HTML Clay does not upload your file.</p>
+
+    <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>my-list.htmlclay</span></div><pre tabindex="0"><code class="language-markup">&lt;!DOCTYPE html&gt;
 &lt;html lang=&quot;en&quot; autosave&gt;
 &lt;head&gt;
   &lt;meta charset=&quot;utf-8&quot;&gt;
@@ -901,7 +902,7 @@
       margin: 3rem auto;
       padding: 0 1rem;
     }
-    label {
+    .item {
       display: flex;
       gap: 0.6rem;
       padding: 0.3rem 0;
@@ -911,144 +912,105 @@
 &lt;body&gt;
   &lt;h1 editable&gt;My list&lt;/h1&gt;
 
-  &lt;label&gt;
-    &lt;input type=&quot;checkbox&quot; persist&gt;
-    &lt;span editable&gt;Make my first file&lt;/span&gt;
-  &lt;/label&gt;
-  &lt;label&gt;
-    &lt;input type=&quot;checkbox&quot; persist&gt;
-    &lt;span editable&gt;Check something off&lt;/span&gt;
-  &lt;/label&gt;
-  &lt;label&gt;
-    &lt;input type=&quot;checkbox&quot; persist&gt;
-    &lt;span editable&gt;Close the tab, then open the file again&lt;/span&gt;
-  &lt;/label&gt;
+  &lt;div class=&quot;item&quot;&gt;
+    &lt;input type=&quot;checkbox&quot; persist aria-labelledby=&quot;item-1&quot;&gt;
+    &lt;span id=&quot;item-1&quot; editable&gt;Make my first file&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;item&quot;&gt;
+    &lt;input type=&quot;checkbox&quot; persist aria-labelledby=&quot;item-2&quot;&gt;
+    &lt;span id=&quot;item-2&quot; editable&gt;Check something off&lt;/span&gt;
+  &lt;/div&gt;
+  &lt;div class=&quot;item&quot;&gt;
+    &lt;input type=&quot;checkbox&quot; persist aria-labelledby=&quot;item-3&quot;&gt;
+    &lt;span id=&quot;item-3&quot; editable&gt;Close the tab, then open the file again&lt;/span&gt;
+  &lt;/div&gt;
 
   &lt;div editable&gt;
     &lt;p&gt;This part is for notes. Click anywhere and type.&lt;/p&gt;
   &lt;/div&gt;
 
-  &lt;script src=&quot;https://clayjs.com/clay.js?plugins=indicator&quot;&gt;&lt;/script&gt;
+  &lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=indicator&quot;&gt;&lt;/script&gt;
 &lt;/body&gt;
 &lt;/html&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 
-      <p>Paste it into any plain text editor and save it as <code>my-list.htmlclay</code>, on your Desktop.</p>
+    <p>Paste it into the editor and save it on your Desktop as <code>my-list.htmlclay</code>. If the editor asks about the extension, keep <span class="filechip">.htmlclay</span>.</p>
+  </section>
 
-      <p>Two editors need a nudge. TextEdit on a Mac has to be in plain text mode first: the Format menu, then Make Plain Text. When it asks about the file ending, keep <span class="filechip">.htmlclay</span>. Notepad on Windows needs Save as type set to All files, so it does not quietly add <code>.txt</code>.</p>
+  <section class="step" aria-labelledby="s3">
+    <h2 id="s3"><span class="stepnum">3</span> Open it and make a change</h2>
 
-      <p>You do not need to read the file to use it. If you do read it, you will find ordinary HTML: a heading, three checkboxes, a place for notes, and one script tag at the bottom that teaches the page how to save itself.</p>
+    <p>Open <code>my-list.htmlclay</code> from your Desktop. It opens in your default browser. An address beginning with <code>127.0.0.1</code> means HTML Clay is serving the page from your own computer.</p>
 
-      <p class="aside">Already have an <span class="filechip">.html</span> file you like? Rename it to <span class="filechip">.htmlclay</span> and it opens the same way, and it needs that same script tag before its own edits will save.</p>
-    </section>
+    <p>Check the first box, edit the second item, and type a note. Wait until a small chip in the bottom right says <b>Saved</b>. There is no save button.</p>
 
-    <section class="step" aria-labelledby="s3">
-      <h2 id="s3"><span class="stepnum">3</span> Open it, and check something off</h2>
-      <p class="section-lede">This is the part worth the whole page.</p>
+    <p>Close the tab, then open the file from your Desktop again. Your checked box and words are still there because they were written into <code>my-list.htmlclay</code>.</p>
 
-      <p>Double-click <code>my-list.htmlclay</code>. It opens in your everyday browser, in an ordinary tab, with the shortcuts you already use. The address starts with <code>127.0.0.1</code>, which is your own computer: the page is reaching you from your own disk, not from the internet.</p>
+    <p><b>See it in the file.</b> If <code>my-list.htmlclay</code> is still open in your text editor, close it without saving. Then reopen it. The first checkbox now contains <code>checked</code>:</p>
 
-      <p>Now check the first box. You did just make your first file.</p>
+    <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>my-list.htmlclay</span></div><pre tabindex="0"><code class="language-markup">  &lt;div class=&quot;item&quot;&gt;
+    &lt;input type=&quot;checkbox&quot; persist=&quot;&quot; aria-labelledby=&quot;item-1&quot; checked=&quot;&quot;&gt;
+    &lt;span id=&quot;item-1&quot; editable=&quot;&quot;&gt;Make my first file&lt;/span&gt;
+  &lt;/div&gt;</code></pre></div></div>
 
-      <p>There is no save button. A moment after you stop, the page writes itself back into <code>my-list.htmlclay</code>, and a small chip notes that it saved. Click an item and retype it. Jot something in the notes area.</p>
+    <p class="fine-print">Browsers write bare attributes such as <code>persist</code> as <code>persist=&quot;&quot;</code>. HTML Clay also adds <code>htmlclayid</code> to the root <code>&lt;html&gt;</code> tag for backup history. Both are normal.</p>
 
-      <p>Then check the third box, close the tab, and double-click the file again.</p>
+    <h3>If it did not work</h3>
+    <ul class="trouble">
+      <li><b>You see code instead of a checklist:</b> save the file as plain text and confirm its name ends in <code>.htmlclay</code>, not <code>.htmlclay.txt</code>.</li>
+      <li><b>The file does not open with HTML Clay:</b> on Windows, run <code>htmlclay.exe</code> again. On Linux, rerun <code>install.sh</code>. On a Mac, select the file in Finder, then choose File, Open With, and HTML Clay.</li>
+      <li><b>Nothing is editable or saves:</b> reconnect to the internet, then reload the page.</li>
+    </ul>
+  </section>
 
-      <p>Everything is still there. The checked boxes, your words, all of it. Not in an account and not somewhere in your browser: in the file, on your Desktop, written into the HTML itself.</p>
+  <section aria-labelledby="how">
+    <h2 id="how">How saving works</h2>
 
-      <p><b>Prove it to yourself.</b> Open that same file in a text editor. The line you checked now reads:</p>
+    <p>A browser cannot write to your disk by itself. HTML Clay serves the file to your browser and writes each save back into that file. ClayJS runs inside the page and turns your edits into HTML for HTML Clay to save.</p>
+  </section>
 
-      <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>my-list.htmlclay</span></div><pre tabindex="0"><code class="language-markup">  &lt;label&gt;
-    &lt;input type=&quot;checkbox&quot; persist checked&gt;
-    &lt;span editable&gt;Make my first file&lt;/span&gt;
-  &lt;/label&gt;</code></pre></div></div>
+  <section aria-labelledby="attrs">
+    <h2 id="attrs">The three attributes</h2>
+    <p class="section-lede">These did the work in this file.</p>
 
-      <p>That word <code>checked</code> was not there a minute ago. Your click put it in the file. From here you can email the file, back it up, or drop it in any folder, and it takes its contents with it.</p>
+    <table class="attrs">
+      <tr><th>Attribute</th><th>What it does</th></tr>
+      <tr><td><code>editable</code></td><td>On a heading, paragraph, span, or div, lets you click into it and edit its contents.</td></tr>
+      <tr><td><code>persist</code></td><td>On a checkbox, text field, textarea, radio button, or dropdown, writes its value into the file.</td></tr>
+      <tr><td><code>autosave</code></td><td>On the <code>&lt;html&gt;</code> tag, saves after edits settle.</td></tr>
+    </table>
 
-      <h3>If it did not work</h3>
-      <ul class="trouble">
-        <li><b>You can see the code on screen,</b> or it opened as plain text: the editor saved it in the wrong format. Save it again as plain text, and check the name ends in <code>.htmlclay</code> rather than <code>.htmlclay.txt</code>.</li>
-        <li><b>Double-clicking did nothing,</b> or opened the wrong program: open HTML Clay itself once, then double-click the file again.</li>
-        <li><b>Nothing is editable and nothing saves:</b> the file needs to reach the internet the first time it opens, to fetch the small library on its last line. Check your connection and reload.</li>
-      </ul>
-    </section>
+    <p>Command+S on a Mac or Control+S elsewhere saves at once.</p>
+    <p>Edit visible text directly in the browser. To change the structure, close the browser tab, edit <code>my-list.htmlclay</code> in your text editor, save it, then open the file again.</p>
+  </section>
 
-    <section class="step" aria-labelledby="s4">
-      <h2 id="s4"><span class="stepnum">4</span> Trust the folder it lives in</h2>
+  <section aria-labelledby="good">
+    <h2 id="good">Good to know</h2>
 
-      <p>Click the HTML Clay icon in your menu bar or system tray, choose Trusted Folders, and pick the folder your file is in. Every <span class="filechip">.htmlclay</span> file in that folder then opens ready to edit, including ones you add later, and the files can link to each other like the pages of a small private site.</p>
-
-      <p>Stop trusting a folder from the same menu, and that permission ends immediately.</p>
-    </section>
-
-    <section aria-labelledby="why">
-      <h2 id="why">Why it needs an app at all</h2>
-
-      <p>A browser cannot write to your disk. That is the rule the whole web is built on, and it is a good rule. HTML Clay works around it in the smallest way there is: it hands your file to your browser, and when the page has changes to save, it writes them back into the same file. Nothing is uploaded, because there is nowhere to upload to.</p>
-
-      <p>That is the entire app. It adds one ability to an HTML file, the ability to save into itself, and takes nothing away. Rename <code>my-list.htmlclay</code> to <code>my-list.html</code> and it opens in any browser on any machine, list and all. It just stops saving. Nothing in it depends on this app.</p>
-    </section>
-
-    <section aria-labelledby="yours">
-      <h2 id="yours">Make it yours</h2>
-      <p class="section-lede">The list is a starting point, not the point.</p>
-
-      <p>The fastest change needs no tools: click any text in the page and retype it. "My list" can become "Packing for Portugal" right there in the tab.</p>
-
-      <p>The more interesting change is one level down. Leave the tab open, open <code>my-list.htmlclay</code> in a text editor, copy one of the <code>&lt;label&gt;</code> lines, paste it below the others, and save. Watch the tab: the new checkbox appears in the open page on its own, with no reload. The file is the app, so anything that edits the file edits the app, including you, in whatever editor you like.</p>
-
-      <p>Three attributes cover most of what people want:</p>
-
-      <table class="attrs">
-        <tr><th>Put this on</th><th>What it does</th></tr>
-        <tr><td><code>editable</code></td><td>On any element. You can click into it and type, with a small formatting toolbar.</td></tr>
-        <tr><td><code>persist</code></td><td>On a checkbox, text field, or dropdown. Its value is written into the file, so it survives.</td></tr>
-        <tr><td><code>autosave</code></td><td>On the <code>&lt;html&gt;</code> tag. Saves on its own once your edits settle. Cmd+S and Ctrl+S always work too.</td></tr>
-      </table>
-
-      <p>And it does not have to be a list. A journal, a recipe box, a habit tracker, a small game: <a href="/">the home page</a> shows the kinds of things people make, and every one of them is a single HTML file just like yours.</p>
-
-      <div class="callout">
-        <p><b>Building one from scratch</b> is the job of clayjs, the small library that last line loads. Its own walkthrough is at <a href="https://clayjs.com/get-started">clayjs.com/get-started</a>, including a ready-made prompt you can hand to an AI to have it build a file for you.</p>
-        <p>That page teaches you to write the file. This one handed you a finished one.</p>
-      </div>
-    </section>
-
-    <section aria-labelledby="good">
-      <h2 id="good">Good to know</h2>
-      <p class="section-lede">A few things worth hearing from us rather than discovering.</p>
-
-      <div class="quiet-list">
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>The first open wants a connection.</b> The starter fetches its editing library from clayjs.com when it loads. The app itself never needs the internet, and if you want a file that works on a plane from the very first open, keep a copy of that library beside the file and point the script tag at it.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>You can send it to anyone.</b> Someone without HTML Clay renames it to <span class="filechip">.html</span> and can read and use the page. Their changes just will not be written back into the file.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>You cannot really wreck it.</b> Every save keeps a complete copy of the version before it. Choose Backups from the tray icon to see them: plain HTML files you can open anywhere, with or without this app.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>One attribute appears in your file.</b> After the first save you will see <code>htmlclayid</code> on the <code>&lt;html&gt;</code> tag. It is how your history stays attached to the file when you rename or move it.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Links open read only.</b> Double-clicking a file makes it editable, because you chose it. Reaching one through a link does not: it opens read only, with an offer on the page to trust its folder.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Only inside your home folder.</b> A file outside it does not open at all, and no dialog offers to make an exception. The exact boundary is on the <a href="/features">features page</a>.</p></div>
-      </div>
-    </section>
-
-    <section aria-labelledby="next">
-      <h2 id="next">Where next</h2>
-      <ul class="mini-list">
-        <li><b><a href="/agent-editing">Let a program edit your file</a>.</b> Ask for a change from inside the page and watch an AI agent, or any script, make it.</li>
-        <li><b><a href="/features">Everything the app does</a>.</b> Versions, trusted folders, live sync, reading a file as JSON, and the exact safety boundary.</li>
-        <li><b><a href="https://clayjs.com/get-started">Write your own from scratch</a>.</b> The library that makes any page save itself.</li>
-      </ul>
-    </section>
-
-    <div class="closer">
-      <p>One file. Yours.</p>
-      <p class="closer-sub">Make a second one whenever you like.</p>
-      <a class="btn" href="/#downloads">Download HTML Clay</a>
+    <div class="quiet-list">
+      <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>The file remains ordinary HTML.</b> Rename it from <span class="filechip">.htmlclay</span> to <span class="filechip">.html</span> and a browser can open the saved contents. Without HTML Clay, further changes are not written back into the file.</p></div>
+      <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>HTML Clay keeps recent backups when it can.</b> If a change goes wrong, choose Backups from the menu bar or tray icon to find earlier copies of the file.</p></div>
+      <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Files must stay inside your home folder.</b> HTML Clay refuses to open a file outside it.</p></div>
     </div>
+  </section>
 
+  <section aria-labelledby="next">
+    <h2 id="next">Where next</h2>
+    <ul class="mini-list">
+      <li><b><a href="https://clayjs.com/get-started">Build your own file</a>.</b> Learn the ClayJS attributes and start from plain HTML.</li>
+      <li><b><a href="/features">Use several files together</a>.</b> Learn about Trusted Folders, backups, live sync, and the safety boundary.</li>
+      <li><b><a href="/agent-editing">Let a local program edit the file</a>.</b> Connect a script or coding agent to the file.</li>
+    </ul>
+  </section>
 
-    <footer>
-      <p>Building your own <span class="filechip">.htmlclay</span> files? Check out <a href="https://hyperclay.com">Hyperclay</a></p>
-      <p>Source code: <a href="https://github.com/panphora/htmlclay">github.com/panphora/htmlclay</a></p>
-      <p>Docs: <a href="/get-started">getting started</a> and <a href="/agent-editing">letting a program edit your file</a></p>
-    </footer>
-  </main>
+  <div class="closer">
+    <p>One file. Yours.</p>
+  </div>
+
+  <footer>
+    <p>Building your own <span class="filechip">.htmlclay</span> files? Check out <a href="https://hyperclay.com">Hyperclay</a></p>
+    <p>Source code: <a href="https://github.com/panphora/htmlclay">github.com/panphora/htmlclay</a></p>
+  </footer>
+</main>
   <script>
     document.querySelectorAll('.copybtn').forEach(function (btn) {
       btn.addEventListener('click', function () {

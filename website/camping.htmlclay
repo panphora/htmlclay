@@ -100,7 +100,7 @@
     <button>Send</button>
   </form>
 
-  <script src="https://clayjs.com/clay.js?plugins=sync,wire"></script>
+  <script src="https://clayjs.com/v1/clay.js?plugins=sync,wire"></script>
   <script>
     clay.ready.then(function () {
       var ask = document.getElementById("ask");
