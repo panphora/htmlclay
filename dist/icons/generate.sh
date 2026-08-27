@@ -7,7 +7,8 @@
 #   blob-grin.svg      small-size mark, bigger classic grin (tray + favicon)
 #
 # Outputs (written to where the app and build scripts consume them):
-#   tray/icon.png                colored grin, used by systray on Windows/Linux
+#   tray/icon.png                colored grin, used by systray on Linux
+#   tray/icon.ico                same grin as ICO, required by systray on Windows
 #   tray/icon-template.png       black grin silhouette, macOS menu-bar template
 #   dist/macos/htmlclay.icns     app icon  (CFBundleIconFile = htmlclay)
 #   dist/macos/doc.icns          document icon (CFBundleTypeIconFile = doc)
@@ -196,11 +197,18 @@ echo "  -> dist/linux/application-x-htmlclay.png (256) + .svg"
 cp "$BUILD/doc-256.png" "$ROOT_DIR/dist/linux/application-x-htmlclay.png"
 cp "$BUILD/doc.svg"     "$ROOT_DIR/dist/linux/application-x-htmlclay.svg"
 
-echo "Rendering tray icons -> tray/icon.png + tray/icon-template.png"
-# Colored grin (Windows/Linux systray + current SetIcon fallback): trim and pad to a square.
+echo "Rendering tray icons -> tray/icon.png + tray/icon.ico + tray/icon-template.png"
+# Colored grin (Linux systray, and the source for the Windows ICO below): trim and
+# pad to a square.
 rsvg-convert -w 256 -h 261 "$ICONS_DIR/blob-grin.svg" -o "$BUILD/grin.png"
 "$MAGICK" "$BUILD/grin.png" -trim +repage -background none -gravity center -extent 231x231 \
   -resize 128x128 "$ROOT_DIR/tray/icon.png"
+# Windows tray icon. systray's SetIcon hands the bytes to LoadImage, which reads ICO
+# and refuses PNG, so Windows cannot use icon.png and gets its own file. 16 and 32 are
+# what the notification area asks for (32 at 200% DPI); 48 covers higher scaling.
+# dist/icons/make-tray-ico.ps1 rebuilds this on a Windows box, where this script's
+# rsvg-convert/ImageMagick dependencies usually are not installed.
+"$MAGICK" "$ROOT_DIR/tray/icon.png" -define icon:auto-resize=48,32,16 "$ROOT_DIR/tray/icon.ico"
 # Black template (macOS menu bar, auto-inverts via SetTemplateIcon).
 rsvg-convert -w 256 -h 261 "$BUILD/tray-template.svg" -o "$BUILD/tpl.png"
 "$MAGICK" "$BUILD/tpl.png" -trim +repage -background none -gravity center -extent 235x235 \
@@ -208,7 +216,7 @@ rsvg-convert -w 256 -h 261 "$BUILD/tray-template.svg" -o "$BUILD/tpl.png"
 
 echo
 echo "Done. Generated:"
-for f in tray/icon.png tray/icon-template.png \
+for f in tray/icon.png tray/icon.ico tray/icon-template.png \
          dist/macos/htmlclay.icns dist/macos/doc.icns \
          dist/linux/htmlclay.png dist/linux/htmlclay.svg \
          dist/linux/application-x-htmlclay.png dist/linux/application-x-htmlclay.svg \

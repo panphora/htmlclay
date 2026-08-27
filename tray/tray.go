@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -27,6 +28,18 @@ var iconBytes []byte
 
 //go:embed icon-template.png
 var iconTemplateBytes []byte
+
+// Windows needs an ICO. systray's SetIcon writes whatever bytes it is given to a
+// temp file and hands the path to LoadImage, which reads ICO and refuses a PNG --
+// so the PNG above produced a blank slot in the notification area and an error
+// reading "unable to set icon: The operation completed successfully" (the call
+// failed without setting a Win32 error code, so GetLastError returned 0).
+//
+// Regenerate with dist/icons/make-tray-ico.ps1, which derives it from icon.png so
+// both stay the blob-grin art rather than the app icon.
+//
+//go:embed icon.ico
+var iconICOBytes []byte
 
 type UpdateInfo struct {
 	Version string
@@ -246,9 +259,14 @@ func (lm *listMenu) watch(onRow func(string) []Row, poll func() []Row) {
 }
 
 func (t *Tray) onReady() {
-	// macOS uses the template (auto-inverts for light/dark menu bars); Windows and
-	// Linux ignore it and fall back to the colored icon.
-	systray.SetTemplateIcon(iconTemplateBytes, iconBytes)
+	// macOS uses the template (auto-inverts for light/dark menu bars); Linux ignores
+	// it and falls back to the colored PNG. Windows needs the ICO: its fallback path
+	// ends at LoadImage, which does not read PNG.
+	if runtime.GOOS == "windows" {
+		systray.SetIcon(iconICOBytes)
+	} else {
+		systray.SetTemplateIcon(iconTemplateBytes, iconBytes)
+	}
 	systray.SetTooltip("HTML Clay")
 
 	sigCh := make(chan os.Signal, 1)
