@@ -211,6 +211,22 @@ func (wt *watcher) poke(path string) {
 	}
 }
 
+// emptyPending reports whether this path currently has a zero-byte candidate
+// waiting out watchEmptyQuiet. The save path asks before it overwrites: those
+// zero bytes are far more often a writer paused between its truncate and its
+// write than a finished document, and writing over them unlinks the inode that
+// writer still holds open.
+//
+// Deliberately keyed on a watcher that is actually watching. If nothing is, no
+// one will ever publish the candidate, and a guard that could not lift would wedge
+// the file against every future save.
+func (wt *watcher) emptyPending(path string) bool {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+	e, ok := wt.entries[path]
+	return ok && e.pendingHash != "" && len(e.pendingData) == 0
+}
+
 func (wt *watcher) shutdown() {
 	wt.mu.Lock()
 	wt.closed = true
@@ -335,7 +351,11 @@ func (wt *watcher) check(e *watchEntry) {
 		// the read itself cannot push it into a third poll; never forward, so a
 		// watcher polling slower than its own interval is unaffected. A file
 		// still being written hashes differently next poll and starts over.
-		if poke {
+		// Never for an empty candidate: that one is held to emptyQuiet precisely
+		// because a poke cannot speak for the writer it guards against, and
+		// backdating here would shorten the hold before the empty branch below
+		// ever gets to refuse the poke.
+		if poke && len(data) != 0 {
 			if wait := wt.quiet - wt.poll/2; wait > 0 {
 				e.pendingAt = e.pendingAt.Add(-wait)
 			}

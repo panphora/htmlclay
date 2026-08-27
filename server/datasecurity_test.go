@@ -436,6 +436,13 @@ func TestDataReadsDuringConcurrentSavesStress(t *testing.T) {
 
 	start := make(chan struct{})
 	stop := make(chan struct{})
+	// Closed after the writer's first successful save. Making a goroutine runnable
+	// is not the same as running it: without this, a schedule that runs all the
+	// readers first and then closes stop leaves the writer taking the ready stop
+	// case having saved nothing, and the count below fails for a scheduling reason
+	// rather than a real one.
+	saved := make(chan struct{})
+	var savedOnce sync.Once
 	var writer sync.WaitGroup
 	writer.Add(1)
 	go func() {
@@ -453,6 +460,7 @@ func TestDataReadsDuringConcurrentSavesStress(t *testing.T) {
 				return
 			}
 			note(&saves)
+			savedOnce.Do(func() { close(saved) })
 		}
 	}()
 
@@ -485,6 +493,7 @@ func TestDataReadsDuringConcurrentSavesStress(t *testing.T) {
 	// A start barrier, so the readers and the writer run against each other rather
 	// than trickling out behind however long the spawn loop took.
 	close(start)
+	testutil.Receive(t, 30*time.Second, "the writer's first save", saved)
 	readersWG.Wait()
 	close(stop)
 	writer.Wait()

@@ -185,6 +185,19 @@ func waitRearmed(t *testing.T, b *broker, c *manualClock) {
 		armed, fired := batchTimer(b, c)
 		return armed && !fired
 	})
+	// And it must be armed for a full debounce. Freshness alone accepts a zero
+	// duration timer, which the manual clock will not fire until the next Advance
+	// even though production would run it immediately.
+	b.mu.Lock()
+	timer := b.timer.(*manualTimer)
+	debounce := b.debounce
+	b.mu.Unlock()
+	c.mu.Lock()
+	deadline, now := timer.deadline, c.now
+	c.mu.Unlock()
+	if want := now.Add(debounce); !deadline.Equal(want) {
+		t.Fatalf("the rearmed timer is due in %v, want a full debounce of %v", deadline.Sub(now), debounce)
+	}
 }
 
 // The clock is test infrastructure that several assertions now rest on, so the

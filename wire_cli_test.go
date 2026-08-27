@@ -98,46 +98,6 @@ func waitForFile(t *testing.T, path string) {
 	})
 }
 
-// reapOrphanAfterTest registers a cleanup that kills the grandchild the orphan
-// fixtures leave behind, and returns the path the fixture writes its PID to.
-//
-// The grandchild has to OUTLIVE the request -- that is the property both orphan
-// tests assert -- so it cannot simply be short-lived. But it must not outlive the
-// test binary: on Windows a running .exe is locked, so while the grandchild holds
-// htmlclay.test.exe, `go test`'s own cleanup cannot delete it and the run exits 1
-// with "unlinkat ...: Access is denied" even though every test passed. Unlinking an
-// open file is fine on macOS and Linux, which is why this only ever showed on
-// Windows. Killing it after the assertions keeps the coverage and ends the race.
-//
-// Kill rather than Signal(os.Interrupt): the fixture does observe the stop signals,
-// but a graceful stop is not the point here and os.Process.Signal cannot deliver
-// them on Windows anyway.
-func reapOrphanAfterTest(t *testing.T) string {
-	t.Helper()
-	pidPath := filepath.Join(t.TempDir(), "orphan.pid")
-	t.Cleanup(func() {
-		data, err := os.ReadFile(pidPath)
-		if err != nil {
-			// The fixture never got far enough to report a PID. Nothing to reap,
-			// and the test's own failure is the interesting one.
-			return
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil || pid <= 0 {
-			t.Logf("orphan pid file %q holds %q, which is not a pid", pidPath, data)
-			return
-		}
-		p, err := os.FindProcess(pid)
-		if err != nil {
-			return
-		}
-		// Already gone if it rode out its own timer; that is not a failure.
-		_ = p.Kill()
-		_, _ = p.Wait()
-	})
-	return pidPath
-}
-
 // fakeOrigin binds a loopback server the CLI can be pointed at, and returns its
 // port. It is how a stranger holding a remembered port is tested: a real site
 // cannot be made to answer 500 or to redirect.
@@ -747,6 +707,44 @@ func TestWireServeSurvivesAnOversizedHandlerLine(t *testing.T) {
 	waitForExit(t, watching)
 }
 
+// reapOrphanDescendant makes the test responsible for the descendant the orphan
+// fixtures leave running.
+//
+// Those descendants are deliberately unreachable from the CLI, which is the whole
+// behaviour under test. Nothing made them reachable from the TEST either, so they
+// sat out their own 20s timer holding this test binary open. On Windows that is
+// fatal to the run rather than untidy: `go test` cannot unlink htmlclay.test.exe
+// while a copy of it is still running, so the job fails at cleanup after every
+// package has passed. It stayed hidden for as long as the rest of the suite
+// happened to take longer than the timer, and surfaced the moment it got faster.
+// Reaping is bounded by the test rather than by a race between two durations, so
+// making the suite faster again cannot bring it back.
+func reapOrphanDescendant(t *testing.T) {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "orphan.pid")
+	t.Setenv("HTMLCLAY_WIRE_HELPER_PIDFILE", pidFile)
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			// The fixture never got as far as spawning one, which several failure
+			// paths through these tests reach legitimately.
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil {
+			t.Errorf("orphan pid file holds %q, want a pid", raw)
+			return
+		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return
+		}
+		// No Wait: the descendant is a grandchild, reparented when the handler
+		// exited, so this process cannot reap it and does not need to.
+		_ = proc.Kill()
+	})
+}
+
 // A handler that leaves something behind holding stdout must not hold the
 // request open forever with it. This is the case where draining to EOF before
 // waiting never returns.
@@ -754,7 +752,7 @@ func TestWireServeSurvivesADescendantHoldingStdout(t *testing.T) {
 	file, _, cfgBase := openTestSite(t)
 	t.Setenv("HTMLCLAY_WIRE_HELPER", "1")
 	t.Setenv("HTMLCLAY_WIRE_HELPER_MODE", "orphan")
-	t.Setenv("HTMLCLAY_WIRE_ORPHAN_PID", reapOrphanAfterTest(t))
+	reapOrphanDescendant(t)
 
 	server := newWireHarness(t, cfgBase)
 	serving := server.background(append([]string{"serve", file, "--"}, wireHelperCommand()...)...)
@@ -788,7 +786,7 @@ func TestWireServeSurvivesADescendantHoldingStderr(t *testing.T) {
 	file, _, cfgBase := openTestSite(t)
 	t.Setenv("HTMLCLAY_WIRE_HELPER", "1")
 	t.Setenv("HTMLCLAY_WIRE_HELPER_MODE", "orphan-stderr")
-	t.Setenv("HTMLCLAY_WIRE_ORPHAN_PID", reapOrphanAfterTest(t))
+	reapOrphanDescendant(t)
 
 	server := newWireHarness(t, cfgBase)
 	serving := server.background(append([]string{"serve", file, "--"}, wireHelperCommand()...)...)
@@ -864,20 +862,15 @@ func wireHelperCommand() []string {
 	return []string{os.Args[0], "-test.run=TestWireHelperProcess"}
 }
 
-// reportOrphanPID writes the deliberately-orphaned grandchild's PID where the
-// test can find it, so reapOrphanAfterTest can kill it once the assertions are
-// done. The path arrives in HTMLCLAY_WIRE_ORPHAN_PID; with the variable unset the
-// grandchild is untracked and rides out its own timer, which is what happens for
-// any caller that does not opt in.
-//
-// Deliberately silent on failure: this runs inside the fixture, where a t is out
-// of reach and stdout is the wire protocol under test.
-func reportOrphanPID(child *exec.Cmd) {
-	path := os.Getenv("HTMLCLAY_WIRE_ORPHAN_PID")
-	if path == "" || child.Process == nil {
+// noteOrphanPID records a spawned descendant's pid where the test that caused it
+// can find it. The descendant deliberately outlives this handler, so the test is
+// the only thing left that can end it.
+func noteOrphanPID(child *exec.Cmd) {
+	pidFile := os.Getenv("HTMLCLAY_WIRE_HELPER_PIDFILE")
+	if pidFile == "" || child.Process == nil {
 		return
 	}
-	_ = os.WriteFile(path, []byte(strconv.Itoa(child.Process.Pid)), 0644)
+	os.WriteFile(pidFile, []byte(strconv.Itoa(child.Process.Pid)), 0644)
 }
 
 // TestWireHelperProcess is the handler command, not a test. It exits before the
@@ -909,10 +902,10 @@ func TestWireHelperProcess(t *testing.T) {
 		// other side only ever sees EOF if the CLI takes the pipe away.
 		child := exec.Command(os.Args[0], "-test.run=TestWireHelperProcess")
 		child.Env = append(os.Environ(), "HTMLCLAY_WIRE_HELPER_MODE=sleep",
-			"HTMLCLAY_WIRE_HELPER_OUT=")
+			"HTMLCLAY_WIRE_HELPER_OUT=", "HTMLCLAY_WIRE_HELPER_PIDFILE=")
 		child.Stdout = os.Stdout
 		child.Start()
-		reportOrphanPID(child)
+		noteOrphanPID(child)
 		fmt.Println("working")
 	case "orphan-stderr":
 		// A descendant that inherits STDERR and outlives its parent. Nothing
@@ -920,10 +913,10 @@ func TestWireHelperProcess(t *testing.T) {
 		// goroutine never sees EOF and only WaitDelay can end the wait.
 		child := exec.Command(os.Args[0], "-test.run=TestWireHelperProcess")
 		child.Env = append(os.Environ(), "HTMLCLAY_WIRE_HELPER_MODE=sleep",
-			"HTMLCLAY_WIRE_HELPER_OUT=")
+			"HTMLCLAY_WIRE_HELPER_OUT=", "HTMLCLAY_WIRE_HELPER_PIDFILE=")
 		child.Stderr = os.Stderr
 		child.Start()
-		reportOrphanPID(child)
+		noteOrphanPID(child)
 		fmt.Println("answered")
 	case "sleep":
 		// SIGTERM has to be observable, or a test cannot tell "the signal
@@ -935,8 +928,9 @@ func TestWireHelperProcess(t *testing.T) {
 		}
 		// The orphan fixture is deliberately unreachable, so nothing signals it
 		// and it always rides out this timer. Keep it well past any drain or
-		// cancel window but short enough that a CI run checking for stray
-		// processes right after `go test` is not looking at a minute of them.
+		// cancel window. It no longer has to be short enough to expire before the
+		// suite ends: reapOrphanDescendant kills it in cleanup, which is what
+		// stops it holding this binary open on Windows.
 		select {
 		case <-stop:
 			if out != "" {

@@ -774,6 +774,10 @@ func TestServeAssetSymlinkSwapIsCaughtByTheDescriptorCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(swap, "config.json"), []byte("benign"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// An ordinary asset outside the swapped directory, used as the control below.
+	if err := os.WriteFile(filepath.Join(fx.home, "assets", "control.js"), []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	swaps := 0
 	fx.srv.beforeAssetCapabilityOpen = func() {
@@ -797,6 +801,14 @@ func TestServeAssetSymlinkSwapIsCaughtByTheDescriptorCheck(t *testing.T) {
 	}
 	if w.Code != 404 {
 		t.Fatalf("swapped asset = %d, want 404", w.Code)
+	}
+
+	// A control, without which a serve path that refused EVERY asset would satisfy
+	// everything above. The refusal has to be the descriptor check noticing the
+	// swap, not the handler having stopped serving assets at all.
+	fx.srv.beforeAssetCapabilityOpen = nil
+	if c := serveAssetRequest(t, fx, "assets/control.js", nil); c.Code != 200 {
+		t.Fatalf("the unswapped control asset = %d, want 200: this test proves nothing if every asset is refused", c.Code)
 	}
 }
 
