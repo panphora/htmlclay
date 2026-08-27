@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http/httptest"
@@ -678,5 +679,57 @@ func TestServeAssetHomeRootNotExposed(t *testing.T) {
 	// never offered, so the broker denies without prompting: fixed 403.
 	if w.Code != 403 {
 		t.Errorf("expected 403 for home-root sibling, got %d", w.Code)
+	}
+}
+
+// TestMetaPathIsURLForm pins the separator in the meta document's `path`.
+//
+// `path` is the field a client builds a URL from, and the URL this same document
+// is served at is forward-slashed. RelPath comes from filepath.Rel, though, so on
+// Windows it arrives with backslashes: without ToSlash the host would report
+// "sub\page.htmlclay" for a file it serves at "/sub/page.htmlclay", and the first
+// client to join that onto an origin would 404 on Windows only. absolutePath is
+// the OS-native counterpart and deliberately keeps the platform's separators.
+//
+// The fixture is NESTED on purpose. TestMetaValid uses a flat file at the home
+// root, where no separator appears at all, which is why this went unnoticed.
+func TestMetaPathIsURLForm(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	registerSubdirPage(t, srv, "sub")
+
+	page := filepath.Join(srv.sessions.HomeDir(), "sub", "page.htmlclay")
+	f, ok := srv.sessions.LookupByPath(page)
+	if !ok {
+		t.Fatal("the subdir page is not registered")
+	}
+
+	req := httptest.NewRequest("GET", "/_/meta/"+f.Token, nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("token", f.Token)
+
+	w := httptest.NewRecorder()
+	srv.handleMeta(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var meta struct {
+		Path         string `json:"path"`
+		AbsolutePath string `json:"absolutePath"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &meta); err != nil {
+		t.Fatalf("meta body is not JSON: %v", err)
+	}
+
+	if want := "sub/page.htmlclay"; meta.Path != want {
+		t.Errorf("meta path = %q, want %q; a client joining this onto an origin "+
+			"must reach the same URL the document is served at", meta.Path, want)
+	}
+	if strings.Contains(meta.Path, `\`) {
+		t.Errorf("meta path = %q: a backslash is not a URL separator", meta.Path)
+	}
+	// The OS-native field must NOT have been slashed along with it.
+	if meta.AbsolutePath != page {
+		t.Errorf("meta absolutePath = %q, want the OS-native %q", meta.AbsolutePath, page)
 	}
 }

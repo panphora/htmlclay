@@ -69,14 +69,19 @@ type fileMeta struct {
 	// for every file it serves. Added to the existing shape rather than replacing
 	// it: the body carried no `spec` before, so a spec client already read
 	// htmlclay as a bare core host, and every existing field still answers.
-	Spec         int      `json:"spec"`
-	Extensions   []string `json:"extensions"`
-	Path         string   `json:"path"`
-	AbsolutePath string   `json:"absolutePath"`
-	Name         string   `json:"name"`
-	Size         int64    `json:"size"`
-	LastModified string   `json:"lastModified"`
-	HTMLClayID   string   `json:"htmlclayid,omitempty"`
+	Spec       int      `json:"spec"`
+	Extensions []string `json:"extensions"`
+	// Path is the document's location relative to home, in URL form: always
+	// forward-slashed, so a client can build a URL from it. AbsolutePath is the
+	// OS-native counterpart and keeps the platform's own separators, which is why
+	// the two differ on Windows. Set through filepath.ToSlash, a no-op wherever
+	// the separator is already "/".
+	Path         string `json:"path"`
+	AbsolutePath string `json:"absolutePath"`
+	Name         string `json:"name"`
+	Size         int64  `json:"size"`
+	LastModified string `json:"lastModified"`
+	HTMLClayID   string `json:"htmlclayid,omitempty"`
 }
 
 func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) (*session.File, bool) {
@@ -962,8 +967,12 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// It relays snapshots only and refuses a `document` body; §10 is informative in
 		// v1, and updating viewers on save rather than by client relay is the flow the
 		// section itself describes as usual.
-		Extensions:   []string{"sync", "upload"},
-		Path:         f.RelPath,
+		Extensions: []string{"sync", "upload"},
+		// RelPath comes from filepath.Rel, so on Windows it arrives with
+		// backslashes; `path` is the field a client builds a URL from, and the URL
+		// this same document is served at is forward-slashed. AbsolutePath stays
+		// OS-native on purpose -- it names a file on disk, not a route.
+		Path:         filepath.ToSlash(f.RelPath),
 		AbsolutePath: f.AbsPath,
 		Name:         f.Name,
 		Size:         info.Size(),
