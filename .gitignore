@@ -1,6 +1,7 @@
 .env
 node_modules/
 htmlclay
+htmlclay.exe
 HTMLClay.app
 *.dmg
 executables/
