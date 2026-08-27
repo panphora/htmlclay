@@ -520,9 +520,17 @@ func (a *app) shutdown() {
 
 func fileURL(port int, relPath string) string {
 	base := fmt.Sprintf("http://127.0.0.1:%d/", port)
-	result, err := url.JoinPath(base, relPath)
+	// relPath comes from filepath.Rel, so on Windows its separators are
+	// backslashes. url.JoinPath percent-encodes those as %5C rather than reading
+	// them as separators, which collapses the whole path into ONE segment: a page
+	// at /Documents%5CGitHub%5Cnotes%5Cx.htmlclay resolves a relative
+	// "vendor/clay.js" against the server root, so every relative asset in a
+	// .htmlclay file 404s. Only the generated URL was ever affected -- the server
+	// already accepts forward slashes, because ValidatePath joins them onto the
+	// home dir and Windows takes either separator.
+	result, err := url.JoinPath(base, filepath.ToSlash(relPath))
 	if err != nil {
-		return base + relPath
+		return base + filepath.ToSlash(relPath)
 	}
 	return result
 }

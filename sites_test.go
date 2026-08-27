@@ -2405,3 +2405,42 @@ func TestTrustingOnceQuittingHasStartedBuildsNothing(t *testing.T) {
 		t.Errorf("trusting during a quit built %d site(s) nothing will shut down", n)
 	}
 }
+
+// TestFileURLUsesForwardSlashes pins the separator in a generated file URL.
+//
+// relPath reaches fileURL from filepath.Rel, so on Windows it arrives with
+// backslashes. url.JoinPath percent-encodes a backslash instead of reading it as
+// a separator, which turns the whole path into a single %5C-joined segment. A
+// browser then resolves every relative URL in the page -- a vendored script, a
+// stylesheet, an image -- against the server root rather than the file's own
+// folder, and they all 404. Only the generated URL was ever wrong: the server
+// accepts either separator, because ValidatePath joins the request path onto the
+// home dir and Windows takes both.
+//
+// The subtests spell out backslashes literally rather than using filepath.Join so
+// this fails on a Unix CI box too, where it would otherwise be vacuous.
+func TestFileURLUsesForwardSlashes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rel  string
+		want string
+	}{
+		{"windows separators", `Documents\GitHub\demos\note.htmlclay`,
+			"http://127.0.0.1:4000/Documents/GitHub/demos/note.htmlclay"},
+		{"already forward", "Documents/GitHub/demos/note.htmlclay",
+			"http://127.0.0.1:4000/Documents/GitHub/demos/note.htmlclay"},
+		{"bare filename", "note.htmlclay",
+			"http://127.0.0.1:4000/note.htmlclay"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fileURL(4000, tc.rel)
+			if got != tc.want {
+				t.Errorf("fileURL(4000, %q) = %q, want %q", tc.rel, got, tc.want)
+			}
+			if strings.Contains(got, "%5C") || strings.Contains(got, `\`) {
+				t.Errorf("fileURL(4000, %q) = %q: a backslash survived into the URL, so "+
+					"relative assets in the page will resolve against the server root", tc.rel, got)
+			}
+		})
+	}
+}
