@@ -881,7 +881,7 @@
         <p class="retention">Newest 20 kept, plus every version from the last 60 days</p>
       </div>
 
-      <p class="section-lede">The history is deliberately ordinary. Every version is a complete, uncompressed <span class="filechip">.html</span> file in the Backups folder.</p>
+      <p class="section-lede">The history is plain files. Every version is a complete, uncompressed <span class="filechip">.html</span> file in the Backups folder.</p>
       <div class="points">
         <article class="point">
           <h3>Plain files you can open without the app</h3>
@@ -900,11 +900,11 @@
 
     <section aria-labelledby="project-title">
       <h2 id="project-title">One file, or a whole project</h2>
-      <p class="section-lede">Double click a file and it opens in your normal browser, in a normal tab. Trust a folder when the files inside belong together.</p>
+      <p class="section-lede">Double click a file and it opens in an ordinary tab in your browser. Trust a folder when the files inside belong together.</p>
       <div class="feature-pair">
         <article class="point">
           <span class="point-tag">Trusted folders</span>
-          <h3>One folder, one stable address</h3>
+          <h3>The folder keeps a stable address</h3>
           <p>Every <span class="filechip">.htmlclay</span> file inside opens editable without another prompt, including files added later. Relative links work like they do on any static site.</p>
           <div class="mini-list">
             <div><b>Stable after a restart.</b> HTML Clay remembers the local port.</div>
@@ -918,16 +918,16 @@
           <h3>Images stay beside the document</h3>
           <p>An editable page can upload a file to a folder beside it, such as <code>assets-notes/</code>. The page receives a relative URL. An upload can be up to 25 MB, and HTML Clay stores it once by content hash rather than repeating it as base64 inside every save and version.</p>
           <div class="mini-list">
-            <div><b>No silent overwrites.</b> Files with different bytes get different names.</div>
-            <div><b>No active content.</b> HTML and JavaScript uploads are refused.</div>
-            <div><b>One folder for each document.</b> Assets from a project do not end up in one shared folder.</div>
+            <div><b>Files with different bytes get different names.</b></div>
+            <div><b>HTML and JavaScript uploads are refused.</b></div>
+            <div><b>Each document gets its own asset folder.</b></div>
           </div>
         </article>
       </div>
     </section>
 
     <section aria-labelledby="sync-title">
-      <h2 id="sync-title">The open page notices</h2>
+      <h2 id="sync-title">Changes on disk appear in the open page</h2>
       <div class="points">
         <article class="point">
           <h3>Another program changed the file</h3>
@@ -944,26 +944,26 @@
     <section id="safe" aria-labelledby="safe-title">
       <h2 id="safe-title">The exact safety boundary</h2>
       <div class="safe">
-        <p><b>A page can change only itself.</b> A trusted folder is the one exception. Any HTML Clay file inside it can change any other file in that folder, including files added later. Untrust the folder and that permission ends.</p>
-        <p><b>Nothing outside your home folder can be opened at all.</b> HTML Clay also refuses dotfiles, its settings, and its backups. A refusal looks the same whether the file exists or not, so a page cannot probe your disk by asking.</p>
+        <p><b>A page can write only to its own file.</b> A trusted folder is the one exception. Any HTML Clay file inside it can change any other file in that folder, including files added later. Untrust the folder and that permission ends.</p>
+        <p><b>Nothing outside your home folder can be opened at all.</b> HTML Clay also refuses dotfiles, its settings, and its backups. A missing file and a refused file return the same response, so a page cannot use HTML Clay to see what is on your disk.</p>
         <p><b>Your files stay on your machine.</b> HTML Clay checks for a new version once at startup. It sends no file contents, and nothing else leaves your machine.</p>
-        <p>The full model, including the risks it accepts on purpose, is written down in <a href="https://github.com/panphora/htmlclay/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+        <p>The full model, including the risks it accepts, is written down in <a href="https://github.com/panphora/htmlclay/blob/main/SECURITY.md">SECURITY.md</a>.</p>
       </div>
     </section>
 
     <section aria-labelledby="quiet-title">
       <h2 id="quiet-title">Tiny things you might notice</h2>
-      <p class="section-lede">Small guarantees you would only find by looking for them. Most of the work is in keeping ordinary file operations ordinary.</p>
+      <p class="section-lede">Small guarantees you would only find by looking for them.</p>
       <div class="quiet-list">
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Opening is read only.</b> A file you open and never save stays byte for byte unchanged.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>No script is ever injected into your page.</b> HTML Clay adds a save token, a durable id, and one cookie before sending the page to your browser. It strips those additions before anything reaches disk.</p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Opening is read only.</b> A file you open and never save is not changed.</p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>HTML Clay does not inject a script.</b> It adds a save token, a durable id, and one cookie before sending the page to your browser. It strips those additions before anything reaches disk.</p></div>
         <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>A save replaces the whole file.</b> HTML Clay writes and flushes a temporary file, then renames it over the target. On macOS and Linux, it also flushes the directory before reporting success.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Invalid bodies never reach disk.</b> HTML Clay refuses empty bodies, non HTML bodies, JSON bodies, and anything over 50 MB.</p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Invalid bodies never reach disk.</b> HTML Clay refuses empty bodies, anything that is not HTML, and anything over 50 MB.</p></div>
         <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Consecutive identical versions collapse.</b> HTML Clay never stores the same content twice in a row.</p></div>
         <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Your own save does not echo back.</b> The watcher suppresses the exact hash HTML Clay just wrote.</p></div>
         <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Half written files stay off screen.</b> HTML Clay shows an outside change only after repeated reads return the same bytes.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>A copied file forks its history.</b> The original and the copy cannot quietly write into the same backup record.</p></div>
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>An outside edit is backed up before your save wins.</b> The save succeeds, and the previous bytes remain in Backups.</p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>A copied file gets a separate backup record from the original.</b></p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>HTML Clay backs up an outside edit before saving over it.</b> The save succeeds, and the outside version remains in Backups.</p></div>
         <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Opening a file leaves no permanent copy.</b> If you open a file once and never save it, HTML Clay removes its history after a week.</p></div>
       </div>
     </section>
@@ -1011,14 +1011,14 @@
           </dl>
         </article>
       </div>
-      <p class="matrix-note">The beta labels are honest ones: the Windows and Linux permission prompts have not yet been exercised on real machines, and both fail closed. On Linux, a missing dialog tool causes the request to be denied. Windows does not yet detect when a folder is replaced at the same path.</p>
+      <p class="matrix-note">The Windows and Linux permission prompts have not yet been exercised on real machines, and both fail closed. On Linux, a missing dialog tool causes the request to be denied. Windows does not yet detect when a folder is replaced at the same path.</p>
     </section>
 
     <div class="developer-zone">
       <div class="developer-intro">
         <span class="dev-label">For developers</span>
-        <p class="display">The file is also the interface.</p>
-        <p>The same local address that makes editing feel ordinary gives your scripts two narrow ways in. One asks a program to edit the file. The other reads the file as structured JSON. The source is public under a source available license, and this version converts to plain MIT in February 2028.</p>
+        <p class="display">Your scripts can reach the file too.</p>
+        <p>The same local address that makes editing feel ordinary gives your scripts two narrow ways in. A program can edit the file or read it as JSON. The source is public under a source available license, and this version converts to plain MIT in February 2028.</p>
       </div>
 
       <section aria-labelledby="wire-title">
@@ -1028,8 +1028,8 @@
         <pre class="command" tabindex="0"><code>htmlclay wire serve &lt;file&gt; -- &lt;cmd&gt;</code></pre>
 
         <div class="point">
-          <h3>The handler contract is stdin, stdout, and an exit code</h3>
-          <p>The command receives a small JSON request on stdin. Each line it prints becomes a progress update that the page can show. Exit 0 means the work is done. The program edits the file on disk with whatever tools it already has. That makes <code>claude -p "$(cat)"</code> a working AI handler with no extra code.</p>
+          <h3>Your program reads stdin, prints progress, and exits 0</h3>
+          <p>The command receives a small JSON request on stdin. Each line it prints becomes a progress update that the page can show. Exit 0 means the work is done. The program edits the file on disk with whatever tools it already has. The command <code>claude -p "$(cat)"</code> works as an AI handler without extra code.</p>
         </div>
 
         <figure class="wire-flow" role="img" aria-label="Three step wire flow. First, the open page sends a small opaque JSON request. Second, the local handler reads stdin, reports progress on stdout, and edits the file directly. Third, HTML Clay notices an ordinary file change, versions it, and updates the page. No HTML crosses the channel.">
@@ -1043,9 +1043,9 @@
 
         <div class="point" style="margin-top: 19px;">
           <h3>Built to be trusted with your files</h3>
-          <p><b>No tab needs to be open.</b> An attached handler keeps watching the file. An agent that edits it at 3am still gets its writes versioned. HTML Clay enables history before the handler's first write. If the file cannot be read, it refuses to attach the handler instead of letting it run without versioning.</p>
-          <p><b>A page cannot pretend to be your handler.</b> Request headers that a browser cannot suppress tell HTML Clay whether a request came from a browser or a local process. Anything that identifies itself as a browser is refused the handler role.</p>
-          <p><b>"Nobody was listening" is a distinct answer, not a timeout.</b> The send response reports whether a handler queued the request, so a page never mistakes its own echo for delivery.</p>
+          <p><b>An attached handler works without an open tab.</b> It keeps watching the file, and edits are still versioned. HTML Clay enables history before the handler's first write. If the file cannot be read, it refuses to attach the handler instead of letting it run without versioning.</p>
+          <p><b>A browser cannot act as the handler.</b> Request headers that a browser cannot suppress tell HTML Clay whether a request came from a browser or a local process. Anything that identifies itself as a browser is refused the handler role.</p>
+          <p><b>If no program is attached, the page is told right away.</b> The send response reports whether a handler queued the request, so the page cannot mistake its own echo for delivery.</p>
           <p>The full protocol is in <a href="https://github.com/panphora/htmlclay/blob/main/docs/wire.md">docs/wire.md</a>.</p>
         </div>
       </section>
@@ -1071,14 +1071,14 @@
 
         <div class="api-note">
           <p><b>The same file boundary applies.</b> A data request can read only what a normal request could serve.</p>
-          <p><b>Read only by design.</b> It creates no editing session, save token, or version.</p>
+          <p><b>The API does not write.</b> It creates no editing session, save token, or version.</p>
         </div>
-        <p class="fine-print">The API uses the same rules dialect as the Hyperclay platform, so a rule written for either one works with the other. A caller can also pass ad hoc rules in the URL with <code>?data={...}</code>. The API deliberately sends no CORS headers. As a result, a page served by another local server on your machine cannot read your files.</p>
+        <p class="fine-print">The API uses the same rules dialect as the Hyperclay platform, so a rule written for either one works with the other. A caller can also pass ad hoc rules in the URL with <code>?data={...}</code>. The API sends no CORS headers, so a page served by another local server on your machine cannot read your files.</p>
       </section>
     </div>
 
     <div class="closer">
-      <p>A local file, with the parts a document deserves.</p>
+      <p>A file on your disk that saves itself.</p>
       <p class="closer-sub">Free to download and use. No account. Works offline.</p>
       <a class="btn" href="/#downloads">Download HTML Clay</a>
     </div>

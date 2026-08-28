@@ -1247,13 +1247,13 @@
         <pre class="termout" tabindex="0"><code><span class="output">[wire] attached as handler to http://127.0.0.1:52341 (/Users/you/Desktop/camping.htmlclay)</span></code></pre>
       </div>
 
-      <p class="demo-cap">That is the whole loop. This one is a demonstration; the download in the corner is the real file, and the rest of the page attaches a program to it.</p>
+      <p class="demo-cap">This demonstration uses the file you can download from the corner. The rest of the page shows how to attach a program to it.</p>
     </section>
 
     <section>
-      <p>No copying out of a chat window and pasting back in. No service in the middle. The program runs on your computer, as you, and the file on your disk is the only thing the two sides share.</p>
+      <p>The program runs on your computer, as you. Nothing gets copied out of a chat window or sent through a service. The page and the program share only the file on your disk.</p>
 
-      <p>Usually that program is an AI agent. It can just as easily be a formatter, a script you wrote, or five lines of shell. This page sets it up both ways: first with a robot that cannot fail, so you can watch the whole loop with nothing clever in it, then with an AI.</p>
+      <p>Usually that program is an AI agent. It could instead be a formatter, a script you wrote, or five lines of shell. This page starts with a script that only adds a line, then shows how to connect an AI.</p>
 
     </section>
 
@@ -1261,7 +1261,7 @@
       <h2 id="what">Before you start</h2>
       <ul class="mini-list">
         <li><b>HTML Clay 1.6 or newer,</b> and a file that opens and saves. If you have not made one yet, <a href="/get-started">get started</a> covers it in five minutes.</li>
-        <li><b>A terminal window you are willing to leave open.</b> Pasting commands into it is as technical as this page gets.</li>
+        <li><b>A terminal window you are willing to leave open.</b></li>
         <li><b>For the second half, a command line AI tool.</b> The example uses Claude Code. Anything that takes a prompt and can edit a file works the same way, and the page says exactly what you see if you do not have one.</li>
       </ul>
 
@@ -1337,21 +1337,21 @@
 &lt;/body&gt;
 &lt;/html&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 
-      <p>You do not have to read it. If you do, three lines are carrying the page.</p>
+      <p>Three lines do the work.</p>
 
       <ul class="mini-list">
-        <li><b>The script tag asks for two extras.</b> <code>wire</code> is what gives the page a way to ask for something. <code>sync</code> is what makes the answer appear in the open tab without a reload.</li>
-        <li><b><code>clay.wire.send</code> is the page asking.</b> You hand it what the person typed. Everything else on the page is an ordinary form.</li>
-        <li><b>The status line is built in JavaScript, not written into the file.</b> That matters more than it looks. Everything you can see in the page is what gets saved, so a line reading "thinking" would be written into your document and still be there tomorrow. The <code>clay</code> attribute on it says: show this, never save it. Build parts like that in code. If you type one into the file by hand, the first save deletes it.</li>
+        <li><b>The script tag enables two extras.</b> <code>wire</code> gives the page a way to ask for something. <code>sync</code> makes the answer appear in the open tab without a reload.</li>
+        <li><b><code>clay.wire.send</code> sends the request.</b> You hand it what the person typed. Everything else on the page is an ordinary form.</li>
+        <li><b>The status line is built in JavaScript, not written into the file.</b> Everything you can see in the page is what gets saved, so a line reading "thinking" would be written into your document and still be there tomorrow. The <code>clay</code> attribute makes the line visible without saving it. Build parts like that in code. If you type one into the file by hand, the first save deletes it.</li>
       </ul>
 
-      <p>Double-click the file now so it is open in a tab. Press Send if you like: a moment later the status reports that nothing is attached, which is the honest answer rather than a spinner that never stops.</p>
+      <p>Double-click the file so it is open in a tab, then press Send. A moment later the status reports that nothing is attached instead of hanging.</p>
     </section>
 
     <section class="step" aria-labelledby="a2">
       <h2 id="a2"><span class="stepnum">2</span> The robot</h2>
 
-      <p>A robot here is just a program. Any program. HTML Clay runs it once each time the page asks for something, and three plain rules connect the two.</p>
+      <p>A robot here is any program. HTML Clay runs it once each time the page asks for something, and three plain rules connect the two.</p>
 
       <ol class="seq">
         <li>The request arrives on the program's standard input, and the file's location arrives in an environment variable called <code>HTMLCLAY_WIRE_FILE</code>.</li>
@@ -1370,7 +1370,7 @@ perl -pi -e &quot;s|&lt;/ul&gt;|$LINE\n  &lt;/ul&gt;|&quot; &quot;$HTMLCLAY_WIRE
 
 echo &quot;added a line at $NOW&quot;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 
-      <p>It prints a progress line, adds one line to the list in the file stamped with the current time, and prints that it finished. It ignores what you typed, on purpose. This first robot exists so you can watch the loop run with nothing clever inside it. The words start mattering in the next step.</p>
+      <p>It prints a progress line, adds one line to the list in the file stamped with the current time, and prints that it finished. It ignores what you typed. This first script lets you watch the connection work. The next script reads what you typed.</p>
     </section>
 
     <section class="step" aria-labelledby="a3">
@@ -1384,11 +1384,11 @@ htmlclay wire serve robot-notes.htmlclay -- bash robot.sh</code></pre></div><but
 
       <p>The first line teaches this terminal window the <code>htmlclay</code> command, because on a Mac the command lives inside the app rather than on your path. It lasts until you close the window, and putting the same line in your <code>~/.zshrc</code> keeps it. On Linux, skip it: <code>htmlclay</code> is already a command. On Windows it is <code>htmlclay.exe</code>, in the folder you unzipped.</p>
 
-      <p>The last line is the one doing the work: send requests from this file to this program. The terminal answers with one line and then waits.</p>
+      <p>The last line sends requests from this file to this program. The terminal answers with one line and then waits.</p>
 
       <div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre class="termout" tabindex="0"><code><span class="output">[wire] attached as handler to http://127.0.0.1:52341 (/Users/you/Desktop/robot-notes.htmlclay)</span></code></pre></div>
 
-      <p>Your port number and your username will differ, and that is fine. Leave it running. The robot is attached to your file for exactly as long as this command runs, and not a second longer.</p>
+      <p>Your port number and your username will differ. Leave it running. The robot is attached to your file while this command runs.</p>
 
       <p class="fine-print">If it says <code>no HTML Clay site is serving this file; open it first</code>, the file has not been opened since HTML Clay last started. Double-click it and run the command again.</p>
     </section>
@@ -1404,16 +1404,16 @@ htmlclay wire serve robot-notes.htmlclay -- bash robot.sh</code></pre></div><but
         <li>The status settles on <b>done</b>.</li>
       </ol>
 
-      <p>Press Send a few more times. One press, one run, one new line.</p>
+      <p>Press Send a few more times. Each press adds one line.</p>
 
-      <p>Three things quietly happened that are worth saying out loud. The page saved itself before asking, so the robot read exactly what you were looking at. The robot's edit went into <code>robot-notes.htmlclay</code> itself, so it is already saved: close the tab, open the file again, and the robot's lines are all still there. And a complete copy of the file from before the edit went into Backups, exactly as for any other save, so nothing a robot does to your file is beyond undoing.</p>
+      <p>The page saved itself before asking, so the robot read what you were looking at. The robot edited <code>robot-notes.htmlclay</code> itself, so its lines stay after you close and reopen the tab. HTML Clay put a complete copy of the file from before the edit in Backups, as it does before any other save, so you can go back.</p>
     </section>
 
     <section aria-labelledby="ai">
       <h2 id="ai">Now make it think</h2>
-      <p class="section-lede">Same loop. Swap the program.</p>
+      <p class="section-lede">The setup stays the same, with a different program.</p>
 
-      <p>The robot ignored your words. An AI agent is a robot that reads them.</p>
+      <p>This program reads what you typed.</p>
 
       <section class="demo demo-inline" id="demo-bread" data-kind="recipe" aria-label="A demonstration of an AI agent rewriting a file">
         <div class="demo-doc code-window">
@@ -1455,10 +1455,10 @@ htmlclay wire serve robot-notes.htmlclay -- bash robot.sh</code></pre></div><but
           <pre class="termout" tabindex="0"><code><span class="output">[wire] attached as handler to http://127.0.0.1:52341 (/Users/you/Desktop/banana-bread.htmlclay)</span></code></pre>
         </div>
 
-        <p class="demo-cap">Watch the oven line: doubling a recipe is not multiplying every number, and the program left it alone. Cut down for the page, a real ask takes fifteen seconds to a minute.</p>
+        <p class="demo-cap">The oven temperature should not double, and the program left it alone. This demonstration is shortened for the page. An AI request takes fifteen seconds to a minute.</p>
       </section>
 
-      <p>This step needs one thing the rest of the page did not: an AI you can run from the terminal. The example uses Claude Code. If typing <code>claude --version</code> prints a version number, you are ready. If it prints <code>command not found</code>, the robot above has already shown you everything this page teaches, and this step will be here when you have one.</p>
+      <p>For this step, you need an AI you can run from the terminal. The example uses Claude Code. If typing <code>claude --version</code> prints a version number, you are ready. If it prints <code>command not found</code>, you can stop here. The robot above uses the same connection without an AI.</p>
 
       <p>Save this as <code>agent.sh</code>, next to the others.</p>
 
@@ -1482,19 +1482,19 @@ wait &quot;$agent&quot;</code></pre></div><button class="copybtn" type="button">
 
       <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">htmlclay wire serve robot-notes.htmlclay -- bash agent.sh</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 
-      <p>Now ask for real things. "Add everything I need for a beach trip to the list." "Rewrite my notes so they are half as long." "Turn my notes into a haiku."</p>
+      <p>Try one of these requests. "Add everything I need for a beach trip to the list." "Rewrite my notes so they are half as long." "Turn my notes into a haiku."</p>
 
-      <p>The rhythm is the same, only slower. The status says <b>thinking</b> while the agent works, and then the page changes in front of you: new list items, or your own notes rewritten in place. A small ask usually takes somewhere between fifteen seconds and a minute.</p>
+      <p>The status says <b>thinking</b> while the agent works. When it finishes, the page shows new list items or rewrites your notes in place. A small ask usually takes somewhere between fifteen seconds and a minute.</p>
 
-      <p>Two lines in that script are doing more than they look.</p>
+      <p>Two lines in that script need explaining.</p>
 
       <ul class="mini-list">
-        <li><b>The heartbeat.</b> A request whose program has gone quiet for two minutes is given up on, and every line it prints resets that clock. Printing "thinking" every five seconds is what lets a slow agent take as long as it needs.</li>
+        <li><b>The heartbeat.</b> HTML Clay stops waiting after two minutes without output, and every line resets that clock. Printing "thinking" every five seconds lets a slow agent take as long as it needs.</li>
         <li><b><code>1&gt;&amp;2</code> sends the agent's own chatter to your terminal rather than the page.</b> The page only needs to know that something is happening.</li>
       </ul>
 
       <div class="callout">
-        <p><b>Where your file goes.</b> An AI agent reads your file and sends what it reads to its own provider, under your own account with them. That is the agent doing what you installed it to do. HTML Clay sends nothing anywhere: it starts the program you named and gets out of the way.</p>
+        <p><b>Where your file goes.</b> An AI agent reads your file and sends what it reads to its own provider, under your own account with them. HTML Clay does not send the file anywhere. It starts the program you named.</p>
         <p>The agent also runs with your permissions, in the folder you started it from. <code>acceptEdits</code> is what lets it write without stopping to ask about every change. If you would rather approve each one, use your agent's stricter setting instead.</p>
       </div>
     </section>
@@ -1541,13 +1541,13 @@ wait &quot;$agent&quot;</code></pre></div><button class="copybtn" type="button">
             <text x="97" y="127">and the page updates</text>
           </g>
         </svg>
-        <p class="flowcap">No document travels between the page and the program. The file is the only thing they share.</p>
+        <p class="flowcap">The document stays in the file on disk.</p>
       </div>
 
-      <p>The page never talks to your program directly, and no page content travels between them. The page sends a short message. Your program edits the file with whatever tools it already has. The edit reaches the page the same way any file change does. HTML Clay calls this channel the wire, and four things about it are worth knowing even if you never look deeper.</p>
+      <p>The page does not connect directly to your program, and it sends no page content to it. It sends a short message through HTML Clay. Your program edits the file with whatever tools it already has, and HTML Clay updates the page as it does after any file change. HTML Clay calls this channel the wire. Four rules apply.</p>
 
       <div class="quiet-list">
-        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>The program runs only while your command runs.</b> Ctrl+C, and nothing is attached to anything.</p></div>
+        <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>The program runs only while your command runs.</b> Ctrl+C detaches it.</p></div>
         <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>A page cannot pretend to be your program.</b> Browsers announce themselves in ways they cannot suppress, so a web page can ask, but only a program you started yourself can answer.</p></div>
         <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>A page can only reach its own file.</b> It cannot send requests about some other file on your disk, even one open in the next tab.</p></div>
         <div class="quiet-item"><span class="quiet-check" aria-hidden="true">✓</span><p><b>Every edit is versioned.</b> A program's change is backed up exactly like yours, even when no tab is open at the time.</p></div>
@@ -1556,7 +1556,7 @@ wait &quot;$agent&quot;</code></pre></div><button class="copybtn" type="button">
 
     <section aria-labelledby="edges">
       <h2 id="edges">The rough edges</h2>
-      <p class="section-lede">Said here so you do not have to find them yourself.</p>
+      <p class="section-lede">Known limitations.</p>
 
       <div class="points">
         <article class="point">
@@ -1568,12 +1568,12 @@ wait &quot;$agent&quot;</code></pre></div><button class="copybtn" type="button">
           <p>A second attach to the same file is refused while the first is running. Stop the old one with Ctrl+C first.</p>
         </article>
         <article class="point">
-          <h3>A silent program gets two minutes</h3>
-          <p>Every line it prints buys it more time, which is why both example scripts print while they work. An agent grinding silently on a huge request can time out. Small requests are fine.</p>
+          <h3>A program gets two minutes without output</h3>
+          <p>Each line resets the timer, which is why both example scripts print while they work. A large request can time out if the agent prints nothing for two minutes. Small requests are fine.</p>
         </article>
         <article class="point">
           <h3>Your next save after a robot edit warns you</h3>
-          <p>The first time you edit the page yourself after a program has changed the file, the page reports that the file changed outside this tab. Nothing is lost, both versions are in Backups, and your save carries the program's edit forward. It reads more alarming than it is.</p>
+          <p>The first time you edit the page yourself after a program has changed the file, the page reports that the file changed outside this tab. Nothing is lost, both versions are in Backups, and your save carries the program's edit forward.</p>
         </article>
         <article class="point">
           <h3>Give the parts a program rewrites an id</h3>
@@ -1596,8 +1596,8 @@ wait &quot;$agent&quot;</code></pre></div><button class="copybtn" type="button">
     </section>
 
     <div class="closer">
-      <p>Ask the page. Watch it change.</p>
-      <p class="closer-sub">The file is the whole conversation.</p>
+      <p>Try it on a file of your own.</p>
+      <p class="closer-sub">The app is free to download.</p>
       <a class="btn" href="/#downloads">Download HTML Clay</a>
     </div>
 

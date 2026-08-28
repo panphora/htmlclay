@@ -110,6 +110,13 @@ func extractFilePath(rawPath string) string {
 func (s *Server) handleServeFile(w http.ResponseWriter, r *http.Request) {
 	rawPath := r.PathValue("path")
 
+	// Answered before any path or query work, because these two paths name the app
+	// itself rather than a file on disk. favicon.go has the reason they cannot be
+	// served the ordinary way.
+	if serveAppFavicon(w, r, rawPath) {
+		return
+	}
+
 	// Classified from the query string alone, before any path work, because a malformed data
 	// parameter is a property of what the caller sent and reveals nothing about what is on disk.
 	// Anything that is not a data request falls through and is served exactly as it is today.
