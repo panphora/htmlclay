@@ -2421,18 +2421,25 @@ func TestTrustingOnceQuittingHasStartedBuildsNothing(t *testing.T) {
 // this fails on a Unix CI box too, where it would otherwise be vacuous.
 func TestFileURLUsesForwardSlashes(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		rel  string
-		want string
+		name    string
+		rel     string
+		want    string
+		winOnly bool
 	}{
+		// filepath.ToSlash only rewrites separators on Windows, which is correct:
+		// on Unix a backslash is an ordinary character in a filename, so %5C is the
+		// right encoding for it and this expectation would be wrong there.
 		{"windows separators", `Documents\GitHub\demos\note.htmlclay`,
-			"http://127.0.0.1:4000/Documents/GitHub/demos/note.htmlclay"},
+			"http://127.0.0.1:4000/Documents/GitHub/demos/note.htmlclay", true},
 		{"already forward", "Documents/GitHub/demos/note.htmlclay",
-			"http://127.0.0.1:4000/Documents/GitHub/demos/note.htmlclay"},
+			"http://127.0.0.1:4000/Documents/GitHub/demos/note.htmlclay", false},
 		{"bare filename", "note.htmlclay",
-			"http://127.0.0.1:4000/note.htmlclay"},
+			"http://127.0.0.1:4000/note.htmlclay", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.winOnly && runtime.GOOS != "windows" {
+				t.Skip("path separator rewriting only applies on Windows")
+			}
 			got := fileURL(4000, tc.rel)
 			if got != tc.want {
 				t.Errorf("fileURL(4000, %q) = %q, want %q", tc.rel, got, tc.want)
