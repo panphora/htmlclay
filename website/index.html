@@ -64,7 +64,91 @@
 
     .sitenav a:hover { color: var(--ink); }
     .sitenav .brand { color: var(--ink); font-weight: 700; }
-    .sitenav .navlinks { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+    .sitenav .navlinks {
+      display: flex;
+      flex: 1;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: flex-end;
+      min-width: 0;
+      gap: 6px 18px;
+    }
+    .sitenav .github-clay {
+      display: inline-block;
+      position: relative;
+      color: var(--ink);
+      font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .github-clay:hover { color: var(--ink); }
+    .github-clay:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+      border-radius: 3px;
+    }
+    .github-bracket { color: var(--accent); }
+    .github-mascot {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 22px;
+      margin: 0 4px;
+      color: var(--btn-ink);
+      background: var(--btn);
+      border-radius: 52% 48% 43% 57% / 46% 42% 58% 54%;
+      box-shadow: 0 2px 0 var(--line);
+      transform: rotate(-3deg);
+      transform-origin: center bottom;
+      vertical-align: middle;
+    }
+    .github-mascot svg {
+      display: block;
+      width: 15px;
+      height: 15px;
+      fill: currentColor;
+    }
+    .github-word { position: relative; margin-right: 3px; }
+    .github-word::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: -2px;
+      left: 0;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 999px;
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform .28s ease;
+    }
+    .github-clay:hover .github-mascot { animation: knead-clay .55s ease-in-out; }
+    .github-clay:hover .github-word::after,
+    .github-clay:focus-visible .github-word::after { transform: scaleX(1); }
+    .github-clay:hover .github-close { transform: translateX(1px); }
+    .github-close { display: inline-block; transition: transform .2s ease; }
+
+    @keyframes knead-clay {
+      0%, 100% {
+        border-radius: 52% 48% 43% 57% / 46% 42% 58% 54%;
+        transform: rotate(-3deg) scale(1);
+      }
+      38% {
+        border-radius: 42% 58% 55% 45% / 56% 48% 52% 44%;
+        transform: rotate(4deg) scale(1.12, .88);
+      }
+      70% {
+        border-radius: 58% 42% 48% 52% / 43% 55% 45% 57%;
+        transform: rotate(-1deg) scale(.94, 1.08);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .github-clay:hover .github-mascot { animation: none; }
+      .github-word::after, .github-close { transition: none; }
+    }
     .navlinks a { white-space: nowrap; }
     .sitenav a[aria-current="page"] { color: var(--accent); }
     a { color: var(--accent); text-underline-offset: 2px; }
@@ -348,6 +432,7 @@
     <nav class="sitenav">
       <a class="brand" href="/">HTML Clay</a>
       <div class="navlinks">
+        <a class="github-clay" href="https://github.com/panphora/htmlclay" target="_blank" rel="noopener" aria-label="View HTML Clay source on GitHub"><span class="github-bracket" aria-hidden="true">&lt;</span><span class="github-mascot" aria-hidden="true"><svg viewBox="0 0 16 16" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></span><span class="github-word" aria-hidden="true">source</span><span class="github-bracket github-close" aria-hidden="true">/&gt;</span></a>
         <a href="/" aria-current="page">Home</a>
         <a href="/get-started">Get started</a>
         <a href="/features">Features</a>
