@@ -83,7 +83,7 @@ func TestBookmarkedURLSurvivesARestart(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("the bookmarked URL should answer after a restart: %d", code)
 	}
-	if !strings.Contains(body, "htmlclaytoken") {
+	if !strings.Contains(body, "savetoken") {
 		t.Fatal("the bookmarked URL should serve the file with a save token")
 	}
 	if got := atomic.LoadInt32(&prompts); got != 0 {
@@ -117,7 +117,7 @@ func TestRememberedAdHocPortServesOnlyTheRecoveryPage(t *testing.T) {
 	if !strings.Contains(body, "Nothing is open at this address") {
 		t.Fatalf("a parked port must serve the recovery page, got %q", body)
 	}
-	if strings.Contains(body, "loose") || strings.Contains(body, "htmlclaytoken") {
+	if strings.Contains(body, "loose") || strings.Contains(body, "savetoken") {
 		t.Fatal("a parked port served the file it once held")
 	}
 
@@ -243,7 +243,7 @@ func TestNestedTrustedFoldersAnchorAtTheBroadest(t *testing.T) {
 	}
 
 	code, body := fetch(t, fileURL(s.port, rel))
-	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("the anchoring origin should serve the file editable: %d", code)
 	}
 }
@@ -321,7 +321,7 @@ func TestOpenAfterStartupJoinsTheBoundSite(t *testing.T) {
 		t.Fatalf("an open after startup built another site: %d, want %d", len(second.sites), before)
 	}
 	code, body := fetch(t, fileURL(opened.port, rel))
-	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("the bound site should serve the newly opened file editable: %d", code)
 	}
 }

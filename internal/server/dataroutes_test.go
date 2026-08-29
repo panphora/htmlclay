@@ -97,7 +97,7 @@ func TestDataQueryTouchesNoPerFileState(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	if strings.Contains(w.Body.String(), "htmlclaytoken") {
+	if strings.Contains(w.Body.String(), "savetoken") {
 		t.Error("a data response carried a save token")
 	}
 	if len(w.Result().Cookies()) != 0 {
@@ -113,7 +113,7 @@ func TestDataQueryTouchesNoPerFileState(t *testing.T) {
 
 	// ...and the plain GET that follows still does all of it, so nothing was permanently skipped.
 	plain := get(t, srv, "/test.htmlclay", "test.htmlclay")
-	if !strings.Contains(plain.Body.String(), "htmlclaytoken") {
+	if !strings.Contains(plain.Body.String(), "savetoken") {
 		t.Error("the plain GET after a data request lost its token")
 	}
 	if !f.Observed() {
@@ -127,9 +127,9 @@ func TestDataQueryTouchesNoPerFileState(t *testing.T) {
 func TestDataQueryCannotReadATokenPresentOnDisk(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 	writeHome(t, srv, "test.htmlclay",
-		`<html htmlclaytoken="`+f.Token+`"><head><title>T</title></head><body><p>x</p></body></html>`)
+		`<html savetoken="`+f.Token+`"><head><title>T</title></head><body><p>x</p></body></html>`)
 
-	w := get(t, srv, `/test.htmlclay?data={tok:"html@htmlclaytoken",t:"title"}`, "test.htmlclay")
+	w := get(t, srv, `/test.htmlclay?data={tok:"html@savetoken",t:"title"}`, "test.htmlclay")
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}

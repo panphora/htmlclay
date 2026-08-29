@@ -71,8 +71,8 @@ func TestServeFile(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, `htmlclaytoken="`+f.Token+`"`) {
-		t.Fatal("response missing htmlclaytoken attribute")
+	if !strings.Contains(body, `savetoken="`+f.Token+`"`) {
+		t.Fatal("response missing savetoken attribute")
 	}
 	if !strings.Contains(body, "<p>Hello</p>") {
 		t.Fatal("response missing original content")
@@ -214,7 +214,7 @@ func TestReadInvalidToken(t *testing.T) {
 func TestSaveValid(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
-	newContent := `<!DOCTYPE html><html htmlclaytoken="tok"><body>Updated!</body></html>`
+	newContent := `<!DOCTYPE html><html savetoken="tok"><body>Updated!</body></html>`
 	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(newContent))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("token", f.Token)
@@ -234,8 +234,8 @@ func TestSaveValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error reading saved file: %v", err)
 	}
-	if strings.Contains(string(saved), "htmlclaytoken") {
-		t.Error("saved file should not contain htmlclaytoken")
+	if strings.Contains(string(saved), "savetoken") {
+		t.Error("saved file should not contain savetoken")
 	}
 	if !strings.Contains(string(saved), "Updated!") {
 		t.Error("saved file should contain new content")
@@ -401,7 +401,7 @@ func TestServeAssetLinkedPageNoToken(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if strings.Contains(w.Body.String(), "htmlclaytoken") {
+	if strings.Contains(w.Body.String(), "savetoken") {
 		t.Error("linked page must not receive a save token")
 	}
 	onDisk, _ := os.ReadFile(linked)
@@ -631,7 +631,7 @@ func TestServeOpenedHTMLFileNotMutated(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), `htmlclaytoken="`+f.Token+`"`) {
+	if !strings.Contains(w.Body.String(), `savetoken="`+f.Token+`"`) {
 		t.Error("opened html file should receive a save token")
 	}
 	onDisk, _ := os.ReadFile(pagePath)
@@ -656,11 +656,11 @@ func TestServeHTMLClayFileInjectsIDWithoutWritingDisk(t *testing.T) {
 	}
 	served := htmlutil.ReadHTMLClayID(w.Body.Bytes())
 	if !versions.IsCanonicalUUID(served) {
-		t.Errorf("the response carries no canonical htmlclayid: %q", served)
+		t.Errorf("the response carries no canonical documentid: %q", served)
 	}
 	onDisk, _ := os.ReadFile(f.AbsPath)
-	if strings.Contains(string(onDisk), "htmlclayid=") {
-		t.Error("serving wrote an htmlclayid to disk")
+	if strings.Contains(string(onDisk), "documentid=") {
+		t.Error("serving wrote an documentid to disk")
 	}
 }
 

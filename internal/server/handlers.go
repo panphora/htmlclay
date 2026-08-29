@@ -64,6 +64,26 @@ func (s *Server) readRegisteredFile(absPath string) ([]byte, error) {
 
 const maxSaveSize = 50 * 1024 * 1024
 
+// hostExtensions names the capabilities this host implements, in the spec §9
+// registry's spelling. Host scope: identical for every document served, which is
+// why both /_/meta routes read it from here instead of each carrying its own
+// literal and drifting the day one of them gains an extension.
+//
+// `sync` is announced because this host serves both halves of the §10 address. It
+// relays snapshots only and refuses a `document` body; §10 is informative in v1,
+// and updating viewers on save rather than by client relay is the flow the section
+// itself describes as usual.
+var hostExtensions = []string{"sync", "upload"}
+
+// hostMeta is the host-scope half of the discovery answer, and the whole of what
+// the tokenless route returns. Separate from fileMeta rather than reusing it with
+// empty fields: a body carrying `"name": "", "size": 0` describes a zero-byte file
+// with no name, which is a worse answer than saying nothing about any document.
+type hostMeta struct {
+	Spec       int      `json:"spec"`
+	Extensions []string `json:"extensions"`
+}
+
 type fileMeta struct {
 	// Spec and Extensions describe the HOST, not this document, and are the same
 	// for every file it serves. Added to the existing shape rather than replacing
@@ -81,7 +101,12 @@ type fileMeta struct {
 	Name         string `json:"name"`
 	Size         int64  `json:"size"`
 	LastModified string `json:"lastModified"`
-	HTMLClayID   string `json:"htmlclayid,omitempty"`
+	// Named for the attribute it reports, so a reader comparing the two is not
+	// asked to know they are the same thing. Renamed with the attribute rather
+	// than left behind: no client reads this field (both clients take only
+	// `spec`, `extensions` and `document` from a meta answer), so it has no frozen
+	// callers of its own.
+	HTMLClayID string `json:"documentid,omitempty"`
 }
 
 func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) (*session.File, bool) {
@@ -259,7 +284,7 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 	// it matches how every other reader here behaves, and it is what would still hold if a future
 	// write path stopped being a rename.
 	//
-	// Observable consequence, tested: ?data={id:"html@htmlclayid"} is null before the first save,
+	// Observable consequence, tested: ?data={id:"html@documentid"} is null before the first save,
 	// while the page's own clay.extractData() sees the injected id.
 	if mode.active() {
 		f.Unlock()
@@ -948,6 +973,29 @@ func atomicWriteFile(targetPath string, data []byte) error {
 	return nil
 }
 
+// handleHostMeta answers the tokenless GET /_/meta from spec §5: what this host
+// supports, and nothing about any document.
+//
+// It takes no token, checks nothing and can fail for no reason, and all three are
+// deliberate. §5 makes the caller the page a person just loaded, possibly with no
+// session at all, and makes this the only address a client is permitted to learn
+// capabilities from. Gate it and the client downgrades to plain saves, silently
+// losing every capability this host does offer.
+//
+// The `document` block is the only part a host ever withholds, and this route
+// withholds it always: a caller holding a token has a per-document route to ask
+// on. Omission is the conforming answer, and §5 is explicit that a client reads a
+// missing block as the absence of a version stamp and nothing more. What must
+// never happen here is a 404 for a per-document reason, which is why this handler
+// has no path to one: a 404 tells a client the whole host is spec-unaware.
+func (s *Server) handleHostMeta(w http.ResponseWriter, r *http.Request) {
+	noStoreJSON(w)
+	json.NewEncoder(w).Encode(hostMeta{
+		Spec:       specVersion,
+		Extensions: hostExtensions,
+	})
+}
+
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.lookupSession(w, r)
 	if !ok {
@@ -990,12 +1038,8 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meta := fileMeta{
-		Spec: specVersion,
-		// `sync` is announced because this host serves both halves of the §10 address.
-		// It relays snapshots only and refuses a `document` body; §10 is informative in
-		// v1, and updating viewers on save rather than by client relay is the flow the
-		// section itself describes as usual.
-		Extensions: []string{"sync", "upload"},
+		Spec:       specVersion,
+		Extensions: hostExtensions,
 		// RelPath comes from filepath.Rel, so on Windows it arrives with
 		// backslashes; `path` is the field a client builds a URL from, and the URL
 		// this same document is served at is forward-slashed. AbsolutePath stays

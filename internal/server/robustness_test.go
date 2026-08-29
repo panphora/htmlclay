@@ -41,7 +41,7 @@ func (fx *fileFixture) restore(t *testing.T, name string) *httptest.ResponseReco
 }
 
 // stripIDOnDisk is what an external editor doing a round trip through a tool that
-// does not understand htmlclayid looks like.
+// does not understand documentid looks like.
 func stripIDOnDisk(t *testing.T, path string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -55,7 +55,7 @@ func stripIDOnDisk(t *testing.T, path string) {
 
 // Blocker 1. The history key is resolved once and stored on session.File. When it
 // was recomputed per request from whatever was on disk, an external process
-// stripping the htmlclayid moved the key to a path hash, so the versions API
+// stripping the documentid moved the key to a path hash, so the versions API
 // listed nothing while the id-keyed backups sat on disk. That defeats the feature
 // in exactly the scenario the stale-write warning points the user at.
 func TestVersionsSurviveAnExternalIDStrip(t *testing.T) {
@@ -74,7 +74,7 @@ func TestVersionsSurviveAnExternalIDStrip(t *testing.T) {
 
 	after := fx.listVersions(t)["versions"].([]interface{})
 	if len(after) != len(before) {
-		t.Fatalf("stripping the htmlclayid lost the history: %d versions, want %d",
+		t.Fatalf("stripping the documentid lost the history: %d versions, want %d",
 			len(after), len(before))
 	}
 
@@ -343,11 +343,11 @@ func TestLaterServeSelfHealsTheIDWithoutWritingDisk(t *testing.T) {
 	}
 	tracked := htmlutil.ReadHTMLClayID(first.Body.Bytes())
 	if !versions.IsCanonicalUUID(tracked) {
-		t.Fatalf("the first serve carried no canonical htmlclayid: %q", tracked)
+		t.Fatalf("the first serve carried no canonical documentid: %q", tracked)
 	}
 
 	// An external editor round-tripping the file through a tool that does not
-	// understand htmlclayid.
+	// understand documentid.
 	stripIDOnDisk(t, fx.file.AbsPath)
 	before, err := os.ReadFile(fx.file.AbsPath)
 	if err != nil {
@@ -396,7 +396,7 @@ func TestExternalStripOfASavedIDSelfHeals(t *testing.T) {
 	}
 	tracked := htmlutil.ReadHTMLClayID(first.Body.Bytes())
 	if !versions.IsCanonicalUUID(tracked) {
-		t.Fatalf("the first serve carried no canonical htmlclayid: %q", tracked)
+		t.Fatalf("the first serve carried no canonical documentid: %q", tracked)
 	}
 
 	// A real client round trip puts the id on disk, which is the only way it ever

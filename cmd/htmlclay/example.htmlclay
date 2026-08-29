@@ -134,7 +134,11 @@
       }
 
       async function save() {
-        const token = html.getAttribute('htmlclaytoken');
+        // Both spellings, current one first. This file is a document, and a saved
+        // document is a frozen client: whatever it reads today it goes on reading
+        // for years, including on an older HTML Clay that still serves the
+        // pre-spec name.
+        const token = html.getAttribute('savetoken') || html.getAttribute('htmlclaytoken');
         if (!token) {
           setStatus('No token: open this file through the HTML Clay app, not directly in a browser.', 'err');
           return;

@@ -110,7 +110,7 @@ func TestDataAPIRejectsEncodedTraversal(t *testing.T) {
 	}
 }
 
-// The narrow form (reading @htmlclaytoken) is not enough on its own: @outerHTML hands back the whole
+// The narrow form (reading @savetoken) is not enough on its own: @outerHTML hands back the whole
 // document, so if either server-side injection were present in the parsed tree it would ride out
 // inside a string the narrow test never looks at.
 func TestDataQueryCannotReachTheInjectionsViaOuterHTML(t *testing.T) {
@@ -118,7 +118,7 @@ func TestDataQueryCannotReachTheInjectionsViaOuterHTML(t *testing.T) {
 
 	// Serve once as a document so the id and token exist, then save so an id lands on disk.
 	get(t, srv, "/test.htmlclay", "test.htmlclay")
-	saved := `<!DOCTYPE html><html htmlclayid="persisted-id" htmlclaytoken="` + f.Token +
+	saved := `<!DOCTYPE html><html documentid="persisted-id" savetoken="` + f.Token +
 		`"><head><title>T</title></head><body><p>x</p></body></html>`
 	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(saved))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
@@ -134,14 +134,14 @@ func TestDataQueryCannotReachTheInjectionsViaOuterHTML(t *testing.T) {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	if strings.Contains(body, f.Token) || strings.Contains(body, "htmlclaytoken") {
+	if strings.Contains(body, f.Token) || strings.Contains(body, "savetoken") {
 		t.Errorf("the whole-document read carried a save token: %s", body)
 	}
 
 	// The plain GET of the same file still carries both, so this is a data-face property rather
 	// than the injections having stopped happening.
 	plain := get(t, srv, "/test.htmlclay", "test.htmlclay")
-	if !strings.Contains(plain.Body.String(), "htmlclaytoken") {
+	if !strings.Contains(plain.Body.String(), "savetoken") {
 		t.Error("the plain GET lost its token; this test would pass for the wrong reason")
 	}
 }
@@ -149,7 +149,7 @@ func TestDataQueryCannotReachTheInjectionsViaOuterHTML(t *testing.T) {
 func TestDataQueryHtmlclayidIsNullBeforeFirstSave(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 
-	w := get(t, srv, `/test.htmlclay?data={id:"html@htmlclayid"}`, "test.htmlclay")
+	w := get(t, srv, `/test.htmlclay?data={id:"html@documentid"}`, "test.htmlclay")
 	if w.Code != 200 {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
@@ -325,7 +325,7 @@ func TestDataReadCannotLandInsideASave(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	page := func(marker string) string {
-		return `<!DOCTYPE html><html htmlclaytoken="` + f.Token +
+		return `<!DOCTYPE html><html savetoken="` + f.Token +
 			`"><head><title>` + marker + `</title></head><body><p>` + marker + `</p></body></html>`
 	}
 	if err := os.WriteFile(f.AbsPath, []byte(page("AAA")), 0644); err != nil {
@@ -414,7 +414,7 @@ func TestDataReadsDuringConcurrentSavesStress(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	page := func(marker string) string {
-		return `<!DOCTYPE html><html htmlclaytoken="` + f.Token +
+		return `<!DOCTYPE html><html savetoken="` + f.Token +
 			`"><head><title>` + marker + `</title></head><body><p>` + marker + `</p></body></html>`
 	}
 	if err := os.WriteFile(f.AbsPath, []byte(page("AAA")), 0644); err != nil {

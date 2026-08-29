@@ -7,7 +7,8 @@
   <h1 contenteditable="">Edit me 2 5</h1>
   <button id="save">Save</button>
   <script>
-    const token = document.documentElement.getAttribute('htmlclaytoken');
+    const root = document.documentElement;
+    const token = root.getAttribute('savetoken') || root.getAttribute('htmlclaytoken');
     document.getElementById('save').addEventListener('click', async () => {
       const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
       const res = await fetch('/_/save/' + token, {

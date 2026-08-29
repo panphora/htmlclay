@@ -68,7 +68,7 @@ It's just HTML. Here's a minimal example — a page with editable text and a sav
   <script>
     document.getElementById('save').addEventListener('click', async () => {
       const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-      const token = document.documentElement.getAttribute('htmlclaytoken');
+      const token = document.documentElement.getAttribute('savetoken');
       const res = await fetch('/_/save/' + token, {
         method: 'POST',
         headers: { 'Content-Type': 'text/html' },
@@ -80,7 +80,9 @@ It's just HTML. Here's a minimal example — a page with editable text and a sav
 </body></html>
 ```
 
-The key line is `fetch('/_/save/' + token, ...)` — that's the save call. HTML Clay injects an `htmlclaytoken` attribute into the `<html>` tag when serving the file, and the page reads it to know where to save. The token is a cryptographic session identifier that maps to the file on disk.
+The key line is `fetch('/_/save/' + token, ...)` — that's the save call. HTML Clay injects a `savetoken` attribute into the `<html>` tag when serving the file, and the page reads it to know where to save. The token is a cryptographic session identifier that maps to the file on disk.
+
+Before the save protocol settled on `savetoken`, HTML Clay called the attribute `htmlclaytoken`. It serves both names carrying the same token, and strips both on save, so a document written against the old name goes on saving forever. Read `savetoken` in anything new.
 
 ## What can you build with it?
 
@@ -165,7 +167,7 @@ User double-clicks .htmlclay file
         → App opens the default browser
           → Browser loads file from localhost server
             → User edits, hits save
-              → JS reads htmlclaytoken, calls POST /_/save/{token}
+              → JS reads savetoken, calls POST /_/save/{token}
                 → Server writes changes back to disk
 ```
 
@@ -250,7 +252,7 @@ internal/trust/      The rules about which folders may be trusted, and on whose 
 internal/dataapi/    Reading a document as JSON, with its vendored conformance corpus
 internal/versions/   Save history: every write keeps a restorable previous version
 internal/browser/    Opening a URL in the system's default browser
-internal/htmlutil/   Inject/strip htmlclaytoken and htmlclayid attributes in <html> tag
+internal/htmlutil/   Inject/strip savetoken and documentid attributes in <html> tag
 internal/config/     Persist settings to OS config dir (~/Library/Application Support, ~/.config, %APPDATA%)
 internal/platform/   Single-instance enforcement (Unix socket / TCP on Windows), Start on Login, file associations
 internal/tray/       System tray icon and menu

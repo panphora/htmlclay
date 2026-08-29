@@ -87,7 +87,7 @@ func doc(body string) []byte {
 }
 
 func docWithID(id, body string) []byte {
-	return []byte("<!DOCTYPE html>\n<html htmlclayid=\"" + id + "\"><body>" + body + "</body></html>")
+	return []byte("<!DOCTYPE html>\n<html documentid=\"" + id + "\"><body>" + body + "</body></html>")
 }
 
 func TestIsCanonicalUUID(t *testing.T) {
@@ -138,7 +138,7 @@ func TestKeyValidIDUsesID(t *testing.T) {
 }
 
 // A plain .html file never receives an injected id, so it keys by a hash of its
-// absolute path even when the bytes happen to carry an htmlclayid.
+// absolute path even when the bytes happen to carry an documentid.
 func TestKeyPlainHTMLAlwaysUsesPath(t *testing.T) {
 	withID := Key("/home/u/page.html", docWithID(validUUID, "hi"))
 	withoutID := Key("/home/u/page.html", doc("hi"))

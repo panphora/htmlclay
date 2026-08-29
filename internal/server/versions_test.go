@@ -23,7 +23,7 @@ func page(body string) string {
 }
 
 func pageWithID(id, body string) string {
-	return "<!DOCTYPE html>\n<html htmlclayid=\"" + id + "\"><body>" + body + "</body></html>"
+	return "<!DOCTYPE html>\n<html documentid=\"" + id + "\"><body>" + body + "</body></html>"
 }
 
 type fileFixture struct {
@@ -94,7 +94,7 @@ func (fx *fileFixture) serve(t *testing.T, relPath string) *httptest.ResponseRec
 
 func (fx *fileFixture) save(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	// A real client serializes the whole document, htmlclayid included, so a save
+	// A real client serializes the whole document, documentid included, so a save
 	// never silently drops the file's identity.
 	body = fx.withCurrentID(body)
 	req := httptest.NewRequest("POST", "/_/save/"+fx.file.Token, strings.NewReader(body))
@@ -105,7 +105,7 @@ func (fx *fileFixture) save(t *testing.T, body string) *httptest.ResponseRecorde
 	return w
 }
 
-// withCurrentID stamps the file's tracked htmlclayid onto body, the way a browser
+// withCurrentID stamps the file's tracked documentid onto body, the way a browser
 // round trip does: the browser serializes the SERVED bytes, which carry the id the
 // host injected, not the (id-less) bytes on disk.
 func (fx *fileFixture) withCurrentID(body string) string {
@@ -228,7 +228,7 @@ func TestFirstSaveVersionsExistingContent(t *testing.T) {
 	}
 }
 
-// The htmlclayid rides in the served bytes only, so serving leaves disk untouched
+// The documentid rides in the served bytes only, so serving leaves disk untouched
 // and the first save of a new .htmlclay does not false-positive against an edit
 // the server never made.
 func TestIDInjectionDoesNotTriggerStaleWarning(t *testing.T) {
@@ -239,11 +239,11 @@ func TestIDInjectionDoesNotTriggerStaleWarning(t *testing.T) {
 		t.Fatalf("serve: %d", w.Code)
 	}
 	if !versions.IsCanonicalUUID(htmlutil.ReadHTMLClayID(w.Body.Bytes())) {
-		t.Fatal("serving did not inject a canonical htmlclayid into the response")
+		t.Fatal("serving did not inject a canonical documentid into the response")
 	}
 	onDisk, _ := os.ReadFile(fx.file.AbsPath)
 	if htmlutil.ReadHTMLClayID(onDisk) != "" {
-		t.Fatal("serving wrote the htmlclayid to disk")
+		t.Fatal("serving wrote the documentid to disk")
 	}
 
 	body := decodeJSON(t, fx.save(t, page("first")))
@@ -382,7 +382,7 @@ func TestServingNeverAdvancesLastServerWrite(t *testing.T) {
 	}
 }
 
-// A hand-edited file can carry `..` or a short string in htmlclayid. The raw id is
+// A hand-edited file can carry `..` or a short string in documentid. The raw id is
 // never trusted as a key: a .htmlclay carrying one is minted a fresh canonical
 // identity instead, which rides in the served bytes and never reaches the
 // filesystem as a folder name.
@@ -431,7 +431,7 @@ func TestPlainHTMLNeverGetsAnID(t *testing.T) {
 
 	onDisk, _ := os.ReadFile(fx.file.AbsPath)
 	if id := htmlutil.ReadHTMLClayID(onDisk); id != "" {
-		t.Fatalf("a plain .html file was given an htmlclayid: %q", id)
+		t.Fatalf("a plain .html file was given an documentid: %q", id)
 	}
 	if string(onDisk) != page("plain") {
 		t.Fatalf("a plain .html file was modified on disk: %q", onDisk)
@@ -742,7 +742,7 @@ func TestRestorePreservesCanonicalID(t *testing.T) {
 	if got := htmlutil.ReadHTMLClayID(onDisk); got != "" {
 		t.Fatalf("restore asserted an identity on disk: %q", got)
 	}
-	if strings.Contains(string(onDisk), "htmlclaytoken") {
+	if strings.Contains(string(onDisk), "savetoken") {
 		t.Fatal("restore left a session token in the file")
 	}
 	if key := fx.key(t); key != "id:"+testUUID {

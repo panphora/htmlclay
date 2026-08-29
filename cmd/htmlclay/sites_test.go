@@ -207,7 +207,7 @@ func TestUnrelatedTreesGetSeparateOrigins(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "alpha") {
 		t.Errorf("site A should serve its own page: got %d, %q", code, body)
 	}
-	if !strings.Contains(body, `htmlclaytoken="`) {
+	if !strings.Contains(body, `savetoken="`) {
 		t.Error("served page should carry a save token")
 	}
 
@@ -284,13 +284,13 @@ func TestGrantedCousinTokenUnreachableFromGrantingOrigin(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("granting origin should still read the cousin via the grant: got %d", code)
 	}
-	if strings.Contains(body, "htmlclaytoken") {
+	if strings.Contains(body, "savetoken") {
 		t.Error("the granting origin must never receive the cousin's save token")
 	}
 
 	// From the cousin's own origin: served self-saving, with a token.
 	codeOwn, bodyOwn := fetch(t, fileURL(cousinSite.port, relCousin))
-	if codeOwn != 200 || !strings.Contains(bodyOwn, "htmlclaytoken") {
+	if codeOwn != 200 || !strings.Contains(bodyOwn, "savetoken") {
 		t.Errorf("the cousin's own origin should serve it self-saving: got %d", codeOwn)
 	}
 }
@@ -344,7 +344,7 @@ func TestOutOfScopeAssetPromptsThenResumesOnAllow(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "redpen") {
 		t.Fatalf("an allowed out-of-scope asset should resume with 200: got %d, %q", code, body)
 	}
-	if strings.Contains(body, "htmlclaytoken") {
+	if strings.Contains(body, "savetoken") {
 		t.Error("a granted asset must be served without a save token")
 	}
 	if _, ok := s.sessions.LookupByPath(asset); ok {
@@ -615,7 +615,7 @@ func TestFileOpenedFromTrustedFolderServesTreeWithoutPrompt(t *testing.T) {
 	s, rel := a.openForTest(t, page)
 
 	codePage, bodyPage := fetch(t, fileURL(s.port, rel))
-	if codePage != 200 || !strings.Contains(bodyPage, "htmlclaytoken") {
+	if codePage != 200 || !strings.Contains(bodyPage, "savetoken") {
 		t.Errorf("a file opened from a trusted folder should still self-save: got %d", codePage)
 	}
 
@@ -624,7 +624,7 @@ func TestFileOpenedFromTrustedFolderServesTreeWithoutPrompt(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "lib") {
 		t.Fatalf("an asset anywhere in the trusted folder should serve with no prompt: got %d, %q", code, body)
 	}
-	if strings.Contains(body, "htmlclaytoken") {
+	if strings.Contains(body, "savetoken") {
 		t.Error("a trusted-folder asset must be served read-only, without a save token")
 	}
 	if _, ok := s.sessions.LookupByPath(asset); ok {
@@ -690,9 +690,9 @@ func TestTrustFolderBelowOpenSiteGrantsImmediately(t *testing.T) {
 	before := nav()
 	beforeBody, _ := io.ReadAll(before.Body)
 	before.Body.Close()
-	if before.StatusCode != 200 || strings.Contains(string(beforeBody), "htmlclaytoken") {
+	if before.StatusCode != 200 || strings.Contains(string(beforeBody), "savetoken") {
 		t.Fatalf("before the trust the nested file must serve read-only: %d, token=%v",
-			before.StatusCode, strings.Contains(string(beforeBody), "htmlclaytoken"))
+			before.StatusCode, strings.Contains(string(beforeBody), "savetoken"))
 	}
 
 	if err := a.trustFolder(review); err != nil {
@@ -714,9 +714,9 @@ func TestTrustFolderBelowOpenSiteGrantsImmediately(t *testing.T) {
 		t.Fatalf("the trusted folder must own its own origin, not the opening site's: %s", loc)
 	}
 	code, body := fetchNav(t, loc)
-	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("the trusted folder's origin should serve the file editable: %d, token=%v",
-			code, strings.Contains(body, "htmlclaytoken"))
+			code, strings.Contains(body, "savetoken"))
 	}
 }
 
@@ -1271,7 +1271,7 @@ func TestAssetResolvingOutsideItsRootIs404NotAPrompt(t *testing.T) {
 // internal/server/workspace_trust_test.go; these drive real sites through the app seam.
 
 var bannerNonceRe = regexp.MustCompile(`\{nonce:'([A-Za-z0-9_-]+)'\}`)
-var tokenAttrRe = regexp.MustCompile(`htmlclaytoken="([^"]+)"`)
+var tokenAttrRe = regexp.MustCompile(`savetoken="([^"]+)"`)
 
 // fetchNav is fetch with the headers of a real user navigation, which is what
 // arms the read-only banner and the auto-register branch.
@@ -1390,7 +1390,7 @@ func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "htmlclay-banner") {
 		t.Fatalf("sibling navigation should serve the banner: %d", code)
 	}
-	if strings.Contains(body, "htmlclaytoken") {
+	if strings.Contains(body, "savetoken") {
 		t.Fatal("read-only serve leaked a token")
 	}
 	m := bannerNonceRe.FindStringSubmatch(body)
@@ -1427,7 +1427,7 @@ func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 	}
 
 	code, body = fetch(t, resp.URL)
-	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatal("the returned URL should serve the sibling with a save token")
 	}
 	tok := tokenAttrRe.FindStringSubmatch(body)
@@ -1501,13 +1501,13 @@ func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
 	}
 	grantingBody, _ := io.ReadAll(fromGranting.Body)
 	fromGranting.Body.Close()
-	if strings.Contains(string(grantingBody), "htmlclaytoken") {
+	if strings.Contains(string(grantingBody), "savetoken") {
 		t.Fatal("granting origin received the cousin's token")
 	}
 	if _, ok := granting.sessions.LookupByPath(cousin); ok {
 		t.Fatal("granting origin received the cousin's token: it was minted there")
 	}
-	if code, body := fetch(t, resp.URL); code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code, body := fetch(t, resp.URL); code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("fresh origin should serve editable: %d", code)
 	}
 	if !hasFolder(a.rt.cfg.TrustedFolderList(), filepath.Join(home, "work", "codex")) {
@@ -1541,7 +1541,7 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 
 	relWeek := filepath.Join("thelaunch", "weeks", "week-02.htmlclay")
 	code, body := fetchNav(t, fileURL(s.port, relWeek))
-	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("trusted-folder link should serve editable with no prompt: %d", code)
 	}
 	if strings.Contains(body, "htmlclay-banner") {
@@ -1576,7 +1576,7 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("trusted-folder fetch = %d", code)
 	}
-	if strings.Contains(body, "htmlclaytoken") {
+	if strings.Contains(body, "savetoken") {
 		t.Fatal("a silent fetch() harvested a token")
 	}
 	if s.sessions.Via(other) != 0 {
@@ -1656,7 +1656,7 @@ func TestWorkspaceFileNeverRegisteredInTwoSites(t *testing.T) {
 	if locA != locB {
 		t.Fatalf("both redirects must name the one hosting origin: %q vs %q", locA, locB)
 	}
-	if code, body := fetchNav(t, locA); code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code, body := fetchNav(t, locA); code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("hosting origin should serve editable: %d", code)
 	}
 }
@@ -1721,7 +1721,7 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 
 	// The trusted folder now auto-registers its files.
 	code, body = fetchNav(t, fileURL(s.port, filepath.Join("proj", "week.htmlclay")))
-	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatal("a trusted folder should auto-register its files")
 	}
 
@@ -1955,10 +1955,10 @@ func TestRemoveWorkspaceEndsCapability(t *testing.T) {
 		"text/html", "<html><body>worm</body></html>"); code == 200 {
 		t.Fatal("a token minted under the trust must not save after the untrust")
 	}
-	if code, body := fetchNav(t, fileURL(host.port, relWeek)); code != 200 || strings.Contains(body, "htmlclaytoken") {
+	if code, body := fetchNav(t, fileURL(host.port, relWeek)); code != 200 || strings.Contains(body, "savetoken") {
 		t.Fatalf("the untrusted folder's file should serve read-only: %d", code)
 	}
-	if code, body := fetch(t, fileURL(host.port, filepath.Join("ws", "index.htmlclay"))); code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code, body := fetch(t, fileURL(host.port, filepath.Join("ws", "index.htmlclay"))); code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatal("OS-opened file should still serve editable")
 	}
 
@@ -2007,7 +2007,7 @@ func TestOpeningAWorkspaceFileRecordsTheOpen(t *testing.T) {
 	}
 
 	code, body = fetchNav(t, fileURL(s.port, filepath.Join("proj", "week.htmlclay")))
-	if code != 200 || !strings.Contains(body, "htmlclaytoken") {
+	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatal("a trusted folder should auto-register its files")
 	}
 	weekTok := tokenAttrRe.FindStringSubmatch(body)
@@ -2130,7 +2130,7 @@ func TestUntrustMovesTheSurvivorToANewAddress(t *testing.T) {
 	if code != 404 || !strings.Contains(body, "Nothing is open at this address") {
 		t.Fatalf("the freed port should hold nothing but the recovery page, got %d: %s", code, body)
 	}
-	if strings.Contains(body, "htmlclaytoken") {
+	if strings.Contains(body, "savetoken") {
 		t.Error("the freed port served a save token")
 	}
 }
@@ -2230,7 +2230,7 @@ func TestTrustingAParkedFolderMakesItsAddressWorkWithoutARestart(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("the bookmark must answer after following the page's instruction, got %d", code)
 	}
-	if !strings.Contains(body, "htmlclaytoken") {
+	if !strings.Contains(body, "savetoken") {
 		t.Error("the file should serve editable once its folder is trusted")
 	}
 

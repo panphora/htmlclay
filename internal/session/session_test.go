@@ -758,7 +758,7 @@ func TestAssetRootMostSpecific(t *testing.T) {
 }
 
 // There are exactly two per-file records. lastServerWrite is set by save,
-// restore, htmlclayid injection, and the first observation of a file, and never
+// restore, documentid injection, and the first observation of a file, and never
 // by serving a page or by the watcher.
 func TestRecordServerWriteAdvancesBoth(t *testing.T) {
 	f := &File{}

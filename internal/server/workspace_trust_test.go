@@ -274,7 +274,7 @@ func TestOpenRequestEndpointFlow(t *testing.T) {
 	if cc := nav.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("bannered serve must be no-store, got %q", cc)
 	}
-	if strings.Contains(nav.Body.String(), "htmlclaytoken") {
+	if strings.Contains(nav.Body.String(), "savetoken") {
 		t.Fatal("a read-only bannered serve must not carry a save token")
 	}
 	nonceRe := regexp.MustCompile(`\{nonce:'([A-Za-z0-9_-]+)'\}`)
@@ -635,8 +635,8 @@ func TestWorkspaceAutoRegisterBranch(t *testing.T) {
 
 	// A document load of a trusted-folder sibling auto-registers and serves a token.
 	w := get("ws/week.htmlclay", "document")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "htmlclaytoken") {
-		t.Fatalf("trusted-folder document load: %d, token=%v", w.Code, strings.Contains(w.Body.String(), "htmlclaytoken"))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "savetoken") {
+		t.Fatalf("trusted-folder document load: %d, token=%v", w.Code, strings.Contains(w.Body.String(), "savetoken"))
 	}
 	if mgr.Via(linked) != session.ViaTrusted {
 		t.Fatalf("linked file provenance = %v", mgr.Via(linked))
@@ -656,7 +656,7 @@ func TestWorkspaceAutoRegisterBranch(t *testing.T) {
 	}
 
 	// A fetch()-shaped request must not register.
-	if w := get("ws/plain2.htmlclay", "empty"); w.Code == 200 && strings.Contains(w.Body.String(), "htmlclaytoken") {
+	if w := get("ws/plain2.htmlclay", "empty"); w.Code == 200 && strings.Contains(w.Body.String(), "savetoken") {
 		t.Fatal("a fetch() received a token")
 	}
 	if mgr.Via(filepath.Join(ws, "plain2.htmlclay")) != 0 {
@@ -664,8 +664,8 @@ func TestWorkspaceAutoRegisterBranch(t *testing.T) {
 	}
 
 	// .html is never auto-registered; it stays a plain asset.
-	if w := get("ws/plain.html", "document"); w.Code != 200 || strings.Contains(w.Body.String(), "htmlclaytoken") {
-		t.Fatalf("plain html: %d tokened=%v", w.Code, strings.Contains(w.Body.String(), "htmlclaytoken"))
+	if w := get("ws/plain.html", "document"); w.Code != 200 || strings.Contains(w.Body.String(), "savetoken") {
+		t.Fatalf("plain html: %d tokened=%v", w.Code, strings.Contains(w.Body.String(), "savetoken"))
 	}
 	if mgr.Via(plainHTML) != 0 {
 		t.Fatal(".html auto-registered")

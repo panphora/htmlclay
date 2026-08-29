@@ -97,6 +97,20 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	mux.HandleFunc("POST /_/save/{token}", sameOrigin(s.handleSave))
 	mux.HandleFunc("POST /_/upload/{token}", sameOrigin(s.handleUpload))
 	mux.HandleFunc("GET /_/meta/{token}", s.handleMeta)
+	// Spec §5 names the tokenless address as the one place a client may learn what
+	// a host supports, and forbids gating discovery tighter than the documents
+	// served. This host mints tokens, so it answers both: the token route adds a
+	// per-document block to the same answer, and this one is the host scope alone.
+	// An addition, not a replacement -- every existing caller keeps its route.
+	//
+	// Explicitly registered because a bare "/_/meta" does not match the "{token}"
+	// pattern above. Verified with httptest: without this line the path falls to
+	// the "/{path...}" catch-all, which reads it as a request for a file and
+	// answers 403 "Read access required" -- a JSON body that parses cleanly and
+	// says nothing about this host.
+	// Deliberately outside sameOrigin: the answer names no document and carries
+	// no credential, and a client that cannot ask is a client that saves blindly.
+	mux.HandleFunc("GET /_/meta", s.handleHostMeta)
 	mux.HandleFunc("GET /_/versions/{token}", s.handleListVersions)
 	mux.HandleFunc("GET /_/version/{token}/{name}", s.handleReadVersion)
 	mux.HandleFunc("POST /_/restore/{token}/{name}", sameOrigin(s.handleRestoreVersion))

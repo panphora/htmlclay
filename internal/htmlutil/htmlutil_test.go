@@ -30,7 +30,7 @@ func TestHasHTMLTag(t *testing.T) {
 func TestInjectTokenBareHTML(t *testing.T) {
 	in := []byte(`<html>`)
 	out := InjectToken(in, "tok123")
-	expected := []byte(`<html htmlclaytoken="tok123">`)
+	expected := []byte(`<html savetoken="tok123" htmlclaytoken="tok123">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
@@ -39,7 +39,7 @@ func TestInjectTokenBareHTML(t *testing.T) {
 func TestInjectTokenWithExistingAttrs(t *testing.T) {
 	in := []byte(`<html lang="en">`)
 	out := InjectToken(in, "tok123")
-	expected := []byte(`<html htmlclaytoken="tok123" lang="en">`)
+	expected := []byte(`<html savetoken="tok123" htmlclaytoken="tok123" lang="en">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
@@ -48,32 +48,32 @@ func TestInjectTokenWithExistingAttrs(t *testing.T) {
 func TestInjectTokenUppercaseHTML(t *testing.T) {
 	in := []byte(`<HTML>`)
 	out := InjectToken(in, "tok123")
-	expected := []byte(`<HTML htmlclaytoken="tok123">`)
+	expected := []byte(`<HTML savetoken="tok123" htmlclaytoken="tok123">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestReplaceExistingToken(t *testing.T) {
-	in := []byte(`<html htmlclaytoken="old-value" lang="en">`)
+	in := []byte(`<html savetoken="old-value" htmlclaytoken="old-value" lang="en">`)
 	out := InjectToken(in, "new-value")
-	expected := []byte(`<html htmlclaytoken="new-value" lang="en">`)
+	expected := []byte(`<html savetoken="new-value" htmlclaytoken="new-value" lang="en">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestReplaceExistingTokenSingleQuotes(t *testing.T) {
-	in := []byte(`<html htmlclaytoken='old-value'>`)
+	in := []byte(`<html savetoken='old-value'>`)
 	out := InjectToken(in, "new-value")
-	expected := []byte(`<html htmlclaytoken="new-value">`)
+	expected := []byte(`<html savetoken="new-value" htmlclaytoken="new-value">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestStripToken(t *testing.T) {
-	in := []byte(`<html htmlclaytoken="tok123" lang="en">`)
+	in := []byte(`<html savetoken="tok123" htmlclaytoken="tok123" lang="en">`)
 	out := StripToken(in)
 	expected := []byte(`<html lang="en">`)
 	if !bytes.Equal(out, expected) {
@@ -82,7 +82,7 @@ func TestStripToken(t *testing.T) {
 }
 
 func TestStripTokenOnly(t *testing.T) {
-	in := []byte(`<html htmlclaytoken="tok123">`)
+	in := []byte(`<html savetoken="tok123" htmlclaytoken="tok123">`)
 	out := StripToken(in)
 	expected := []byte(`<html>`)
 	if !bytes.Equal(out, expected) {
@@ -117,7 +117,7 @@ func TestFullDocumentRoundTrip(t *testing.T) {
 }
 
 func TestTokenInScriptBodyNotTouched(t *testing.T) {
-	in := []byte(`<html><script>var x="htmlclaytoken=test"</script></html>`)
+	in := []byte(`<html><script>var x="savetoken=test"</script></html>`)
 	out := StripToken(in)
 	if !bytes.Equal(out, in) {
 		t.Errorf("script body token should not be touched, got %q", out)
@@ -125,43 +125,43 @@ func TestTokenInScriptBodyNotTouched(t *testing.T) {
 }
 
 func TestTokenOnlyStrippedFromHTMLTag(t *testing.T) {
-	in := []byte(`<html htmlclaytoken="tok"><body data-htmlclaytoken="keep"></body></html>`)
+	in := []byte(`<html savetoken="tok" htmlclaytoken="tok"><body data-savetoken="keep"></body></html>`)
 	out := StripToken(in)
-	expected := []byte(`<html><body data-htmlclaytoken="keep"></body></html>`)
+	expected := []byte(`<html><body data-savetoken="keep"></body></html>`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestStripDoesNotTouchTokenElsewhere(t *testing.T) {
-	in := []byte(`<html htmlclaytoken="tok"><div htmlclaytoken="user-data">keep</div></html>`)
+	in := []byte(`<html savetoken="tok" htmlclaytoken="tok"><div savetoken="user-data">keep</div></html>`)
 	out := StripToken(in)
-	expected := []byte(`<html><div htmlclaytoken="user-data">keep</div></html>`)
+	expected := []byte(`<html><div savetoken="user-data">keep</div></html>`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestStripPreservesCommentToken(t *testing.T) {
-	in := []byte(`<html htmlclaytoken="tok"><!-- htmlclaytoken="fake" --></html>`)
+	in := []byte(`<html savetoken="tok" htmlclaytoken="tok"><!-- savetoken="fake" --></html>`)
 	out := StripToken(in)
-	expected := []byte(`<html><!-- htmlclaytoken="fake" --></html>`)
+	expected := []byte(`<html><!-- savetoken="fake" --></html>`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestTokenNotFirstAttribute(t *testing.T) {
-	in := []byte(`<html lang="en" htmlclaytoken="old">`)
+	in := []byte(`<html lang="en" savetoken="old" htmlclaytoken="old">`)
 	out := InjectToken(in, "new")
-	expected := []byte(`<html htmlclaytoken="new" lang="en">`)
+	expected := []byte(`<html savetoken="new" htmlclaytoken="new" lang="en">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestStripTokenNotFirstAttribute(t *testing.T) {
-	in := []byte(`<html lang="en" htmlclaytoken="tok123">`)
+	in := []byte(`<html lang="en" savetoken="tok123" htmlclaytoken="tok123">`)
 	out := StripToken(in)
 	expected := []byte(`<html lang="en">`)
 	if !bytes.Equal(out, expected) {
@@ -170,9 +170,9 @@ func TestStripTokenNotFirstAttribute(t *testing.T) {
 }
 
 func TestInjectTokenNoDuplication(t *testing.T) {
-	in := []byte(`<html lang="en" htmlclaytoken="old" class="x">`)
+	in := []byte(`<html lang="en" savetoken="old" htmlclaytoken="old" class="x">`)
 	out := InjectToken(in, "new")
-	expected := []byte(`<html htmlclaytoken="new" lang="en" class="x">`)
+	expected := []byte(`<html savetoken="new" htmlclaytoken="new" lang="en" class="x">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
@@ -188,16 +188,16 @@ func TestRoundTripNonFirstAttribute(t *testing.T) {
 }
 
 func TestInjectUnquotedToken(t *testing.T) {
-	in := []byte(`<html htmlclaytoken=foo lang="en">`)
+	in := []byte(`<html savetoken=foo lang="en">`)
 	out := InjectToken(in, "new")
-	expected := []byte(`<html htmlclaytoken="new" lang="en">`)
+	expected := []byte(`<html savetoken="new" htmlclaytoken="new" lang="en">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestStripUnquotedToken(t *testing.T) {
-	in := []byte(`<html htmlclaytoken=foo lang="en">`)
+	in := []byte(`<html savetoken=foo lang="en">`)
 	out := StripToken(in)
 	expected := []byte(`<html lang="en">`)
 	if !bytes.Equal(out, expected) {
@@ -206,16 +206,16 @@ func TestStripUnquotedToken(t *testing.T) {
 }
 
 func TestInjectWithAngleBracketInAttrValue(t *testing.T) {
-	in := []byte(`<html data-x='{"a":">"}' htmlclaytoken="old" lang="en">`)
+	in := []byte(`<html data-x='{"a":">"}' savetoken="old" htmlclaytoken="old" lang="en">`)
 	out := InjectToken(in, "new")
-	expected := []byte(`<html htmlclaytoken="new" data-x='{"a":">"}' lang="en">`)
+	expected := []byte(`<html savetoken="new" htmlclaytoken="new" data-x='{"a":">"}' lang="en">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestStripWithAngleBracketInAttrValue(t *testing.T) {
-	in := []byte(`<html data-x='{"a":">"}' htmlclaytoken="old" lang="en">`)
+	in := []byte(`<html data-x='{"a":">"}' savetoken="old" htmlclaytoken="old" lang="en">`)
 	out := StripToken(in)
 	expected := []byte(`<html data-x='{"a":">"}' lang="en">`)
 	if !bytes.Equal(out, expected) {
@@ -235,7 +235,7 @@ func TestRoundTripWithAngleBracketInAttrValue(t *testing.T) {
 // --- HTMLClayID tests ---
 
 func TestReadHTMLClayIDPresent(t *testing.T) {
-	in := []byte(`<html htmlclayid="abc-123" lang="en">`)
+	in := []byte(`<html documentid="abc-123" lang="en">`)
 	id := ReadHTMLClayID(in)
 	if id != "abc-123" {
 		t.Errorf("got %q, want %q", id, "abc-123")
@@ -261,14 +261,14 @@ func TestReadHTMLClayIDNoHTMLTag(t *testing.T) {
 func TestInjectHTMLClayIDWhenAbsent(t *testing.T) {
 	in := []byte(`<html lang="en">`)
 	out := InjectHTMLClayID(in, "new-uuid")
-	expected := []byte(`<html htmlclayid="new-uuid" lang="en">`)
+	expected := []byte(`<html documentid="new-uuid" lang="en">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestInjectHTMLClayIDWhenPresent(t *testing.T) {
-	in := []byte(`<html htmlclayid="existing-uuid" lang="en">`)
+	in := []byte(`<html documentid="existing-uuid" lang="en">`)
 	out := InjectHTMLClayID(in, "new-uuid")
 	if !bytes.Equal(out, in) {
 		t.Errorf("should not overwrite existing id, got %q", out)
@@ -284,29 +284,29 @@ func TestInjectHTMLClayIDNoHTMLTag(t *testing.T) {
 }
 
 func TestHTMLClayIDSurvivesTokenRoundTrip(t *testing.T) {
-	original := []byte(`<html htmlclayid="my-uuid" lang="en">`)
+	original := []byte(`<html documentid="my-uuid" lang="en">`)
 	injected := InjectToken(original, "tok123")
 	stripped := StripToken(injected)
 	if !bytes.Equal(stripped, original) {
-		t.Errorf("htmlclayid should survive token round-trip: got %q, want %q", stripped, original)
+		t.Errorf("documentid should survive token round-trip: got %q, want %q", stripped, original)
 	}
 }
 
 func TestTokenAndHTMLClayIDCoexist(t *testing.T) {
-	in := []byte(`<html htmlclayid="my-uuid" lang="en">`)
+	in := []byte(`<html documentid="my-uuid" lang="en">`)
 	out := InjectToken(in, "tok123")
-	if !bytes.Contains(out, []byte(`htmlclayid="my-uuid"`)) {
-		t.Error("htmlclayid missing after token injection")
+	if !bytes.Contains(out, []byte(`documentid="my-uuid"`)) {
+		t.Error("documentid missing after token injection")
 	}
-	if !bytes.Contains(out, []byte(`htmlclaytoken="tok123"`)) {
-		t.Error("htmlclaytoken missing after injection")
+	if !bytes.Contains(out, []byte(`savetoken="tok123" htmlclaytoken="tok123"`)) {
+		t.Error("savetoken missing after injection")
 	}
 }
 
 func TestStripTokenPreservesHTMLClayID(t *testing.T) {
-	in := []byte(`<html htmlclaytoken="tok" htmlclayid="my-uuid" lang="en">`)
+	in := []byte(`<html savetoken="tok" htmlclaytoken="tok" documentid="my-uuid" lang="en">`)
 	out := StripToken(in)
-	expected := []byte(`<html htmlclayid="my-uuid" lang="en">`)
+	expected := []byte(`<html documentid="my-uuid" lang="en">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
@@ -341,14 +341,14 @@ func TestGenerateHTMLClayIDUnique(t *testing.T) {
 func TestInjectTokenSkipsCommentedHTMLTag(t *testing.T) {
 	in := []byte(`<!-- <html> --><html lang="en">`)
 	out := InjectToken(in, "tok")
-	expected := []byte(`<!-- <html> --><html htmlclaytoken="tok" lang="en">`)
+	expected := []byte(`<!-- <html> --><html savetoken="tok" htmlclaytoken="tok" lang="en">`)
 	if !bytes.Equal(out, expected) {
 		t.Errorf("got %q, want %q", out, expected)
 	}
 }
 
 func TestStripTokenSkipsCommentedHTMLTag(t *testing.T) {
-	in := []byte(`<!-- <html foo> --><html htmlclaytoken="tok" lang="en">`)
+	in := []byte(`<!-- <html foo> --><html savetoken="tok" htmlclaytoken="tok" lang="en">`)
 	out := StripToken(in)
 	expected := []byte(`<!-- <html foo> --><html lang="en">`)
 	if !bytes.Equal(out, expected) {
@@ -357,7 +357,7 @@ func TestStripTokenSkipsCommentedHTMLTag(t *testing.T) {
 }
 
 func TestReadHTMLClayIDSkipsCommentedTag(t *testing.T) {
-	in := []byte(`<!-- <html htmlclayid="fake"> --><html htmlclayid="real" lang="en">`)
+	in := []byte(`<!-- <html documentid="fake"> --><html documentid="real" lang="en">`)
 	id := ReadHTMLClayID(in)
 	if id != "real" {
 		t.Errorf("got %q, want %q", id, "real")
@@ -384,7 +384,7 @@ func TestIsCompleteHTMLDocument(t *testing.T) {
 		{"complete", "<!DOCTYPE html>\n<html><body>hi</body></html>", true},
 		{"complete uppercase", "<HTML><BODY>hi</BODY></HTML>", true},
 		{"complete with spacing", "<html><body>hi</body></html   >", true},
-		{"complete with attributes", `<html lang="en" htmlclayid="x"><body></body></html>`, true},
+		{"complete with attributes", `<html lang="en" documentid="x"><body></body></html>`, true},
 		{"truncated mid body", "<html><body>partial", false},
 		{"open tag only", "<html>", false},
 		{"no html tag", "<div>hi</div>", false},
@@ -402,7 +402,7 @@ func TestIsCompleteHTMLDocument(t *testing.T) {
 // SetHTMLClayID always wins, unlike InjectHTMLClayID which is a no-op when an id
 // is already present. Restore uses it to keep the target file's identity.
 func TestSetHTMLClayIDReplacesExisting(t *testing.T) {
-	in := []byte(`<html htmlclayid="old-one"><body>hi</body></html>`)
+	in := []byte(`<html documentid="old-one"><body>hi</body></html>`)
 
 	out := SetHTMLClayID(in, "new-one")
 	if got := ReadHTMLClayID(out); got != "new-one" {
@@ -423,7 +423,7 @@ func TestSetHTMLClayIDReplacesExisting(t *testing.T) {
 }
 
 func TestStripHTMLClayID(t *testing.T) {
-	in := []byte(`<html htmlclayid="abc" lang="en"><body>hi</body></html>`)
+	in := []byte(`<html documentid="abc" lang="en"><body>hi</body></html>`)
 
 	out := StripHTMLClayID(in)
 	if got := ReadHTMLClayID(out); got != "" {
@@ -565,5 +565,139 @@ func TestStripBannerRemovesEveryInjection(t *testing.T) {
 	unterminated := []byte(`<html><body><!--htmlclay-banner--><div>x</div></body></html>`)
 	if got := string(StripBanner(unterminated)); got != string(unterminated) {
 		t.Fatalf("unterminated marker mangled the doc: %q", got)
+	}
+}
+
+
+// --- legacy attribute spellings -------------------------------------------
+//
+// htmlclay shipped `htmlclaytoken` and `htmlclayid` before the spec settled on
+// `savetoken` and `documentid`. Neither fallback is a migration step that can be
+// deleted later: a saved document is a frozen client, so a file written before the
+// rename carries the old id on disk forever, and a page served by an older build
+// can still come back to a newer one carrying the old token. Each test below pins
+// one rule that a documented-but-untested fallback would quietly lose.
+//
+// The old spellings are assembled from legacyToken and legacyID rather than
+// written as literals, because writing them out is what a rename sweep deletes.
+// The sweep that introduced these names rewrote an earlier draft of this very
+// block into the new spelling, leaving eight tests that asserted nothing about the
+// fallback they exist to protect.
+
+const legacyToken = "htmlclay" + "token"
+const legacyID = "htmlclay" + "id"
+
+func legacyTokenAttr(value string) string { return ` ` + legacyToken + `="` + value + `"` }
+func legacyIDAttr(value string) string    { return ` ` + legacyID + `="` + value + `"` }
+
+func TestReadFallsBackToLegacyDocumentID(t *testing.T) {
+	in := []byte(`<html` + legacyIDAttr("from-2024") + ` lang="en"><body>hi</body></html>`)
+	if got := ReadHTMLClayID(in); got != "from-2024" {
+		t.Errorf("legacy id unreadable: got %q, want %q", got, "from-2024")
+	}
+}
+
+func TestReadPrefersCurrentDocumentIDSpelling(t *testing.T) {
+	in := []byte(`<html` + legacyIDAttr("old") + ` documentid="current" lang="en"></html>`)
+	if got := ReadHTMLClayID(in); got != "current" {
+		t.Errorf("a document carrying both should answer with the current name: got %q", got)
+	}
+}
+
+// The strip is the one that must never narrow. A save that only knew the new name
+// would write a live credential to disk.
+func TestStripTokenRemovesLegacySpelling(t *testing.T) {
+	in := []byte(`<html` + legacyTokenAttr("secret") + ` lang="en"><body>hi</body></html>`)
+	expected := []byte(`<html lang="en"><body>hi</body></html>`)
+	if got := StripToken(in); !bytes.Equal(got, expected) {
+		t.Errorf("got %q, want %q", got, expected)
+	}
+}
+
+func TestStripTokenRemovesBothSpellings(t *testing.T) {
+	in := []byte(`<html savetoken="new"` + legacyTokenAttr("old") + ` lang="en"></html>`)
+	got := StripToken(in)
+	if bytes.Contains(got, []byte("savetoken")) || bytes.Contains(got, []byte(legacyToken)) {
+		t.Errorf("a credential survived the strip: %q", got)
+	}
+}
+
+// Serving writes BOTH spellings, carrying one value, and a stale value under
+// either name is cleared first. Two names is what keeps a document that reads the
+// old one saving; one value is what keeps them from being two credentials, which
+// would matter because a reader takes the first name it recognises.
+func TestInjectTokenWritesBothSpellingsWithOneValue(t *testing.T) {
+	in := []byte(`<html` + legacyTokenAttr("stale") + ` lang="en"></html>`)
+	got := InjectToken(in, "fresh")
+
+	for _, name := range []string{"savetoken", legacyToken} {
+		if !bytes.Contains(got, []byte(name+`="fresh"`)) {
+			t.Errorf("no %s injected: %q", name, got)
+		}
+	}
+	if bytes.Contains(got, []byte("stale")) {
+		t.Errorf("a stale token value survived: %q", got)
+	}
+	if bytes.Count(got, []byte(`="fresh"`)) != 2 {
+		t.Errorf("expected exactly one value under each name: %q", got)
+	}
+}
+
+// The pair is stripped on save under either name, so it never reaches disk. Both
+// halves matter: leaving one behind writes a live credential into the file.
+func TestInjectedTokenPairIsFullyStripped(t *testing.T) {
+	served := InjectToken([]byte(`<html lang="en"><body>hi</body></html>`), "secret")
+	saved := StripToken(served)
+	if bytes.Contains(saved, []byte("secret")) {
+		t.Errorf("a token value reached the stripped bytes: %q", saved)
+	}
+	if !bytes.Equal(saved, []byte(`<html lang="en"><body>hi</body></html>`)) {
+		t.Errorf("the round trip changed the document: %q", saved)
+	}
+}
+
+// A file whose version history is filed under its legacy id keeps that id. Stamping
+// a second, current-spelling id would strand every version taken before today.
+func TestInjectDocumentIDLeavesLegacyIDAlone(t *testing.T) {
+	in := []byte(`<html` + legacyIDAttr("from-2024") + ` lang="en"></html>`)
+	got := InjectHTMLClayID(in, "brand-new")
+	if !bytes.Equal(got, in) {
+		t.Errorf("a document with a legacy id was restamped: %q", got)
+	}
+}
+
+// Restore forces the target file's canonical identity, and that write is where a
+// document could end up carrying both spellings at once.
+func TestSetDocumentIDReplacesLegacySpelling(t *testing.T) {
+	in := []byte(`<html` + legacyIDAttr("donor") + ` lang="en"><body>hi</body></html>`)
+	got := SetHTMLClayID(in, "canonical")
+	if bytes.Contains(got, []byte(legacyID)) {
+		t.Errorf("the legacy id survived alongside the canonical one: %q", got)
+	}
+	if ReadHTMLClayID(got) != "canonical" {
+		t.Errorf("wrong id after set: %q", got)
+	}
+}
+
+func TestStripDocumentIDRemovesLegacySpelling(t *testing.T) {
+	in := []byte(`<html` + legacyIDAttr("donor") + ` lang="en"><body>hi</body></html>`)
+	expected := []byte(`<html lang="en"><body>hi</body></html>`)
+	if got := StripHTMLClayID(in); !bytes.Equal(got, expected) {
+		t.Errorf("got %q, want %q", got, expected)
+	}
+}
+
+// A legacy-id file served, edited and saved must come back with its id intact and
+// its token gone: the exact round trip an existing user's file takes on the first
+// run of a build that speaks the new names.
+func TestLegacyDocumentRoundTrip(t *testing.T) {
+	onDisk := []byte(`<!DOCTYPE html><html` + legacyIDAttr("from-2024") + ` lang="en"><body>hi</body></html>`)
+	served := InjectToken(onDisk, "tok")
+	if ReadHTMLClayID(served) != "from-2024" {
+		t.Fatalf("serving lost the legacy id: %q", served)
+	}
+	saved := StripToken(served)
+	if !bytes.Equal(saved, onDisk) {
+		t.Errorf("round trip changed the file: got %q, want %q", saved, onDisk)
 	}
 }

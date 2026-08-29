@@ -230,7 +230,7 @@ A file needs no library at all. The save endpoint is a plain POST, and this is t
 <script>
   document.getElementById('save').addEventListener('click', async () => {
     const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-    const token = document.documentElement.getAttribute('htmlclaytoken');
+    const token = document.documentElement.getAttribute('savetoken');
     const res = await fetch('/_/save/' + token, {
       method: 'POST',
       headers: { 'Content-Type': 'text/html' },
@@ -249,7 +249,7 @@ User double-clicks a .htmlclay file
     -> App picks the file's origin: the trusted folder containing it, else its own folder
       -> App binds that origin's remembered port on 127.0.0.1 and mints a session token
         -> App opens the system default browser at http://127.0.0.1:<port>/<relative path>
-          -> Server injects htmlclaytoken into the <html> tag on the way out
+          -> Server injects savetoken into the <html> tag on the way out
             -> Page edits, saves: POST /_/save/{token} with the whole document as the body
               -> Server writes to a temp file, fsyncs, renames it over the target
 ```
@@ -269,19 +269,35 @@ Facts that matter when you are reasoning about this:
 
 Three host additions ride on a document navigation, and none of them is a script:
 
-- **`htmlclaytoken`** on the root `<html>` element, the per-file save capability. It is 32
+- **`savetoken`** on the root `<html>` element, the per-file save capability. It is 32
   cryptographically random bytes as unpadded URL-safe base64, lives for the lifetime of the
   process, and is redacted from the log. It is injected only when `Sec-Fetch-Dest` is `document`
   or absent, so a background `fetch()` of a sibling file gets the bytes it is allowed to read
   and no token.
-- **`htmlclayid`** on `.htmlclay` documents, a UUID that is the durable identity behind version
+- **`documentid`** on `.htmlclay` documents, a UUID that is the durable identity behind version
   history. It reaches disk on the page's first save, and it is what makes history follow a
   renamed or moved file.
+
+Both names are recent. Before the save protocol settled on `savetoken` and `documentid`, HTML
+Clay called them `htmlclaytoken` and `htmlclayid`, and it still handles both, permanently.
+
+The token is injected under **both** names carrying the same value, and stripped under both on
+save. A document reads this attribute by name in its own inline script and no update can reach
+that script, so serving one name only would silently stop every older document from saving. One
+value under two names is safe where two credentials would not be: a reader takes the first name
+it recognises and gets the same token.
+
+The id is injected under the current name only. Nothing frozen reads it — it is this host's
+version-history key, and the clients that touch it know both spellings — so serving both would
+put two ids in every saved file for no reader. A file already carrying `htmlclayid` keeps its
+history, and serving re-stamps it as `documentid`, so it migrates on its next save.
+
+Write new pages against `savetoken` and `documentid`.
 - **`isAdminOfCurrentResource=true`**, a host-only cookie that tells ClayJS edit mode is
   available. The response also carries `Cache-Control: no-store`, so a 304 after a restart
   cannot hand back a dead token.
 
-`htmlclaytoken` and the read-only banner are stripped from the body on every save, so neither
+The save token and the read-only banner are stripped from the body on every save, so neither
 reaches disk. **Opening a file changes nothing.** The token, the cookie and the initial identity
 exist only in the served response; a file you open and never save stays byte for byte unchanged.
 
@@ -299,11 +315,12 @@ platform convention.
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/{path}` | serve a file, with `htmlclaytoken` injected on document navigations |
+| `GET` | `/{path}` | serve a file, with `savetoken` injected on document navigations |
 | `GET` | `/_/read/{token}` | raw file contents |
 | `POST` | `/_/save/{token}` | write the document back to disk, atomically |
 | `POST` | `/_/upload/{token}` | store a file beside the document |
-| `GET` | `/_/meta/{token}` | file metadata as JSON |
+| `GET` | `/_/meta` | what this host supports, no token needed |
+| `GET` | `/_/meta/{token}` | the same, plus metadata for one file |
 | `GET` | `/_/versions/{token}` | list saved versions |
 | `GET` | `/_/version/{token}/{name}` | read one version |
 | `POST` | `/_/restore/{token}/{name}` | restore one version |
@@ -360,12 +377,27 @@ The body is the whole document as text. That is the one body shape this route ha
   "name": "notes.htmlclay",
   "size": 3122,
   "lastModified": "2026-08-27T18:04:11Z",
-  "htmlclayid": "…"
+  "documentid": "…"
 }
 ```
 
 `path` is always forward-slashed, so a client can build a URL from it. `absolutePath` keeps the
 platform's own separators, because it names a file on disk rather than a route.
+
+### `GET /_/meta`
+
+```json
+{ "spec": 1, "extensions": ["sync", "upload"] }
+```
+
+The same answer without the per-file half, and it takes no token. `spec` and `extensions`
+describe the host, so they are identical for every file it serves and nothing in them belongs to
+any one person; the protocol forbids gating that behind a credential, because the caller is a
+page a person just loaded and this is the only place a client may learn what a host supports.
+
+Ask here when the page carries no save token, which on this host means any file served
+read-only. A client that gets no answer treats the host as save-only, which is a correct thing to
+be, so discovery failing never costs a save.
 
 ### `GET /_/versions/{token}` and restore
 
@@ -1037,7 +1069,7 @@ checks as an ordinary GET, in the same order, and returns the same refusal. Spec
 
 - cannot read a file an ordinary request could not read
 - creates no editing session: no save token, no edit-mode cookie, no identity, no version
-- strips any `htmlclaytoken` an external writer left on disk before extraction, so a capability
+- strips any save token an external writer left on disk before extraction, so a capability
   cannot be read back out
 - returns `Cache-Control: no-store`
 - sends no CORS headers
@@ -1095,7 +1127,7 @@ Other behavior worth knowing:
   no save ever makes durable is deleted after 7 days.
 - **Consecutive identical versions collapse.** The same content is never stored twice in a row.
 - **History follows the document.** Rename or move a `.htmlclay` file and its history follows,
-  because the identity is the `htmlclayid` attribute on `<html>`. A copy gets a fresh identity, so
+  because the identity is the `documentid` attribute on `<html>`. A copy gets a fresh identity, so
   the copy's edits never mix with the original's. Plain `.html` files are the exception: their
   history is keyed by location, so moving one leaves its history behind.
 - **An outside edit is backed up before your save wins.** The save succeeds and the previous bytes
@@ -1311,7 +1343,7 @@ internal/trust/      Which folders may be trusted, and on whose say-so
 internal/dataapi/    Reading a document as JSON, with its vendored conformance corpus
 internal/versions/   Save history
 internal/browser/    Opening a URL in the system's default browser
-internal/htmlutil/   Inject and strip htmlclaytoken and htmlclayid on the <html> tag
+internal/htmlutil/   Inject and strip savetoken and documentid on the <html> tag
 internal/config/     Settings in the OS config dir
 internal/platform/   Single-instance lock, Start on Login, file associations, native dialogs
 internal/tray/       System tray icon and menu

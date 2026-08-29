@@ -282,7 +282,7 @@ func TestServeFileThroughMux(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200 serving file at top level, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), `htmlclaytoken="`+f.Token+`"`) {
+	if !strings.Contains(w.Body.String(), `savetoken="`+f.Token+`"`) {
 		t.Error("served file missing token attribute")
 	}
 }
@@ -312,7 +312,7 @@ func TestReadThroughMux(t *testing.T) {
 func TestSaveThroughMux(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
-	body := `<!DOCTYPE html><html htmlclaytoken="x"><body>Mux Save</body></html>`
+	body := `<!DOCTYPE html><html savetoken="x"><body>Mux Save</body></html>`
 	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(body))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	sameOriginHeaders(req)
@@ -330,7 +330,7 @@ func TestSaveThroughMux(t *testing.T) {
 	if !strings.Contains(string(saved), "Mux Save") {
 		t.Error("save through mux did not write content")
 	}
-	if strings.Contains(string(saved), "htmlclaytoken") {
+	if strings.Contains(string(saved), "savetoken") {
 		t.Error("token should be stripped on save")
 	}
 }
@@ -454,7 +454,7 @@ func TestSaveMalformedJSONBodyRefused(t *testing.T) {
 func TestSaveTextBodyAccepted(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
-	body := `<!DOCTYPE html><html htmlclaytoken="x"><body>From text</body></html>`
+	body := `<!DOCTYPE html><html savetoken="x"><body>From text</body></html>`
 	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(body))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.Header.Set("Content-Type", "text/plain")
@@ -470,7 +470,7 @@ func TestSaveTextBodyAccepted(t *testing.T) {
 	if !strings.Contains(saved, "From text") {
 		t.Error("text body not persisted")
 	}
-	if strings.Contains(saved, "htmlclaytoken") {
+	if strings.Contains(saved, "savetoken") {
 		t.Error("token should be stripped on save")
 	}
 }
@@ -872,7 +872,7 @@ func fireAssets(srv *Server, rels []string) <-chan assetResult {
 			req.SetPathValue("path", rel)
 			w := httptest.NewRecorder()
 			srv.handleServeFile(w, req)
-			out <- assetResult{code: w.Code, hasToken: strings.Contains(w.Body.String(), "htmlclaytoken")}
+			out <- assetResult{code: w.Code, hasToken: strings.Contains(w.Body.String(), "savetoken")}
 		}(rel)
 	}
 	return out
