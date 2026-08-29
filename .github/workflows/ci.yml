@@ -33,3 +33,41 @@ jobs:
         run: go build -o htmlclay${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/htmlclay
         env:
           CGO_ENABLED: ${{ runner.os == 'macOS' && '1' || '0' }}
+
+  # The conformance gate drives the Malleable HTML File host-test page against a real
+  # listener, in a browser, from the host's own origin. That origin is the point: the
+  # spec requires exact origin validation on every save, so a save can only be proven
+  # from the origin that will be allowed to make it, and the cross-origin refusal needs
+  # a real sandboxed iframe. `go test ./...` skips this unless HTMLCLAY_HOST_GATE=1,
+  # because it wants node, playwright and a downloaded browser.
+  #
+  # Linux only. The gate tests the protocol this host speaks, which is the same on every
+  # platform, and the matrix above already proves the suite builds and runs everywhere.
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # --no-save on purpose: this package.json belongs to the website's wrangler
+      # deploy, and the browser driver is wanted by one test job, not by the package.
+      - name: Install the browser driver
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+
+      - name: Conformance gate
+        run: go test ./internal/server -run TestMalleableHTMLFileHostGate -count=1 -v
+        env:
+          HTMLCLAY_HOST_GATE: "1"
+          HTMLCLAY_HOST_GATE_RUNNER: ${{ github.workspace }}/testdata/conformance/host-test.mjs
+          HTMLCLAY_HOST_GATE_CWD: ${{ github.workspace }}

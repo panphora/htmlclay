@@ -54,7 +54,7 @@ The problem is the setup. The user installs an extension, then runs a separate i
 
 ### Level 6: Localhost server bridge
 
-A tiny HTTP server runs on your machine, serves the HTML file at `http://localhost:{port}`, and exposes a save endpoint. The file's JavaScript calls `fetch('POST /save', { body: html })` and the server writes it back to disk.
+A tiny HTTP server runs on your machine, serves the HTML file at `http://localhost:{port}`, and exposes a save endpoint. The file's JavaScript calls `fetch('/_/save', { method: 'POST', headers: { 'Document-URL': location.href }, body: html })` and the server writes it back to disk.
 
 `localhost` is a secure context in every browser — APIs that break on `file://` work here. The server runs as the current user, so it has the same file permissions you do. No extension, no native messaging, no browser-specific API. Any browser, true overwrite.
 

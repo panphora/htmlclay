@@ -325,7 +325,7 @@ platform convention.
 | `GET` | `/_/version/{token}/{name}` | read one version |
 | `POST` | `/_/restore/{token}/{name}` | restore one version |
 | `GET` | `/_/sync` | live-sync SSE stream (also `GET /_/live-sync/stream`) |
-| `POST` | `/_/sync` | live-sync snapshot relay (also `POST /_/live-sync/save`) |
+| `POST` | `/_/sync` | live-sync snapshot or document relay (also `POST /_/live-sync/save`) |
 | `POST` | `/_/open-request` | ask to widen reads to a named folder |
 | `POST` | `/_/workspace-request/{token}` | ask to trust the requesting file's own folder |
 | `GET` | `/_/api/{path}` | read the document as JSON, using rules the file publishes |
@@ -1288,9 +1288,11 @@ and nothing is exposed off the machine.
 ## Live sync
 
 When a document loads the ClayJS `sync` plugin, tabs of the same file stay in step through the
-server. Tabs in edit mode exchange unsaved DOM snapshots; identifiable dirty regions, the caret,
-and scroll position survive an incoming file change. This works between tabs and windows on one
-machine. **It is not multiplayer sync between computers.**
+server. Tabs in edit mode exchange unsaved DOM snapshots on the `live` lane. View-mode tabs follow
+the durable document on the `saved` lane, which the server updates after an accepted save or a
+settled file-system change. Identifiable dirty regions, the caret, and scroll position survive an
+incoming file change. This works between tabs and windows on one machine. **It is not multiplayer
+sync between computers.**
 
 Live sync is also how a program's edit reaches an open page. A text editor, git command, sync
 client, or wire handler can rewrite the file; HTML Clay waits until the bytes stop changing,

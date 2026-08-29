@@ -625,6 +625,10 @@ func TestStripTokenRemovesBothSpellings(t *testing.T) {
 // either name is cleared first. Two names is what keeps a document that reads the
 // old one saving; one value is what keeps them from being two credentials, which
 // would matter because a reader takes the first name it recognises.
+// One name is served, and the other is still removed. The two halves are independent and both
+// matter: serving the pre-rename name would keep a second working credential alive in every
+// response for no reader that needs one, and failing to strip a stale copy of it would write a
+// live token into someone's file. Injection narrowed; the strip did not.
 func TestInjectTokenWritesBothSpellingsWithOneValue(t *testing.T) {
 	in := []byte(`<html` + legacyTokenAttr("stale") + ` lang="en"></html>`)
 	got := InjectToken(in, "fresh")

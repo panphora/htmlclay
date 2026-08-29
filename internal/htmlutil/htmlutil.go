@@ -318,6 +318,25 @@ func readAttr(data []byte, patterns []*regexp.Regexp) string {
 //
 // Two attributes with one value is safe where two credentials would not be. A
 // reader takes the first name it recognises and gets the same token either way.
+//
+// ⚠ NARROWING THIS TO `savetoken` ALONE BREAKS EVERY EXISTING USER. It was tried
+// and reverted on 2026-08-29. The clients were the easy half: clayjs and hyperclayjs
+// no longer READ the old name, which is safe because both find `savetoken` beside it.
+// The host cannot follow them yet.
+//
+// The blocker is a document nobody can update. v1.8.0, the shipped release, writes
+// ~/htmlclay/examples/welcome.htmlclay carrying this inline script:
+//
+//	const token = html.getAttribute('htmlclaytoken');
+//
+// One name, no fallback. That file is written once at first launch and never
+// overwritten on upgrade, so every user who installed v1.8.0 has one on disk. Stop
+// injecting the old name and their welcome file stops saving, with no error pointing
+// at the cause. cmd/htmlclay/example.htmlclay reads `savetoken` first now, so files
+// created from THIS build are fine; the ones already on disk cannot be reached.
+//
+// Before this can narrow: either that population is gone, or it has been migrated by
+// rewriting that one known file in place. Neither is true today.
 func InjectToken(data []byte, value string) []byte {
 	return injectAttr(data, tokenAttrs, value, "savetoken", "htmlclaytoken")
 }

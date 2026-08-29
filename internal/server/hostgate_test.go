@@ -37,7 +37,16 @@ func TestMalleableHTMLFileHostGate(t *testing.T) {
 	if runner == "" {
 		t.Fatal("HTMLCLAY_HOST_GATE_RUNNER must point at malleablehtmlfile/scripts/host-test.mjs")
 	}
-	pageSource := filepath.Join(filepath.Dir(runner), "..", "host-test.html")
+	// Two layouts, the same two the runner resolves for itself. Canonically it sits in
+	// scripts/ with the page one level up; synced into a host repo the two land side by
+	// side in one conformance directory. The sibling is checked FIRST, because resolving
+	// only the canonical shape sends an in-repo run looking in this repo's parent
+	// directory and fails far from the cause. That is not hypothetical: it is what this
+	// test did until CI pointed it at the in-repo copy.
+	pageSource := filepath.Join(filepath.Dir(runner), "host-test.html")
+	if _, err := os.Stat(pageSource); err != nil {
+		pageSource = filepath.Join(filepath.Dir(runner), "..", "host-test.html")
+	}
 
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
