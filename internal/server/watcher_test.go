@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/versions"
@@ -596,8 +597,24 @@ func TestWatcherDoesNotPublishATruncateAtTheNormalInterval(t *testing.T) {
 	if notice := waitFrame(t, live, 2*time.Second); notice["type"] != "notification" {
 		t.Fatalf("live lane got %v, want a notification", notice)
 	}
-	if content := waitFrame(t, saved, 2*time.Second); content["html"] != changed {
-		t.Fatalf("saved lane html = %v", content["html"])
+	// Compared with the identity stripped: a broadcast now re-stamps the document's
+	// tracked id, exactly as serving does, so the published bytes are deliberately
+	// not byte-identical to what landed on disk. What this test is about is WHICH
+	// content was published, so the id is removed before comparing and checked
+	// separately.
+	published, _ := waitFrame(t, saved, 2*time.Second)["html"].(string)
+	if got := string(htmlutil.StripHTMLClayID([]byte(published))); got != changed {
+		t.Fatalf("saved lane html = %v", got)
+	}
+	// The id is asserted unconditionally. Guarding on `id != ""` would make this pass
+	// on a build that resolved no identity at all, which is one of the two ways the
+	// thing being tested can break.
+	id, ok := versions.IDFromKey(key)
+	if !ok || id == "" {
+		t.Fatalf("no identity was tracked for %q, so the broadcast had none to carry", key)
+	}
+	if got := htmlutil.ReadHTMLClayID([]byte(published)); got != id {
+		t.Fatalf("the broadcast carries identity %q, want the tracked %q: %q", got, id, published)
 	}
 	entries, err = srv.versions.List(key, f.AbsPath)
 	if err != nil {

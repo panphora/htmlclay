@@ -362,24 +362,67 @@ The body is the whole document as text. That is the one body shape this route ha
 - A body with no `<html>` tag is `400 {"ok":false,"error":"body is not an HTML document"}`.
 - Over 50 MB is `413 {"ok":false,"error":"body too large (max 50MB)"}`.
 - An invalid or expired token is `401 {"ok":false,"error":"invalid token"}`.
-- Success is `{"ok":true,"msg":"Saved","msgType":"success"}`.
+- Success is `{"ok":true,"msg":"Saved","msgType":"success","etag":"…"}`.
 - When the file changed on disk since this server last wrote it, the save still succeeds and the
-  body is `{"ok":true,"msg":"<name> had been changed outside this tab. Your version was saved; the previous one is in Backups.","msgType":"warning"}`.
+  body is `{"ok":true,"msg":"<name> had been changed outside this tab. Your version was saved; the previous one is in Backups.","msgType":"warning","etag":"…"}`.
+
+**Conditional saves.** Send `If-Match` carrying the stamp you last saw and the save is refused
+rather than allowed to overwrite a newer copy:
+
+```json
+{"ok":false,"code":"conflict","msgType":"error","etag":"…",
+ "msg":"<name> changed since you last loaded it. Your version was not saved.",
+ "changedBy":"another-tab"}
+```
+
+with status `412`, and nothing written: not the file, not a version, not the file's identity. The
+`etag` in the refusal is the current one, so a client can reconcile without a second request.
+
+`changedBy` names what moved the document, and appears only when this host actually knows. It says
+`another-tab` when the bytes on disk are ones this process wrote itself, which on a desktop host
+means you, in another tab or on another device. A change made by anything else — an editor, a
+script, an agent, a sync client — is indistinguishable from here, so the field is **omitted**
+rather than guessed at.
+
+A save with no `If-Match` is the plain last-write-wins save and behaves exactly as it always has,
+so nothing already saved is affected by this capability existing.
+
+The stamp is `sha256` of the bytes **stored**, hex, first 16 characters, and it is the same
+computation hyperclay uses, so a document that moves between the two hosts keeps a stamp both
+recognise. Stored, not sent: a save arrives carrying a save token that is stripped before the
+write, so the stamp describes the file rather than the request. `If-Match: *` matches any document
+that has bytes; a field naming no stamp this host issued is refused rather than ignored.
 
 ### `GET /_/meta/{token}`
 
 ```json
 {
   "spec": 1,
-  "extensions": ["sync", "upload"],
+  "extensions": ["conditional", "sync", "upload"],
   "path": "notes.htmlclay",
   "absolutePath": "/Users/you/Desktop/notes.htmlclay",
   "name": "notes.htmlclay",
   "size": 3122,
   "lastModified": "2026-08-27T18:04:11Z",
-  "documentid": "…"
+  "documentid": "…",
+  "htmlclayid": "…",
+  "document": {
+    "etag": "…",
+    "upload": { "allowed": true, "maxBytes": 26214400 }
+  }
 }
 ```
+
+`document` is the per-file half of the answer, and where a client seeds the stamp it later sends
+as `If-Match`. It is the only part of a discovery answer a host ever withholds. Its `upload` block
+is what makes the announced `upload` capability usable: a client that finds no block does not
+upload and does not probe the route to find out, so the cap is reported rather than discovered by
+a refusal.
+
+`htmlclayid` is the pre-spec spelling of `documentid` and carries the same value. It is permanent.
+Every earlier HTML Clay answered here with that name, and this route exists for a document that has
+no other way to learn about itself, so its own inline script is the reader that would have
+hardcoded it.
 
 `path` is always forward-slashed, so a client can build a URL from it. `absolutePath` keeps the
 platform's own separators, because it names a file on disk rather than a route.
@@ -387,7 +430,7 @@ platform's own separators, because it names a file on disk rather than a route.
 ### `GET /_/meta`
 
 ```json
-{ "spec": 1, "extensions": ["sync", "upload"] }
+{ "spec": 1, "extensions": ["conditional", "sync", "upload"] }
 ```
 
 The same answer without the per-file half, and it takes no token. `spec` and `extensions`

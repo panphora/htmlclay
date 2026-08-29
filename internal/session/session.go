@@ -78,6 +78,27 @@ type File struct {
 	// the versions API listed and restored nothing while the id-keyed backups sat
 	// on disk.
 	historyKey string
+
+	// writtenHere records that this process actually wrote this file on this
+	// person's behalf: a save or a restore, never a serve and never the first
+	// observation of what was already on disk.
+	//
+	// It exists to keep one attribution honest. lastServerWrite cannot answer
+	// "did we write these bytes", because NoteFirstObservation seeds it from
+	// whatever the file held when it was first read. After a restart those two are
+	// indistinguishable, so a file edited by an outside program while htmlclay was
+	// closed would look exactly like a write this host had made, and spec §6's
+	// `changedBy` would confidently name the person's own other tab. A wrong
+	// reassuring answer is the one the spec singles out as worse than none.
+	writtenHere bool
+
+	// externalSinceOwnWrite records that the watcher has confirmed bytes on disk
+	// this host did not write, since the last time it wrote the file itself. It
+	// exists because comparing hashes cannot answer "who wrote what is there now":
+	// content can return to a previous value, and then a digest that matches this
+	// host's last write describes bytes an external editor put back. Only a write
+	// by this host clears it.
+	externalSinceOwnWrite bool
 }
 
 // Lock and Unlock serialize read-modify-write operations on this file (saves,
@@ -131,14 +152,38 @@ func (f *File) Observed() bool { return f.lastServerWrite != "" }
 func (f *File) RecordServerWrite(hash string) {
 	f.lastServerWrite = hash
 	f.lastStableObservation = hash
+	f.externalSinceOwnWrite = false
 }
+
+// NoteWriteByThisHost marks that this process wrote the file itself. Call it only
+// from a real write path (save, restore), never from a serve or an observation.
+// Caller must hold Lock().
+func (f *File) NoteWriteByThisHost() { f.writtenHere = true }
+
+// WrittenByThisHost reports whether this process has written this file on the
+// person's behalf during this run. Caller must hold Lock().
+func (f *File) WrittenByThisHost() bool { return f.writtenHere }
 
 // RecordStableObservation advances only the stable-observation record, which is
 // what the watcher does after confirming a stable external read. Caller must hold
 // Lock().
 func (f *File) RecordStableObservation(hash string) {
+	if hash != f.lastServerWrite {
+		f.externalSinceOwnWrite = true
+	}
 	f.lastStableObservation = hash
 }
+
+// ExternalWriteSinceOwnWrite reports whether the watcher has confirmed bytes on
+// disk that this host did not write, since this host last wrote the file. Caller
+// must hold Lock().
+//
+// It is the fact a digest comparison cannot supply. A file can go B -> C -> B, and
+// once it is back at B every hash this host holds matches again, so the last write
+// looks like this host's when it was an external editor's undo. Conditional-save
+// attribution has to omit `changedBy` in that case rather than reassure the caller
+// it was another of their own tabs.
+func (f *File) ExternalWriteSinceOwnWrite() bool { return f.externalSinceOwnWrite }
 
 // NoteFirstObservation seeds both records the first time a file is read, so the
 // first save of a file the server has never written does not false-positive as a

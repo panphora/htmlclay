@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/versions"
@@ -476,7 +475,7 @@ func (wt *watcher) publishConfirmed(e *watchEntry, hash string, data []byte) str
 	}
 
 	msg := fmt.Sprintf("%s changed on disk outside this tab", f.Name)
-	if wt.coord.publishExternalChange(f, msg, string(htmlutil.StripToken(data))) {
+	if wt.coord.publishExternalChange(f, msg, forBrowser(data, key)) {
 		f.RecordStableObservation(hash)
 		wt.logger.Printf("External change detected in %s", f.RelPath)
 	}

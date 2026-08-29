@@ -241,9 +241,21 @@ func TestLegacyDocumentKeepsItsHistoryAcrossASave(t *testing.T) {
 }
 
 // The per-document meta answer reports the id under the same name the attribute
-// uses. Nothing pinned this field before, which is how it could have kept the old
-// spelling while the attribute moved.
-func TestTokenMetaReportsTheDocumentIDUnderItsCurrentName(t *testing.T) {
+// uses, AND keeps the pre-spec name beside it carrying the same value.
+//
+// The rename originally dropped the old key, on the reasoning that no client reads
+// this field: both libraries take only `spec`, `extensions` and `document` from a
+// meta answer, and that is still true. But a library is not the only reader this
+// route has. It exists for a document served sandboxed, which holds no cookie and
+// presents nothing the host recognises, so its own inline script is exactly what
+// calls it to ask who it is. v1.8.0, the shipped release, registers this route and
+// answers `htmlclayid`, so that spelling is live public API today, hardcoded in any
+// page written against it, and no update reaches a saved document's script. Dropping
+// the key would turn a working read into `undefined` from an API still answering 200.
+//
+// The attribute itself is already injected under both spellings for this reason. The
+// field that reports it owes the same, and one extra JSON key is the whole cost.
+func TestTokenMetaReportsTheDocumentIDUnderBothNames(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 	f := registerPageWithContent(t, srv, "meta-id.htmlclay",
 		`<!DOCTYPE html><html documentid="`+stableUUID+`" lang="en"><body>hi</body></html>`)
@@ -261,8 +273,8 @@ func TestTokenMetaReportsTheDocumentIDUnderItsCurrentName(t *testing.T) {
 	if got["documentid"] != stableUUID {
 		t.Errorf("documentid: got %v, want %q (%q)", got["documentid"], stableUUID, w.Body.String())
 	}
-	if _, stale := got[oldIDAttr]; stale {
-		t.Errorf("meta still reports the id under its pre-spec name: %q", w.Body.String())
+	if got[oldIDAttr] != stableUUID {
+		t.Errorf("%s: got %v, want the same value as documentid (%q)", oldIDAttr, got[oldIDAttr], w.Body.String())
 	}
 }
 

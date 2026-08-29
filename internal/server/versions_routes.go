@@ -192,13 +192,14 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	// A restore advances both per-file records, so it participates in save
 	// suppression exactly like a save does, and emits a live notification.
 	f.RecordServerWrite(versions.Hash(data))
+	f.NoteWriteByThisHost()
 	// Restoring engages the history, so it is no longer a throwaway first-open
 	// snapshot: clear any provisional flag so it is never reclaimed.
 	if pErr := s.versions.SetProvisional(key, f.AbsPath, false); pErr != nil {
 		s.logger.Printf("Could not clear provisional flag for %s: %v", f.RelPath, pErr)
 	}
 	s.coord.acceptServerReplacement(f)
-	s.broadcastDiskHTML(f, data)
+	s.broadcastDiskHTML(f, data, key)
 	s.coord.notifyWarning(f, f.Name+" was restored from a backup")
 	f.Unlock()
 

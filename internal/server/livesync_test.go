@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/testutil"
@@ -290,7 +291,7 @@ func TestLiveSyncSaveReadsPageURLHeader(t *testing.T) {
 	sub := newSubscriber(f.AbsPath, laneLive)
 	srv.hub.add(sub)
 
-	w := postLiveSync(t, srv, pageURL, `{"html":"<html>peer</html>","sender":"c1"}`)
+	w := postLiveSync(t, srv, pageURL, `{"snapshot":"<html>peer</html>","sender":"c1"}`)
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -315,7 +316,7 @@ func TestLiveSyncSaveNeverPersists(t *testing.T) {
 	beforeWrite, beforeStable := f.LastServerWrite(), f.LastStableObservation()
 	f.Unlock()
 
-	if w := postLiveSync(t, srv, pageURL, `{"html":"<html>ghost</html>","sender":"c1"}`); w.Code != 200 {
+	if w := postLiveSync(t, srv, pageURL, `{"snapshot":"<html>ghost</html>","sender":"c1"}`); w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
@@ -345,16 +346,21 @@ func TestLiveSyncSaveValidatesPayload(t *testing.T) {
 		name, body string
 		want       int
 	}{
-		{"missing sender", `{"html":"<html></html>"}`, 400},
-		{"empty sender", `{"html":"<html></html>","sender":""}`, 400},
-		{"oversized sender", `{"html":"<html></html>","sender":"` + strings.Repeat("s", maxSenderLen+1) + `"}`, 400},
+		// §10: the message "MAY also carry `sender`". It is how a page recognises and
+		// drops its own update coming back, so a client that omits it is giving up an
+		// echo it did not want, not sending a malformed request. These two asserted
+		// 400 until the conformance page's own relay probe, which sends no sender,
+		// was refused by this host and by no other.
+		{"missing sender", `{"snapshot":"<html></html>"}`, 200},
+		{"empty sender", `{"snapshot":"<html></html>","sender":""}`, 200},
+		{"oversized sender", `{"snapshot":"<html></html>","sender":"` + strings.Repeat("s", maxSenderLen+1) + `"}`, 400},
 		{"missing html", `{"sender":"c1"}`, 400},
-		{"identityMap null", `{"html":"<html></html>","sender":"c1","identityMap":null}`, 400},
-		{"identityMap array", `{"html":"<html></html>","sender":"c1","identityMap":[]}`, 400},
-		{"identityMap string", `{"html":"<html></html>","sender":"c1","identityMap":"x"}`, 400},
+		{"identityMap null", `{"snapshot":"<html></html>","sender":"c1","identityMap":null}`, 400},
+		{"identityMap array", `{"snapshot":"<html></html>","sender":"c1","identityMap":[]}`, 400},
+		{"identityMap string", `{"snapshot":"<html></html>","sender":"c1","identityMap":"x"}`, 400},
 		{"not json", `nope`, 400},
-		{"identityMap object", `{"html":"<html></html>","sender":"c1","identityMap":{"0":"a"}}`, 200},
-		{"no identityMap", `{"html":"<html></html>","sender":"c1"}`, 200},
+		{"identityMap object", `{"snapshot":"<html></html>","sender":"c1","identityMap":{"0":"a"}}`, 200},
+		{"no identityMap", `{"snapshot":"<html></html>","sender":"c1"}`, 200},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -367,7 +373,7 @@ func TestLiveSyncSaveValidatesPayload(t *testing.T) {
 
 func TestLiveSyncSaveRejectsUnknownOrForeignPageURL(t *testing.T) {
 	srv, _ := setupLiveSyncTest(t)
-	body := `{"html":"<html></html>","sender":"c1"}`
+	body := `{"snapshot":"<html></html>","sender":"c1"}`
 
 	cases := []string{
 		"",
@@ -625,7 +631,7 @@ func TestLiveSyncRejectsSymlinkEscape(t *testing.T) {
 	pageURL := fmt.Sprintf("http://127.0.0.1:%d/link.htmlclay", srv.port)
 
 	// POST leg.
-	if w := postLiveSync(t, srv, pageURL, `{"html":"<html></html>","sender":"c1"}`); w.Code != 404 {
+	if w := postLiveSync(t, srv, pageURL, `{"snapshot":"<html></html>","sender":"c1"}`); w.Code != 404 {
 		t.Errorf("POST leg accepted a symlink escape: %d", w.Code)
 	}
 
@@ -683,7 +689,7 @@ func TestSaveSucceedsWhileSubscribed(t *testing.T) {
 func TestSaveSucceedsAfterAServerWriteWithNoSubscriber(t *testing.T) {
 	srv, f := setupLiveSyncTest(t)
 
-	srv.broadcastDiskHTML(f, []byte("<html>one</html>"))
+	srv.broadcastDiskHTML(f, []byte("<html>one</html>"), "")
 	srv.coord.acceptServerReplacement(f)
 
 	if err := atomicWriteFile(f.AbsPath, []byte("<html>two</html>")); err != nil {
@@ -1092,5 +1098,425 @@ func TestCursorFrameFlagsAReapedIncarnation(t *testing.T) {
 	}
 	if !resync {
 		t.Fatalf("a reconnect into a reaped incarnation was not told to resync (from=%d)", from)
+	}
+}
+
+// --- the document lane, spec §10 -------------------------------------------
+
+// §10 puts two artifacts on one address and lets the field name pick the audience.
+// A document is the durable, stripped one and belongs to the VIEWERS. This host used
+// to refuse it outright, on the reasoning that a save already pushes the new document
+// to viewers, which is true and is the usual flow. But §10 names the case this
+// serves: a client posts `document` when it wants viewers updated WITHOUT a save
+// behind it. hyperclay and hyperclay-local both relay it, so refusing here meant one
+// page got a 200 on two hosts and a 400 on the third.
+func TestARelayedDocumentGoesToTheViewers(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	viewers := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(viewers)
+
+	w := postLiveSync(t, srv, pageURL, `{"document":"<html><body>for readers</body></html>","sender":"c1"}`)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	msg := waitFrame(t, viewers, time.Second)
+	if msg["html"] != "<html><body>for readers</body></html>" {
+		t.Fatalf("the document did not reach the viewers: %v", msg)
+	}
+}
+
+// The other half, and the one that matters: a reader's page must never be handed an
+// editor's working state, toolbars and unsaved `no-save` content included. The 200 is
+// asserted first, because a build that refuses documents outright satisfies "no
+// editor saw it" by relaying nothing at all.
+func TestARelayedDocumentNeverReachesTheEditors(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	editors := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(editors)
+	viewers := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(viewers)
+
+	if w := postLiveSync(t, srv, pageURL, `{"document":"<html><body>readers only</body></html>","sender":"c1"}`); w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	waitFrame(t, viewers, time.Second)
+	expectNoFrame(t, editors, 150*time.Millisecond)
+}
+
+func TestARelayedSnapshotStillGoesToTheEditorsOnly(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	editors := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(editors)
+	viewers := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(viewers)
+
+	if w := postLiveSync(t, srv, pageURL, `{"snapshot":"<html><body>working</body></html>","sender":"c1"}`); w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	waitFrame(t, editors, time.Second)
+	expectNoFrame(t, viewers, 150*time.Millisecond)
+}
+
+// §10 is flat about it: /_/sync never writes to disk, whichever field it carries.
+// The existing never-persists test covers the snapshot lane; this is the new one.
+func TestARelayedDocumentNeverPersists(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	before, _ := os.ReadFile(f.AbsPath)
+	if w := postLiveSync(t, srv, pageURL, `{"document":"<html><body>ghost</body></html>","sender":"c1"}`); w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	after, _ := os.ReadFile(f.AbsPath)
+	if string(after) != string(before) {
+		t.Fatalf("a relayed document was written to disk: %q", after)
+	}
+	key := versions.Key(f.AbsPath, before)
+	if entries, _ := srv.versions.List(key, f.AbsPath); len(entries) != 0 {
+		t.Fatalf("a relayed document created %d backups", len(entries))
+	}
+}
+
+// Presence, not emptiness, and an "exactly one" rule matching hyperclay's relay. A
+// body naming both artifacts names no single audience, and picking one would deliver
+// the other to nobody while answering as though it had been relayed. A body naming a
+// lane with nothing in it is a broken client, not a missing field.
+func TestTheRelayTakesExactlyOneArtifact(t *testing.T) {
+	srv, _ := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	cases := []struct {
+		name, body string
+		want       int
+	}{
+		{"both named", `{"snapshot":"<html></html>","document":"<html></html>","sender":"c1"}`, 400},
+		{"the legacy spelling is not an artifact name here", `{"html":"<html></html>","sender":"c1"}`, 400},
+		{"neither named", `{"sender":"c1"}`, 400},
+		{"an explicit null names no lane", `{"snapshot":"<html></html>","document":null,"sender":"c1"}`, 200},
+		{"a named but empty lane is a broken client", `{"document":"","sender":"c1"}`, 422},
+		{"a snapshot beside the unread legacy spelling is still one lane", `{"snapshot":"<html>a</html>","html":"<html>b</html>","sender":"c1"}`, 200},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if w := postLiveSync(t, srv, pageURL, c.body); w.Code != c.want {
+				t.Fatalf("expected %d, got %d: %s", c.want, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// The same bar the save lane holds bytes to, on both lanes. These reach every open
+// tab through a morph, so a fragment or a JSON blob turns each of them into something
+// that is not a document. hyperclay answers 422 here and so does hyperclay-local.
+func TestTheRelayRefusesWhatIsNotADocument(t *testing.T) {
+	srv, _ := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	// `html` is not in this list: the spec address does not read it at all, so it is
+	// refused as an unnamed artifact (400) long before the shape gate. Its own two
+	// tests cover the pre-spec address, where it IS read and where the shape gate
+	// deliberately does not apply.
+	for _, field := range []string{"snapshot", "document"} {
+		for _, payload := range []string{`<p>a fragment</p>`, `{\"not\":\"html\"}`, ``} {
+			body := `{"` + field + `":"` + payload + `","sender":"c1"}`
+			if w := postLiveSync(t, srv, pageURL, body); w.Code != 422 {
+				t.Errorf("%s=%q: expected 422, got %d (%s)", field, payload, w.Code, w.Body.String())
+			}
+		}
+	}
+}
+
+// identityMap pairs elements across a morph between two EDITORS, so that each keeps
+// its focus and half-typed input. A viewer has no working state to preserve, and
+// hyperclay carries it on the snapshot lane only for the same reason.
+func TestAnIdentityMapNeverRidesTheViewerLane(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	viewers := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(viewers)
+
+	body := `{"document":"<html><body>x</body></html>","sender":"c1","identityMap":{"0":"a"}}`
+	if w := postLiveSync(t, srv, pageURL, body); w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if msg := waitFrame(t, viewers, time.Second); msg["identityMap"] != nil {
+		t.Errorf("an identityMap reached a viewer: %v", msg)
+	}
+}
+
+// §9, normative: "a host strips it from every frame it fans out." A save token is
+// minted for one person and one file, so a tab that adopts somebody else's saves AS
+// them, and goes on saving after its own access ends, because revoking a person's
+// access cannot reach a credential issued to another. clayjs strips on the client as
+// well; the obligation sits on the host precisely because the case that matters is a
+// client that does not.
+//
+// Both lanes, because the token leaks the same either way and the two lanes are
+// reached by two different branches.
+func TestTheRelayStripsASaveTokenFromEveryFrame(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	for _, c := range []struct {
+		field, lane string
+	}{
+		{"snapshot", laneLive},
+		{"document", laneSaved},
+	} {
+		t.Run(c.field, func(t *testing.T) {
+			sub := newSubscriber(f.AbsPath, c.lane)
+			srv.hub.add(sub)
+			t.Cleanup(func() { srv.hub.remove(sub) })
+
+			// Both spellings, because item 5 made this host inject both and a frozen
+			// document relays back whichever one it knows.
+			body := `{"` + c.field + `":"<html savetoken=\"` + f.Token +
+				`\" htmlclaytoken=\"` + f.Token + `\"><body>x</body></html>","sender":"c1"}`
+			if w := postLiveSync(t, srv, pageURL, body); w.Code != 200 {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+
+			html, _ := waitFrame(t, sub, time.Second)["html"].(string)
+			if strings.Contains(html, f.Token) {
+				t.Errorf("a save token reached another tab: %q", html)
+			}
+			for _, attr := range []string{"savetoken", "htmlclaytoken"} {
+				if strings.Contains(html, attr) {
+					t.Errorf("%s survived the relay: %q", attr, html)
+				}
+			}
+			// The frame must still be a document, not gutted by the strip.
+			if !strings.Contains(html, "<body>x</body>") {
+				t.Errorf("the strip damaged the frame: %q", html)
+			}
+		})
+	}
+}
+
+// §9 also runs backwards: a stripped frame must not remove the RECEIVING tab's own
+// token. That half belongs to the client, which is why the host sends nothing in the
+// token's place rather than an empty attribute a morph would copy over.
+func TestAStrippedFrameCarriesNoEmptyTokenAttribute(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	sub := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(sub)
+
+	body := `{"snapshot":"<html savetoken=\"` + f.Token + `\"><body>x</body></html>","sender":"c1"}`
+	if w := postLiveSync(t, srv, pageURL, body); w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	html, _ := waitFrame(t, sub, time.Second)["html"].(string)
+	if strings.Contains(html, "savetoken") {
+		t.Errorf("the strip left an empty token attribute behind, which a morph copies onto the receiver: %q", html)
+	}
+}
+
+// §10 makes `sender` optional. Asserted on the delivered frame rather than only on
+// the status, so a build that accepts the body and then fans out nothing still fails.
+func TestARelayWithoutASenderStillReachesTheOtherTabs(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	sub := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(sub)
+
+	if w := postLiveSync(t, srv, pageURL, `{"document":"<html><body>anon</body></html>"}`); w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if html, _ := waitFrame(t, sub, time.Second)["html"].(string); !strings.Contains(html, "anon") {
+		t.Errorf("a sender-less relay was accepted but delivered nothing: %q", html)
+	}
+}
+
+// The relay must accept exactly what the save lane accepts. It used to demand a
+// closing tag the save lane does not, so bytes this host would happily STORE were
+// refused as a RELAY, and both other hosts relayed them.
+func TestTheRelayHoldsTheSameBarAsTheSaveLane(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	const noClosingTag = `<html><body>still a document`
+	if !htmlutil.HasHTMLTag([]byte(noClosingTag)) {
+		t.Fatal("the fixture is not what the save lane accepts; the test would prove nothing")
+	}
+
+	sub := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(sub)
+
+	if w := postLiveSync(t, srv, pageURL, `{"snapshot":"`+noClosingTag+`","sender":"c1"}`); w.Code != 200 {
+		t.Fatalf("the relay refused bytes the save lane accepts: %d (%s)", w.Code, w.Body.String())
+	}
+	waitFrame(t, sub, time.Second)
+}
+
+// "A saved document is a frozen client": it hardcodes whatever library version wrote
+// it and goes on running for years, and no library update can reach its inline
+// script. hyperclayjs exports captureBodyForSync(), documented "for live-sync between
+// admin users", which returns body innerHTML with no <html> root. Any page built
+// against it posts a fragment to the pre-spec address, and that has always worked.
+// The spec route's shape gate must not reach back and break it.
+func TestTheLegacyRelayAddressStillTakesAFragment(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	const fragment = `<div id="app">body innerHTML, the way captureBodyForSync returns it</div>`
+	if htmlutil.HasHTMLTag([]byte(fragment)) {
+		t.Fatal("the fixture has an <html> root, so it would pass either way and prove nothing")
+	}
+
+	sub := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(sub)
+
+	body, err := json.Marshal(map[string]string{"html": fragment, "sender": "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/_/live-sync/save", strings.NewReader(string(body)))
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Page-URL", pageURL)
+	w := httptest.NewRecorder()
+	srv.handleLiveSyncSave(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("the pre-spec address refused a fragment it has always accepted: %d (%s)", w.Code, w.Body.String())
+	}
+	if html, _ := waitFrame(t, sub, time.Second)["html"].(string); !strings.Contains(html, "captureBodyForSync") {
+		t.Errorf("the fragment was accepted but not delivered: %q", html)
+	}
+}
+
+// The other half of the same rule: the SPEC address does hold the bar, so a new
+// client posting a fragment is told rather than silently morphing every open tab
+// into something that is not a document.
+func TestTheSpecRelayAddressStillRefusesAFragment(t *testing.T) {
+	srv, _ := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	w := postLiveSync(t, srv, pageURL, `{"snapshot":"<div>fragment</div>","sender":"c1"}`)
+	if w.Code != 422 {
+		t.Fatalf("expected 422 on the spec address, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// forBrowser exists so that no path handing a full document to a browser can do one
+// of its two jobs and forget the other. The relay was doing only the strip.
+//
+// A client that treats `documentid` as save chrome relays an identity-free document
+// to every peer. A peer that saves it writes a file with no id, and moving that file
+// while this host is closed makes the next open mint a NEW identity instead of
+// finding the history it already has. Both tabs on a relay hold the same file, so the
+// id put back is the one the receiver already carries.
+func TestTheRelayPutsTheDocumentIdBack(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	// Serving is what resolves and stamps the identity, so go through it first.
+	if w := getThroughMux(t, srv, "/page.htmlclay"); w.Code != 200 {
+		t.Fatalf("serving the page: %d", w.Code)
+	}
+	served := htmlutil.ReadHTMLClayID(getThroughMux(t, srv, "/page.htmlclay").Body.Bytes())
+	if served == "" {
+		t.Fatal("serving injected no documentid, so this test could not tell a repair from a no-op")
+	}
+
+	sub := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(sub)
+
+	// A sender that dropped the attribute, which is the case the repair is for.
+	stripped := `<!DOCTYPE html><html><body><p>from a client that strips it</p></body></html>`
+	if htmlutil.ReadHTMLClayID([]byte(stripped)) != "" {
+		t.Fatal("the fixture already carries an id, so it would pass either way")
+	}
+	body, err := json.Marshal(map[string]string{"snapshot": stripped, "sender": "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if w := postLiveSync(t, srv, pageURL, string(body)); w.Code != 200 {
+		t.Fatalf("relay refused: %d (%s)", w.Code, w.Body.String())
+	}
+
+	html, _ := waitFrame(t, sub, time.Second)["html"].(string)
+	if got := htmlutil.ReadHTMLClayID([]byte(html)); got != served {
+		t.Errorf("relayed frame carries documentid %q, want the served %q", got, served)
+	}
+}
+
+// The other half of forBrowser on the same path, and the one §9 makes normative.
+// Pinned here beside the stamp so a future edit cannot trade one for the other.
+func TestTheRelayStillStripsTheTokenWhileStamping(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	sub := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(sub)
+
+	withToken := `<!DOCTYPE html><html savetoken="somebody-elses-credential"><body>x</body></html>`
+	body, err := json.Marshal(map[string]string{"snapshot": withToken, "sender": "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := postLiveSync(t, srv, pageURL, string(body)); w.Code != 200 {
+		t.Fatalf("relay refused: %d (%s)", w.Code, w.Body.String())
+	}
+
+	html, _ := waitFrame(t, sub, time.Second)["html"].(string)
+	if strings.Contains(html, "somebody-elses-credential") {
+		t.Errorf("the relayed frame still carries a save token: %q", html)
+	}
+}
+
+// `html` is the pre-spec spelling of `snapshot`, and the spec address does not read
+// it. Nothing frozen posts it there: /_/sync is new, and both clients pair the key
+// with the address in one wire profile chosen once for the life of the page. Reading
+// it anyway would buy nothing and cost the thing this train is for, since hyperclay's
+// spec route recognises only `snapshot` and `document`.
+func TestTheSpecAddressDoesNotReadTheLegacyArtifactName(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	sub := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(sub)
+
+	w := postLiveSync(t, srv, pageURL,
+		`{"html":"<html><body>x</body></html>","sender":"c1"}`)
+	if w.Code != 400 {
+		t.Fatalf("got %d, want 400: the spec address names two artifacts and `html` is neither (%s)", w.Code, w.Body.String())
+	}
+	expectNoFrame(t, sub, 100*time.Millisecond)
+}
+
+// And the pre-spec address still reads it, forever, because that is where every
+// frozen client sends it.
+func TestTheLegacyAddressStillReadsTheLegacyArtifactName(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	sub := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(sub)
+
+	req := httptest.NewRequest("POST", "/_/live-sync/save",
+		strings.NewReader(`{"html":"<html><body>legacy</body></html>","sender":"c1"}`))
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Page-URL", pageURL)
+	w := httptest.NewRecorder()
+	srv.handleLiveSyncSave(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("the pre-spec address refused its own artifact name: %d (%s)", w.Code, w.Body.String())
+	}
+	if html, _ := waitFrame(t, sub, time.Second)["html"].(string); !strings.Contains(html, "legacy") {
+		t.Errorf("accepted but not delivered: %q", html)
 	}
 }

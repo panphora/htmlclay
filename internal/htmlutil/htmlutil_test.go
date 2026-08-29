@@ -568,7 +568,6 @@ func TestStripBannerRemovesEveryInjection(t *testing.T) {
 	}
 }
 
-
 // --- legacy attribute spellings -------------------------------------------
 //
 // htmlclay shipped `htmlclaytoken` and `htmlclayid` before the spec settled on

@@ -17,6 +17,7 @@ import (
 	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/platform"
 	"github.com/panphora/htmlclay/internal/session"
+	"github.com/panphora/htmlclay/internal/specwire"
 	"github.com/panphora/htmlclay/internal/versions"
 )
 
@@ -69,11 +70,21 @@ const maxSaveSize = 50 * 1024 * 1024
 // why both /_/meta routes read it from here instead of each carrying its own
 // literal and drifting the day one of them gains an extension.
 //
-// `sync` is announced because this host serves both halves of the §10 address. It
-// relays snapshots only and refuses a `document` body; §10 is informative in v1,
-// and updating viewers on save rather than by client relay is the flow the section
-// itself describes as usual.
-var hostExtensions = []string{"sync", "upload"}
+// `sync` is announced because this host serves both halves of the §10 address, and
+// both §10 artifacts: a `snapshot` to the other editors, a `document` to the viewers.
+// The usual flow needs no client relay for viewers at all, since a save already
+// pushes the new document out; the document lane exists for the case §10 names, a
+// client wanting viewers updated with no save behind it.
+//
+// `format` is NOT announced, and must not be while this host stores every save's
+// bytes exactly as sent. §4 says a host that does not declare it ignores
+// `formathtml` entirely, which is precisely what this host does.
+//
+// `conditional` is a promise, not a description: §6 says a host that advertises it
+// MUST honour it, because accepting If-Match and ignoring it tells clients they are
+// protected when they are not. Announce it only while handleSave still refuses on a
+// stamp mismatch.
+var hostExtensions = []string{"conditional", "sync", "upload"}
 
 // hostMeta is the host-scope half of the discovery answer, and the whole of what
 // the tokenless route returns. Separate from fileMeta rather than reusing it with
@@ -102,11 +113,47 @@ type fileMeta struct {
 	Size         int64  `json:"size"`
 	LastModified string `json:"lastModified"`
 	// Named for the attribute it reports, so a reader comparing the two is not
-	// asked to know they are the same thing. Renamed with the attribute rather
-	// than left behind: no client reads this field (both clients take only
-	// `spec`, `extensions` and `document` from a meta answer), so it has no frozen
-	// callers of its own.
+	// asked to know they are the same thing.
 	HTMLClayID string `json:"documentid,omitempty"`
+	// The pre-spec spelling of the field above, same value, permanent.
+	//
+	// No LIBRARY reads it: both clients take only `spec`, `extensions` and
+	// `document` from a meta answer. But this route exists for the document that
+	// has no other way to learn anything about itself, one served sandboxed with an
+	// opaque origin and no cookie, and a page's own hand-written script is exactly
+	// the reader that would call it. Every shipped HTML Clay answered here with
+	// `htmlclayid`, so a document that asked in 1.7.0 hardcoded that spelling, and
+	// no update ever reaches its inline script. Dropping the key turns a working
+	// read into `undefined` against an API that still answers 200, which is the
+	// worst shape a break can take. The attribute itself is already injected under
+	// both spellings for this reason; the field that reports it owes the same.
+	LegacyHTMLClayID string `json:"htmlclayid,omitempty"`
+	// Spec §5 puts everything genuinely per-document in its own block, and §6 puts
+	// the etag there. It is the only part of a discovery answer a host ever
+	// withholds, which is why it is a pointer: a caller who may not see the file
+	// gets an answer with no block at all, exactly as for a file that does not
+	// exist, so /_/meta can never be used to probe for documents.
+	Document *documentMeta `json:"document,omitempty"`
+}
+
+// documentMeta is the per-document half of a discovery answer.
+type documentMeta struct {
+	Etag string `json:"etag"`
+	// §9: a host that announces `upload` caps the size it accepts and REPORTS that
+	// cap here. Without it a conforming client does not upload at all and does not
+	// probe the route to find out, so announcing the capability while omitting this
+	// block is the same to a client as not having it, except that the host looks
+	// like it does. The conformance page caught exactly that.
+	//
+	// Whether a caller may upload is per-document, which is why it lives here rather
+	// than beside the extension list. On this host every served file belongs to the
+	// person running it, so `allowed` is what this host IS, not a permission lookup.
+	Upload uploadMeta `json:"upload"`
+}
+
+type uploadMeta struct {
+	Allowed  bool  `json:"allowed"`
+	MaxBytes int64 `json:"maxBytes"`
 }
 
 func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) (*session.File, bool) {
@@ -778,6 +825,44 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Spec §6's `conditional` capability, and the first thing checked after the
+	// read, because a refusal here must write NOTHING: not the file, not a backup,
+	// not even the identity claim ensureHistoryKeyLocked would make below.
+	//
+	// Only a request that carries If-Match is judged. A save without the header is
+	// the core last-write-wins save and is left exactly as it was, which is why
+	// announcing `conditional` changes nothing for a client that never asks.
+	//
+	// Present-but-empty is a different case from absent, and Values distinguishes
+	// them where Get cannot: an empty field is a client that computed its stamp
+	// wrong, and dropping it back to last-write-wins would silently remove the
+	// protection it asked for. hyperclay and hyperclay-local both refuse it, and a
+	// document that saves against all three must get the same answer from each.
+	if ifMatch, sent := listHeader(r, "If-Match"); sent {
+		// A read that failed for any reason other than "there is no file yet" means
+		// this host cannot say what the stored bytes ARE, and `current` is nil only
+		// because the read gave up. Judging the stamp against those nil bytes turns
+		// the failure into an answer: the refusal hands back the empty-content etag
+		// as though it described the file, and a client that does the obvious thing
+		// and retries with the etag it was just given is let through to replace bytes
+		// nobody could read. Nothing backs them up either, because the pre-write
+		// backup is guarded on the same failed read. A conditional save is a promise
+		// to compare; a host that cannot read cannot compare, and says so.
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			f.Unlock()
+			s.logger.Printf("Cannot judge a conditional save of %s: %v", f.RelPath, readErr)
+			s.writeError(w, http.StatusInternalServerError, "cannot read the stored document")
+			return
+		}
+		if !specwire.IfMatchSatisfied(ifMatch, current) {
+			changedBy := conflictAttribution(f, current, readErr)
+			f.Unlock()
+			s.logger.Printf("Refusing a conditional save of %s: the stored bytes have moved on", f.RelPath)
+			conflictRefusal(w, f.Name, specwire.Etag(current), changedBy)
+			return
+		}
+	}
+
 	// The backup identity comes from the key resolved at first serve, never from
 	// the bytes on disk or in the body. Deriving it from disk meant that on a first
 	// save the id-less on-disk bytes (the host no longer writes the id) keyed by
@@ -843,6 +928,7 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	err = atomicWriteFile(f.AbsPath, body)
 	if err == nil {
 		f.RecordServerWrite(versions.Hash(body))
+		f.NoteWriteByThisHost()
 		// This save makes the history durable. The backup above already defaulted
 		// the meta to non-provisional, but a save that only deduplicated skips that
 		// write, so clear the flag explicitly.
@@ -850,7 +936,7 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("Could not clear provisional flag for %s: %v", f.RelPath, pErr)
 		}
 		s.coord.acceptServerReplacement(f)
-		s.broadcastDiskHTML(f, body)
+		s.broadcastDiskHTML(f, body, key)
 	}
 	f.Unlock()
 
@@ -866,16 +952,31 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	s.logger.Printf("Saved %s (%d bytes)", f.RelPath, len(body))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+
+	// Every save answers with the stamp of what was just stored (§6). Both exits
+	// carry it, and that is not tidiness: a client learns its stamp only from a
+	// save response or from /_/meta, and it CLEARS the one it holds when a response
+	// arrives without one. A success that omitted the stamp would leave the tab
+	// unprotected until its next discovery call, silently, right after the moment
+	// it was most sure it was in sync.
+	//
+	// `body` and not the bytes read back: it is what atomicWriteFile stored, and
+	// re-reading would stamp whatever landed in between rather than this save.
+	etag := specwire.Etag(body)
+
 	if stale {
 		s.logger.Printf("Stale write: %s changed on disk since this server last wrote it", f.RelPath)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok":      true,
 			"msg":     f.Name + " had been changed outside this tab. Your version was saved; the previous one is in Backups.",
 			"msgType": "warning",
+			"etag":    etag,
 		})
 		return
 	}
-	w.Write([]byte(`{"ok":true,"msg":"Saved","msgType":"success"}`))
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok": true, "msg": "Saved", "msgType": "success", "etag": etag,
+	})
 }
 
 // isJSONContentType reports whether a Content-Type declares JSON, including the
@@ -1022,6 +1123,17 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read once and use the bytes for both answers below. The descriptor is
+	// consumed by a read, so the id fallback and the etag cannot each take their
+	// own; and both must describe the same moment, or a client could seed a stamp
+	// for one state while being told the id of another.
+	stored, readErr := io.ReadAll(rf)
+	if readErr != nil {
+		s.logger.Printf("Error reading %s for meta: %v", f.AbsPath, readErr)
+		s.writeError(w, http.StatusInternalServerError, "read error")
+		return
+	}
+
 	// Report the tracked identity, which the host injects when serving. Between
 	// first serve and first save the disk carries no id, so reading it off disk
 	// would report none while the served document already has one.
@@ -1032,9 +1144,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 	f.Unlock()
 	if htmlclayID == "" {
-		if data, rErr := io.ReadAll(rf); rErr == nil {
-			htmlclayID = htmlutil.ReadHTMLClayID(data)
-		}
+		htmlclayID = htmlutil.ReadHTMLClayID(stored)
 	}
 
 	meta := fileMeta{
@@ -1044,12 +1154,25 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// backslashes; `path` is the field a client builds a URL from, and the URL
 		// this same document is served at is forward-slashed. AbsolutePath stays
 		// OS-native on purpose -- it names a file on disk, not a route.
-		Path:         filepath.ToSlash(f.RelPath),
-		AbsolutePath: f.AbsPath,
-		Name:         f.Name,
-		Size:         info.Size(),
-		LastModified: info.ModTime().UTC().Format(time.RFC3339),
-		HTMLClayID:   htmlclayID,
+		Path:             filepath.ToSlash(f.RelPath),
+		AbsolutePath:     f.AbsPath,
+		Name:             f.Name,
+		Size:             info.Size(),
+		LastModified:     info.ModTime().UTC().Format(time.RFC3339),
+		HTMLClayID:       htmlclayID,
+		LegacyHTMLClayID: htmlclayID,
+		// The stamp is taken from the bytes on disk, which are what a save is
+		// compared against. Not from the served bytes: those carry an injected
+		// token and id that never reach the file, so stamping them would hand a
+		// client a value no save of its own could ever match.
+		Document: &documentMeta{
+			Etag: specwire.Etag(stored),
+			// The same constant the upload route enforces, not a second copy of the
+			// number: a cap that is announced and a cap that is applied drifting apart
+			// is worse than announcing none, because a client would refuse files this
+			// host accepts or send files it refuses.
+			Upload: uploadMeta{Allowed: true, MaxBytes: maxUploadSize},
+		},
 	}
 
 	noStoreJSON(w)
@@ -1063,4 +1186,82 @@ func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
 		"ok":    false,
 		"error": message,
 	})
+}
+
+// listHeader reports a list-valued header and whether it was sent at all.
+//
+// Two reasons it is not Header.Get. Get collapses "absent" and "present but empty"
+// into the same empty string, and for If-Match those mean opposite things: one is an
+// ordinary unconditional save, the other is a client whose stamp went wrong and must
+// be refused. And a client may legally send a list field across several physical
+// lines, which RFC 9110 §5.3 says is equivalent to one line joined by commas, so
+// reading only the first would refuse a request whose matching tag happens to be on
+// the second. Node joins duplicates the same way, which is what hyperclay and
+// hyperclay-local already see, and three hosts answering one request differently is
+// the class of bug this train exists to remove.
+func listHeader(r *http.Request, name string) (string, bool) {
+	values := r.Header.Values(name)
+	if len(values) == 0 {
+		return "", false
+	}
+	return strings.Join(values, ", "), true
+}
+
+// conflictAttribution names what moved a document out from under a conditional
+// save, or returns "" when this host genuinely cannot tell (spec §6).
+//
+// Only one of the registered values is knowable here, and only sometimes. If the
+// bytes on disk are ones this process wrote during this run, then the write that
+// moved the document past the caller's stamp went through this same server, which
+// on a single-user desktop host means the same person in another tab or on another
+// device: `another-tab`.
+//
+// Everything else is omitted rather than guessed. A change this host did not make
+// came from outside it -- a text editor, a script, a sync client, an agent -- and
+// nothing on this side distinguishes them. §6 is explicit that a host which cannot
+// tell omits the field, because a confident wrong attribution is worse than none,
+// and the wrong answer available here is the reassuring one.
+//
+// WrittenByThisHost, not LastServerWrite alone: that record is also seeded by the
+// first observation of a file, so after a restart an outside edit made while
+// htmlclay was closed is indistinguishable from this host's own write.
+func conflictAttribution(f *session.File, current []byte, readErr error) string {
+	if readErr != nil {
+		return ""
+	}
+	// The digest test alone is not enough: a file can go B -> C -> B, and once it is
+	// back at B every hash this host holds matches again, so an external editor's undo
+	// reads exactly like this host's own write. The watcher records that it saw the
+	// intermediate state, and that record only clears when this host writes again.
+	if f.WrittenByThisHost() && f.LastServerWrite() == versions.Hash(current) && !f.ExternalWriteSinceOwnWrite() {
+		return "another-tab"
+	}
+	return ""
+}
+
+// conflictRefusal writes the §6 refusal: 412, nothing stored, and a body a client
+// can act on.
+//
+// The current stamp rides along so a client can reconcile without a second
+// request. Nothing in the spec requires it and no client is entitled to expect it,
+// but a refusal whose whole point is "your stamp is stale" may as well carry the
+// one that is not.
+func conflictRefusal(w http.ResponseWriter, name, etag, changedBy string) {
+	body := map[string]any{
+		"ok":      false,
+		"msg":     name + " changed since you last loaded it. Your version was not saved.",
+		"msgType": "error",
+		"code":    "conflict",
+		"etag":    etag,
+	}
+	// Omitted, never sent empty: §6 makes absence the conforming answer, and a
+	// client reads an empty string as an unrecognized value rather than as no
+	// value.
+	if changedBy != "" {
+		body["changedBy"] = changedBy
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusPreconditionFailed)
+	json.NewEncoder(w).Encode(body)
 }

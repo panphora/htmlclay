@@ -17,6 +17,7 @@ import (
 	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/platform"
 	"github.com/panphora/htmlclay/internal/session"
+	"github.com/panphora/htmlclay/internal/versions"
 )
 
 const (
@@ -1277,10 +1278,13 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pointers, not strings, so "absent" and "present but empty" stay different
+	// answers. The lane is chosen by which field the caller NAMED, and a body that
+	// names a lane with nothing in it is a broken client, not a missing field.
 	var payload struct {
-		Snapshot    string          `json:"snapshot"`
-		Document    string          `json:"document"`
-		HTML        string          `json:"html"`
+		Snapshot    *string         `json:"snapshot"`
+		Document    *string         `json:"document"`
+		HTML        *string         `json:"html"`
 		Sender      string          `json:"sender"`
 		IdentityMap json.RawMessage `json:"identityMap"`
 	}
@@ -1288,33 +1292,105 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	// §10 names the field for its audience: a snapshot goes to the other
-	// editors, a document to the viewers. This host relays the editor lane
-	// only, so it takes a snapshot (`html` is the pre-spec spelling of the same
-	// thing) and refuses a document outright rather than quietly delivering one
-	// to the wrong audience. Viewers here are updated by the save itself.
-	if payload.Document != "" {
-		s.writeError(w, http.StatusBadRequest, "this host relays snapshots only; viewers are updated by saving")
+
+	// §10 names the field for its audience: a snapshot goes to the other editors,
+	// a document to the viewers. `html` is the pre-spec spelling of `snapshot` and
+	// stays forever, because documents saved under it go on running with no way for
+	// a library update to reach their inline script.
+	//
+	// PRESENCE is the test, not emptiness, which is the rule hyperclay's relay holds
+	// and the reason is the same: a real snapshot paired with a broken document is a
+	// confused client, and guessing which half it meant would silently send editor
+	// content to viewers or the reverse. Exactly one lane, or the body is refused.
+	//
+	// `html` is the pre-spec spelling of `snapshot` and is read ON THE PRE-SPEC
+	// ADDRESS ONLY. Nothing frozen posts it to /_/sync, because that address is new:
+	// both clients pair the key with the address in one wire profile chosen once for
+	// the life of the page, so a client on the spec address sends `snapshot`. Reading
+	// it here anyway would buy nothing and cost the thing this train is for, since
+	// hyperclay's spec route recognises only `snapshot` and `document`, and one
+	// address answering differently on three hosts is the whole class of bug.
+	legacyAddress := r.URL.Path != "/_/sync"
+
+	lane, relayHTML := "", ""
+	named := 0
+	if payload.Snapshot != nil || (legacyAddress && payload.HTML != nil) {
+		lane, named = laneLive, named+1
+		if payload.Snapshot != nil {
+			relayHTML = *payload.Snapshot
+		} else {
+			relayHTML = *payload.HTML
+		}
+	}
+	if payload.Document != nil {
+		lane, relayHTML = laneSaved, *payload.Document
+		named++
+	}
+	if named != 1 {
+		s.writeError(w, http.StatusBadRequest, "send exactly one of snapshot or document")
 		return
 	}
-	relayHTML := payload.Snapshot
-	if relayHTML == "" {
-		relayHTML = payload.HTML
+
+	// The same bar the save lane holds bytes to, and literally the same predicate:
+	// this content reaches the open tabs through a morph, so a fragment or a JSON
+	// blob turns each of them into something that is not a document. HasHTMLTag and
+	// not IsCompleteHTMLDocument, because the stricter one also demands a closing
+	// tag, which would refuse as a RELAY the exact bytes this host accepts as a
+	// SAVE, and which both other hosts relay happily.
+	//
+	// ON THE SPEC ROUTE ONLY. /_/live-sync/save is the pre-spec address and it has
+	// always taken any non-empty string, including the body innerHTML that
+	// hyperclayjs's exported captureBodyForSync() returns. A document saved against
+	// that API goes on running for years with no way for a library update to reach
+	// its inline script, so adding a rule here would break it permanently and
+	// silently. A client posting to the spec address is one that can be told.
+	if !legacyAddress && !htmlutil.HasHTMLTag([]byte(relayHTML)) {
+		s.writeError(w, http.StatusUnprocessableEntity, "not a complete HTML document")
+		return
 	}
 	if relayHTML == "" {
 		s.writeError(w, http.StatusBadRequest, "missing snapshot")
 		return
 	}
-	if payload.Sender == "" || len(payload.Sender) > maxSenderLen {
+
+	// §10: the message "MAY also carry `sender`". It is how a page recognises and
+	// drops its own update coming back, so a client that sends none is only giving
+	// up an echo it did not want; it is not a malformed request. Requiring it made
+	// the conformance page's own relay probe fail against this host.
+	if len(payload.Sender) > maxSenderLen {
 		s.writeError(w, http.StatusBadRequest, "invalid sender")
 		return
 	}
 
+	// The relay is a path that hands a full document to a browser, so it owes
+	// exactly what the other three owe, and forBrowser is where both halves live so
+	// that no caller can do one and forget the other. This one used to strip and not
+	// stamp.
+	//
+	// The strip is §9 and normative: "a host strips it from every frame it fans
+	// out". A save token is minted for one person and one file, so a tab that adopts
+	// somebody else's saves AS them, and goes on saving after its own access ends,
+	// because revoking a person's access cannot reach a credential issued to
+	// another. clayjs strips on the client too; the obligation is on the host
+	// precisely because a buggy or hostile client is the case that matters.
+	//
+	// The stamp repairs a sender that dropped the id. A client that treats
+	// `documentid` as save chrome relays an identity-free document to every peer; a
+	// peer that saves it writes a file with no id, and moving that file while this
+	// host is closed makes the next open mint a NEW identity rather than find the
+	// history it already has. Both tabs on a relay hold the same file, so the id put
+	// back is the one the receiver already carries, never a different one.
+	//
+	// §9's rule read backwards is about the TOKEN: a stripped frame must not remove
+	// the receiving tab's own. Restoring the id does not touch that.
+	f.Lock()
+	key := f.HistoryKey()
+	f.Unlock()
+	relayHTML = forBrowser([]byte(relayHTML), key)
+
 	identityMap := payload.IdentityMap
 	if len(identityMap) > 0 {
-		// Hosted parity requires a non-null, non-array object. hyperclay-local
-		// drops the field entirely, so the two existing implementations are not
-		// byte identical; follow hosted.
+		// Hosted parity requires a non-null, non-array object.
 		trimmed := strings.TrimSpace(string(identityMap))
 		if !strings.HasPrefix(trimmed, "{") {
 			s.writeError(w, http.StatusBadRequest, "identityMap must be an object")
@@ -1322,14 +1398,53 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.coord.relay(f, relayHTML, payload.Sender, identityMap)
+	if lane == laneSaved {
+		// Viewers, on the same lane a save publishes to. Nothing is written: §10 is
+		// flat about it, and the usual flow needs no client relay here at all, since
+		// a save already pushes the new document out. This exists for the case §10
+		// names, a client wanting viewers updated without a save behind it.
+		//
+		// identityMap is deliberately not carried: it pairs elements across a morph
+		// between two EDITORS, and a viewer has no working state to preserve.
+		s.coord.broadcastSaved(f, relayHTML, payload.Sender)
+	} else {
+		s.coord.relay(f, relayHTML, payload.Sender, identityMap)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write([]byte(`{"ok":true}`))
 }
 
+// forBrowser turns bytes on disk into the bytes a browser should be handed: the
+// save token removed, the document's tracked identity put back.
+//
+// Both halves in one place on purpose. Every path that sends a full document to a
+// browser owes both, and they are easy to get half right: the strip has always
+// been here, and the stamp was missing from all three callers.
+//
+// The stamp matters because the id lives on disk only once the client's own save
+// has carried it back, and a restore strips it outright (spec §4: the host never
+// writes one). So the bytes broadcast after a save, a restore or an outside edit
+// routinely carry no identity at all, and a receiving tab morphs them onto its
+// live document. A client that does not know to protect the attribute then loses
+// its copy, and the next save from that tab writes a file with no id, orphaning
+// every version ever taken of it. Serving already re-stamps for exactly this
+// reason; a broadcast is the same host handing the same document to the same
+// browser, so it owes the same thing.
+//
+// key is the caller's already-resolved history key, so this takes no lock and
+// cannot be called with a key derived from whatever happens to be on disk now.
+func forBrowser(data []byte, key string) string {
+	stripped := htmlutil.StripToken(data)
+	if id, ok := versions.IDFromKey(key); ok {
+		stripped = htmlutil.SetHTMLClayID(stripped, id)
+	}
+	return string(stripped)
+}
+
 // broadcastDiskHTML publishes bytes that just landed on disk to the saved lane.
-func (s *Server) broadcastDiskHTML(f *session.File, data []byte) {
-	s.coord.broadcastSaved(f, string(htmlutil.StripToken(data)), "file-system")
+// Caller holds f.Lock() and passes the history key it resolved there.
+func (s *Server) broadcastDiskHTML(f *session.File, data []byte, key string) {
+	s.coord.broadcastSaved(f, forBrowser(data, key), "file-system")
 }
