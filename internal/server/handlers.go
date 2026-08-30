@@ -1207,16 +1207,26 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 //
 // Derived here rather than passed at each of the forty-six call sites, so a status and
 // its code can never drift apart, and so adding a route cannot forget one. A status the
-// registry does not name carries no code at all: §3 fixes the set of names, and
-// inventing one outside it is worse than omitting the field, because a client branches
-// on the value. `read-only` has no status of its own and belongs to whichever route
-// grows that behaviour, so it is not here.
+// registry does not name carries no code at all. §3's registry is open, so a host may
+// add a name it needs, but inventing one here would be worse than omitting the field:
+// a client branches on the value, and a name nobody else uses is a branch nobody else
+// takes. `read-only` has no status of its own and belongs to whichever route grows that
+// behaviour, so it is not here.
+//
+// 409 is deliberately absent, and it is the one entry that has to be argued for rather
+// than read off the status line. §6 gives `conflict` one meaning, the If-Match refusal,
+// and `conflictRefusal` writes that code itself on the 412. This host's only other 409
+// is the truncation guard, which is temporary and lifts itself as soon as the watcher
+// publishes the external writer's bytes. Naming it `conflict` told clayjs a document
+// version had collided, and clayjs answers that by suspending autosave until a person
+// resolves it: a self-clearing host condition became a hold nothing clears. So the
+// truncation refusal carries its message and no code, which is what §3 asks of a
+// refusal it has no name for.
 var specErrorCodes = map[int]string{
 	http.StatusUnauthorized:          "unauthorized",
 	http.StatusPaymentRequired:       "payment-required",
 	http.StatusForbidden:             "forbidden",
 	http.StatusNotFound:              "not-found",
-	http.StatusConflict:              "conflict",
 	http.StatusRequestEntityTooLarge: "too-large",
 	http.StatusUnsupportedMediaType:  "unsupported-type",
 	http.StatusUnprocessableEntity:   "invalid-document",

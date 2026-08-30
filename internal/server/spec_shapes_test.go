@@ -33,7 +33,6 @@ func TestWriteErrorCarriesBothShapes(t *testing.T) {
 		{http.StatusUnauthorized, "unauthorized"},
 		{http.StatusForbidden, "forbidden"},
 		{http.StatusNotFound, "not-found"},
-		{http.StatusConflict, "conflict"},
 		{http.StatusRequestEntityTooLarge, "too-large"},
 		{http.StatusUnsupportedMediaType, "unsupported-type"},
 		{http.StatusUnprocessableEntity, "invalid-document"},
@@ -63,12 +62,17 @@ func TestWriteErrorCarriesBothShapes(t *testing.T) {
 	}
 }
 
-// A status §3 does not name carries NO code. The registry is closed, a client branches
-// on the value, and a name invented outside it is worse than an absent field.
+// A status §3 does not name carries NO code. The registry is open, so a host may add a
+// name it genuinely needs, but a client branches on the value, and a name invented here
+// on the way past is worse than an absent field.
 func TestWriteErrorInventsNoCode(t *testing.T) {
 	s := &Server{}
 
-	for _, status := range []int{http.StatusBadRequest, http.StatusInternalServerError} {
+	// 409 is here rather than in the table above on purpose. §6 gives `conflict` one
+	// meaning, the If-Match refusal, which writes its own body. This host's only other
+	// 409 is the truncation guard, and it lifts itself, so calling it a conflict made
+	// clayjs suspend autosave over a condition that had already cleared.
+	for _, status := range []int{http.StatusBadRequest, http.StatusConflict, http.StatusInternalServerError} {
 		w := httptest.NewRecorder()
 		s.writeError(w, status, "because")
 

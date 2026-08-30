@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -904,14 +905,19 @@ func stageTruncation(t *testing.T, srv *Server, f *session.File) *watchEntry {
 	return e
 }
 
-func postSave(t *testing.T, srv *Server, f *session.File, body string) int {
+func postSaveRec(t *testing.T, srv *Server, f *session.File, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(body))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("token", f.Token)
 	w := httptest.NewRecorder()
 	srv.handleSave(w, req)
-	return w.Code
+	return w
+}
+
+func postSave(t *testing.T, srv *Server, f *session.File, body string) int {
+	t.Helper()
+	return postSaveRec(t, srv, f, body).Code
 }
 
 const truncationDoc = "<!DOCTYPE html>\n<html><body>what the tab still holds</body></html>"
@@ -925,8 +931,22 @@ func TestSaveWillNotOverwriteATruncationInProgress(t *testing.T) {
 	srv, f, _, _, _ := setupEmptyFileTest(t)
 	stageTruncation(t, srv, f)
 
-	if code := postSave(t, srv, f, truncationDoc); code != http.StatusConflict {
-		t.Fatalf("a save landing on a pending truncation = %d, want %d", code, http.StatusConflict)
+	w := postSaveRec(t, srv, f, truncationDoc)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("a save landing on a pending truncation = %d, want %d", w.Code, http.StatusConflict)
+	}
+	// The refusal is temporary and lifts itself, so it must not claim to be §6's
+	// `conflict`. A client that read that code would treat a condition already on
+	// its way out as an If-Match failure and stop autosaving over it.
+	var refusal map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("the refusal body is not JSON: %v (%q)", err, w.Body.String())
+	}
+	if _, ok := refusal["code"]; ok {
+		t.Fatalf("the truncation refusal carries code %q; §3's registry has no name for it and `conflict` is not it", refusal["code"])
+	}
+	if msg, _ := refusal["msg"].(string); msg == "" {
+		t.Fatalf("the truncation refusal carries no msg; a page has nothing to show: %q", w.Body.String())
 	}
 	onDisk, err := os.ReadFile(f.AbsPath)
 	if err != nil {
