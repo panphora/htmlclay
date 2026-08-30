@@ -149,6 +149,23 @@ type documentMeta struct {
 	// than beside the extension list. On this host every served file belongs to the
 	// person running it, so `allowed` is what this host IS, not a permission lookup.
 	Upload uploadMeta `json:"upload"`
+	// The same per-document facts the top level carries, in the place §5 puts them.
+	//
+	// Duplicated, not moved. §5 says a fact about one document belongs in this block,
+	// so a client can tell it from a fact about the host, and a client reading only the
+	// spec looks nowhere else. But every shipped HTML Clay answered with these at the
+	// top level, and the reader this route exists for is a sandboxed document's own
+	// inline script, which is frozen the moment the file is saved. Moving them would
+	// turn a working read into `undefined` against an API still answering 200.
+	Path         string `json:"path"`
+	AbsolutePath string `json:"absolutePath"`
+	Name         string `json:"name"`
+	Size         int64  `json:"size"`
+	LastModified string `json:"lastModified"`
+	DocumentID   string `json:"documentid,omitempty"`
+	// The pre-spec spelling, same value, for the same reason it survives at the top
+	// level and on the root element itself.
+	LegacyDocumentID string `json:"htmlclayid,omitempty"`
 }
 
 type uploadMeta struct {
@@ -1171,7 +1188,14 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			// number: a cap that is announced and a cap that is applied drifting apart
 			// is worse than announcing none, because a client would refuse files this
 			// host accepts or send files it refuses.
-			Upload: uploadMeta{Allowed: true, MaxBytes: maxUploadSize},
+			Upload:           uploadMeta{Allowed: true, MaxBytes: maxUploadSize},
+			Path:             filepath.ToSlash(f.RelPath),
+			AbsolutePath:     f.AbsPath,
+			Name:             f.Name,
+			Size:             info.Size(),
+			LastModified:     info.ModTime().UTC().Format(time.RFC3339),
+			DocumentID:       htmlclayID,
+			LegacyDocumentID: htmlclayID,
 		},
 	}
 
@@ -1179,13 +1203,45 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(meta)
 }
 
+// The spec's §3 code registry, keyed by the status this host already answers with.
+//
+// Derived here rather than passed at each of the forty-six call sites, so a status and
+// its code can never drift apart, and so adding a route cannot forget one. A status the
+// registry does not name carries no code at all: §3 fixes the set of names, and
+// inventing one outside it is worse than omitting the field, because a client branches
+// on the value. `read-only` has no status of its own and belongs to whichever route
+// grows that behaviour, so it is not here.
+var specErrorCodes = map[int]string{
+	http.StatusUnauthorized:          "unauthorized",
+	http.StatusPaymentRequired:       "payment-required",
+	http.StatusForbidden:             "forbidden",
+	http.StatusNotFound:              "not-found",
+	http.StatusConflict:              "conflict",
+	http.StatusRequestEntityTooLarge: "too-large",
+	http.StatusUnsupportedMediaType:  "unsupported-type",
+	http.StatusUnprocessableEntity:   "invalid-document",
+}
+
+// Both shapes, on purpose, and permanently.
+//
+// `msg` and `code` are what §3 names, and what a client written against the spec reads:
+// without them every refusal from this host is an opaque non-2xx, and "you are not
+// allowed" cannot be told from "that file is gone". `ok` and `error` are what this host
+// has always sent, and a document that reads them is frozen: its inline script ships
+// inside the file and no update ever reaches it. So the old pair does not go away when
+// the new one arrives, the same way the pre-rename save token does not.
 func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	body := map[string]interface{}{
 		"ok":    false,
 		"error": message,
-	})
+		"msg":   message,
+	}
+	if code, ok := specErrorCodes[status]; ok {
+		body["code"] = code
+	}
+	json.NewEncoder(w).Encode(body)
 }
 
 // listHeader reports a list-valued header and whether it was sent at all.
