@@ -8,6 +8,7 @@ import (
 
 	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/session"
+	"github.com/panphora/htmlclay/internal/specwire"
 	"github.com/panphora/htmlclay/internal/versions"
 )
 
@@ -475,7 +476,10 @@ func (wt *watcher) publishConfirmed(e *watchEntry, hash string, data []byte) str
 	}
 
 	msg := fmt.Sprintf("%s changed on disk outside this tab", f.Name)
-	if wt.coord.publishExternalChange(f, msg, forBrowser(data, key)) {
+	// The stamp is taken from the STORED bytes, not from the browser-facing ones
+	// forBrowser is about to build: a client compares it against what the save
+	// route stamps, and that route stamps what it wrote to disk.
+	if wt.coord.publishExternalChange(f, msg, forBrowser(data, key), specwire.Etag(data)) {
 		f.RecordStableObservation(hash)
 		wt.logger.Printf("External change detected in %s", f.RelPath)
 	}

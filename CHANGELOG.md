@@ -47,6 +47,14 @@ the first entry below before upgrading either side.
   as part of applying the content that stamp describes. The viewer lane drops it, since
   a viewer holds a whole document rather than a pre-strip snapshot and has no save to
   condition.
+- **A disk change carries the stamp of the bytes it delivers.** When the watcher sees
+  a file edited outside the browser, the notification it sends the editors now carries
+  that version's `etag` alongside the content. A tab used to apply the change and then
+  ask `/_/meta` for a replacement stamp, which answers about whatever is stored at that
+  later moment: if a second write landed in between, the tab adopted a stamp for bytes
+  it had never seen and overwrote them on its next save. The stamp is taken from the
+  bytes on disk rather than from the rendering sent to the browser, so it matches what
+  a later `If-Match` is compared against. The viewer lane still carries no stamp.
 - **A favicon**, so an opened document is identifiable in a row of tabs.
 - **The protocol conformance page ships with the host** (`testdata/conformance/`) and
   runs in CI on every push, so a release cannot quietly stop conforming.

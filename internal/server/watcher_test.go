@@ -15,6 +15,7 @@ import (
 	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/session"
+	"github.com/panphora/htmlclay/internal/specwire"
 	"github.com/panphora/htmlclay/internal/versions"
 )
 
@@ -144,6 +145,45 @@ func TestWatcherPublishesExternalChange(t *testing.T) {
 	}
 	if lastWrite == versions.Hash([]byte(changed)) {
 		t.Fatal("watcher advanced lastServerWrite, which only server writes may do")
+	}
+}
+
+// The stamp on the frame is the one the save route would compare an If-Match
+// against, which is the stamp of the bytes on DISK. The frame's html is the
+// browser-facing rendering of those bytes, and it differs (forBrowser injects
+// the identity attribute), so stamping the frame's own html instead would hand
+// every tab a value the save route can never match and refuse its next save.
+func TestWatcherStampsTheDiskBytesNotTheBrowserRendering(t *testing.T) {
+	h := setupWatchTest(t, "<!DOCTYPE html>\n<html><body>one</body></html>")
+
+	h.file.Lock()
+	data, _ := os.ReadFile(h.file.AbsPath)
+	h.file.RecordServerWrite(versions.Hash(data))
+	h.file.Unlock()
+
+	// A save token on disk is what makes the two candidate stampings differ:
+	// forBrowser strips it, the save route strips it before writing, and this is
+	// the shape an external editor leaves behind when someone saves a copy of the
+	// served page back over the file.
+	changed := "<!DOCTYPE html>\n<html savetoken=\"t-abc\"><body>edited elsewhere</body></html>"
+	if err := os.WriteFile(h.file.AbsPath, []byte(changed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	notice := waitFrame(t, h.live, 2*time.Second)
+	payload, ok := notice["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("notification carries no data object: %v", notice)
+	}
+	want := specwire.Etag([]byte(changed))
+	if payload["etag"] != want {
+		t.Fatalf("etag = %v, want %v (the stamp of the disk bytes)", payload["etag"], want)
+	}
+	// Prove the two really are different values, or the assertion above proves
+	// nothing about which one was stamped.
+	served, _ := payload["html"].(string)
+	if served == changed || specwire.Etag([]byte(served)) == want {
+		t.Fatal("the frame's html equals the disk bytes here, so this test cannot tell the two stampings apart")
 	}
 }
 

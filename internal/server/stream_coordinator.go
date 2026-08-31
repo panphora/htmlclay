@@ -112,8 +112,8 @@ func (co *streamCoordinator) notifyWarning(f *session.File, msg string) {
 // handler's lease makes a file watched with no subscribers at all, and a watch-based
 // receipt there would record the hash of a change nobody received, leaving it
 // suppressed forever once the retained frame aged out. Caller holds f.Lock.
-func (co *streamCoordinator) publishExternalChange(f *session.File, msg, html string) bool {
-	delivered, evicted := co.hub.publishExternalChange(f.AbsPath, msg, html)
+func (co *streamCoordinator) publishExternalChange(f *session.File, msg, html, etag string) bool {
+	delivered, evicted := co.hub.publishExternalChange(f.AbsPath, msg, html, etag)
 	co.evict(f, evicted)
 	return delivered
 }

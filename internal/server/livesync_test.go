@@ -108,7 +108,7 @@ func TestSequenceIsSharedAndMonotonic(t *testing.T) {
 		if i%2 == 0 {
 			h.broadcastSaved("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "file-system")
 		} else {
-			h.publishExternalChange("/tmp/a.html", "changed", fmt.Sprintf("<html>%d</html>", i))
+			h.publishExternalChange("/tmp/a.html", "changed", fmt.Sprintf("<html>%d</html>", i), "")
 		}
 		msg := waitFrame(t, sub, time.Second)
 		seq := int64(msg["seq"].(float64))
@@ -186,7 +186,7 @@ func TestExternalChangeNotifiesLiveAndBroadcastsSaved(t *testing.T) {
 	h.add(live)
 	h.add(saved)
 
-	h.publishExternalChange("/tmp/a.html", "notes.htmlclay changed on disk", "<html>disk</html>")
+	h.publishExternalChange("/tmp/a.html", "notes.htmlclay changed on disk", "<html>disk</html>", "")
 
 	notice := waitFrame(t, live, time.Second)
 	if notice["type"] != "notification" || notice["msgType"] != "warning" {
@@ -210,6 +210,56 @@ func TestExternalChangeNotifiesLiveAndBroadcastsSaved(t *testing.T) {
 	}
 }
 
+// Section 10: a stamp travels with the content it describes, never on its own.
+// A tab that applies this frame adopts this stamp; without it on the frame the
+// tab has to ask discovery for a replacement, and discovery answers about
+// whatever is on disk by then, which may be a later write this tab never saw.
+func TestExternalChangeCarriesTheStampOfTheDiskBytes(t *testing.T) {
+	h := newHub("")
+	live := newSubscriber("/tmp/a.html", laneLive)
+	saved := newSubscriber("/tmp/a.html", laneSaved)
+	h.add(live)
+	h.add(saved)
+
+	h.publishExternalChange("/tmp/a.html", "changed", "<html>disk</html>", "stored-9")
+
+	notice := waitFrame(t, live, time.Second)
+	data, ok := notice["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("notification carries no data object: %v", notice)
+	}
+	if data["etag"] != "stored-9" {
+		t.Fatalf("etag = %v, want stored-9; the frame dropped the stamp", data["etag"])
+	}
+
+	// The saved lane is viewers, and a viewer makes no saves, so it is told
+	// nothing about versions. Same rule the relay route follows.
+	content := waitFrame(t, saved, time.Second)
+	if _, ok := content["etag"]; ok {
+		t.Fatalf("saved lane carried a stamp to viewers: %v", content)
+	}
+}
+
+// A host that cannot take the stamp must omit the field rather than send an
+// empty one, so the client can tell "no stamp" from "the empty stamp" and fall
+// back to its fetch-and-reseed path.
+func TestExternalChangeOmitsAnAbsentStamp(t *testing.T) {
+	h := newHub("")
+	live := newSubscriber("/tmp/a.html", laneLive)
+	h.add(live)
+
+	h.publishExternalChange("/tmp/a.html", "changed", "<html>disk</html>", "")
+
+	notice := waitFrame(t, live, time.Second)
+	data, ok := notice["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("notification carries no data object: %v", notice)
+	}
+	if _, present := data["etag"]; present {
+		t.Fatalf("empty stamp was sent as a field: %v", data)
+	}
+}
+
 // The data payload is built with an escape-off encoder: json.Marshal would
 // pre-escape every angle bracket into six bytes, tripling a document of tags,
 // and the outer frame encoder cannot undo escaping baked into a RawMessage.
@@ -218,7 +268,7 @@ func TestExternalChangeEmbedsDiskHTMLUnescaped(t *testing.T) {
 	live := newSubscriber("/tmp/a.html", laneLive)
 	h.add(live)
 
-	h.publishExternalChange("/tmp/a.html", "changed", "<html><body>disk</body></html>")
+	h.publishExternalChange("/tmp/a.html", "changed", "<html><body>disk</body></html>", "")
 
 	raw := testutil.Receive(t, 10*time.Second, "the notification frame", live.ch)
 	if !strings.Contains(string(raw), "<html><body>disk</body></html>") {
@@ -237,7 +287,7 @@ func TestOversizedExternalChangeFallsBackToBareNotification(t *testing.T) {
 	h.add(saved)
 
 	big := "<html>" + strings.Repeat("a", maxLiveSyncSize) + "</html>"
-	h.publishExternalChange("/tmp/a.html", "changed", big)
+	h.publishExternalChange("/tmp/a.html", "changed", big, "")
 
 	notice := waitFrame(t, live, time.Second)
 	if notice["type"] != "notification" {
@@ -954,7 +1004,7 @@ func TestPublishAfterShutdownDoesNotRebuildAnIncarnation(t *testing.T) {
 	h, path, _ := anchoredHub(t)
 	h.shutdown()
 
-	h.publishExternalChange(path, "changed on disk", "<html>two</html>")
+	h.publishExternalChange(path, "changed on disk", "<html>two</html>", "")
 
 	if len(h.incs) != 0 {
 		t.Fatalf("a publish after shutdown left %d incarnation(s) behind", len(h.incs))
@@ -1114,13 +1164,13 @@ func TestExternalChangeDeliveryMeansSomeoneTookTheFrame(t *testing.T) {
 	t.Cleanup(h.shutdown)
 	path := "/tmp/receipt.htmlclay"
 
-	if delivered, _ := h.publishExternalChange(path, "changed", "<html>a</html>"); delivered {
+	if delivered, _ := h.publishExternalChange(path, "changed", "<html>a</html>", ""); delivered {
 		t.Fatal("an empty hub reported a delivery")
 	}
 
 	live := newSubscriber(path, laneLive)
 	h.add(live)
-	if delivered, _ := h.publishExternalChange(path, "changed", "<html>b</html>"); !delivered {
+	if delivered, _ := h.publishExternalChange(path, "changed", "<html>b</html>", ""); !delivered {
 		t.Fatal("a live subscriber did not count as a delivery")
 	}
 
@@ -1129,7 +1179,7 @@ func TestExternalChangeDeliveryMeansSomeoneTookTheFrame(t *testing.T) {
 	h.add(resuming)
 	h.remove(live)
 	h.remove(resuming)
-	if delivered, _ := h.publishExternalChange(path, "changed", "<html>c</html>"); delivered {
+	if delivered, _ := h.publishExternalChange(path, "changed", "<html>c</html>", ""); delivered {
 		t.Fatal("a disconnected resume cursor was counted as a delivery")
 	}
 
@@ -1137,8 +1187,8 @@ func TestExternalChangeDeliveryMeansSomeoneTookTheFrame(t *testing.T) {
 	// hub retained on its behalf.
 	slow := &subscriber{key: path, lane: laneLive, ch: make(chan []byte, 1), done: make(chan struct{})}
 	h.add(slow)
-	h.publishExternalChange(path, "changed", "<html>d</html>")
-	delivered, evicted := h.publishExternalChange(path, "changed", "<html>e</html>")
+	h.publishExternalChange(path, "changed", "<html>d</html>", "")
+	delivered, evicted := h.publishExternalChange(path, "changed", "<html>e</html>", "")
 	if delivered || len(evicted) == 0 {
 		t.Fatalf("a full queue counted as a delivery: delivered=%v evicted=%d", delivered, len(evicted))
 	}

@@ -906,7 +906,15 @@ func frame(seq int64, v interface{}) []byte {
 // six bytes, and the outer frame encoder cannot undo escaping already baked
 // into a RawMessage. Encode appends one newline, which a RawMessage must not
 // carry.
-func encodeExternalChangeData(html string) json.RawMessage {
+//
+// etag is the stamp of section 6 for the bytes this frame carries, and it rides
+// WITH them for the reason section 10 gives: a stamp adopted on its own is a
+// claim about content the adopting tab may not hold. Without it on the frame, a
+// tab that applied a disk change has to go and ask discovery for a replacement
+// stamp, and discovery answers about whatever is on disk at that later moment,
+// which is not necessarily what this frame delivered. Empty when the stamp could
+// not be taken, which leaves the client on its older fetch-and-reseed path.
+func encodeExternalChangeData(html, etag string) json.RawMessage {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -914,7 +922,8 @@ func encodeExternalChangeData(html string) json.RawMessage {
 		Kind   string `json:"kind"`
 		HTML   string `json:"html"`
 		Sender string `json:"sender"`
-	}{Kind: "external-change", HTML: html, Sender: "file-system"}); err != nil {
+		Etag   string `json:"etag,omitempty"`
+	}{Kind: "external-change", HTML: html, Sender: "file-system", Etag: etag}); err != nil {
 		return nil
 	}
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n"))
@@ -994,7 +1003,7 @@ func (h *hub) broadcastSaved(key, html, sender string) []*subscriber {
 // would come back to an empty replay against a change already recorded as
 // reported. Not recording costs one redundant frame when replay did work; the
 // client discards or re-morphs identical content either way.
-func (h *hub) publishExternalChange(key, msg, html string) (delivered bool, evicted []*subscriber) {
+func (h *hub) publishExternalChange(key, msg, html, etag string) (delivered bool, evicted []*subscriber) {
 	probe := probeIdentity(key)
 
 	h.mu.Lock()
@@ -1013,7 +1022,7 @@ func (h *hub) publishExternalChange(key, msg, html string) (delivered bool, evic
 
 	var data json.RawMessage
 	if len(html) <= maxLiveSyncSize {
-		data = encodeExternalChangeData(html)
+		data = encodeExternalChangeData(html, etag)
 	}
 
 	accepted := 0

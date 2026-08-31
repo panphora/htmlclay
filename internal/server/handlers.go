@@ -125,8 +125,15 @@ type fileMeta struct {
 	// `htmlclayid`, so a document that asked in 1.7.0 hardcoded that spelling, and
 	// no update ever reaches its inline script. Dropping the key turns a working
 	// read into `undefined` against an API that still answers 200, which is the
-	// worst shape a break can take. The attribute itself is already injected under
-	// both spellings for this reason; the field that reports it owes the same.
+	// worst shape a break can take.
+	//
+	// The ATTRIBUTE deliberately does not do the same, and this is the one place the
+	// two differ on purpose. A save token is ephemeral and stripped on the way in, so
+	// injecting it under both spellings costs nothing that lasts; a document id is
+	// durable and reaches disk, so injecting both would write the retired spelling
+	// into every stored document forever, which is the opposite of what renaming it
+	// was for. So the attribute takes the break knowingly, exactly as the save-token
+	// rename did, and only this field carries the old name.
 	LegacyHTMLClayID string `json:"htmlclayid,omitempty"`
 	// Spec §5 puts everything genuinely per-document in its own block, and §6 puts
 	// the etag there. It is the only part of a discovery answer a host ever
