@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -96,7 +97,16 @@ func TestMalleableHTMLFileHostGate(t *testing.T) {
 	out, runErr := cmd.CombinedOutput()
 	t.Log("\n" + string(out))
 	if runErr != nil {
-		t.Fatalf("the conformance page reported failures: %v", runErr)
+		// The runner separates the two, and so does this: exit 1 is a host that failed
+		// checks, anything else is a harness that never ran them. Reporting a missing
+		// browser as "the host is not conforming" sends someone to read server code
+		// looking for a defect that is not there, which is exactly what happened.
+		what := "the conformance run could not start (harness, not host)"
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1 {
+			what = "the conformance page reported failures"
+		}
+		t.Fatalf("%s: %v", what, runErr)
 	}
 	// A runner that exits 0 having produced nothing would pass this silently.
 	if !strings.Contains(string(out), " passed,") {

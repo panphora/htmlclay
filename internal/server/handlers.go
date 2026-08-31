@@ -811,7 +811,7 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	// beyond the document travels in a header, and an unstripped snapshot belongs
 	// to the §10 relay, never to a save.
 	if isJSONContentType(r.Header.Get("Content-Type")) {
-		uploadError(w, http.StatusUnsupportedMediaType, "unsupported-media-type",
+		uploadError(w, http.StatusUnsupportedMediaType, "unsupported-type",
 			"/_/save takes the document as text, not JSON.")
 		return
 	}

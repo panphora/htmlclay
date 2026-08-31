@@ -858,6 +858,15 @@ type livePayload struct {
 	Sender      string          `json:"sender"`
 	Seq         int64           `json:"seq"`
 	IdentityMap json.RawMessage `json:"identityMap,omitempty"`
+	// Spec §6: the stamp of what this host stored for the bytes the sending tab just
+	// saved. Carried unread, and omitted entirely when the sender did not send one, so
+	// the frame a pre-spec client receives is byte-identical to what it received before.
+	//
+	// It rides on a snapshot and can never travel alone: a stamp with no content would
+	// tell a receiving tab it is in step with disk without giving it the bytes to be in
+	// step with, and that tab's next save would then pass If-Match and overwrite a save
+	// it had never received.
+	Etag string `json:"etag,omitempty"`
 }
 
 type notifyPayload struct {
@@ -936,11 +945,11 @@ func cursorFrame(seq int64, resync bool) []byte {
 // relay broadcasts a peer snapshot to the live lane. It never persists, backs up,
 // or advances either per-file record. It returns any evicted subscribers for the
 // coordinator to drop watcher-side.
-func (h *hub) relay(key, html, sender string, identityMap json.RawMessage) []*subscriber {
+func (h *hub) relay(key, html, sender, etag string, identityMap json.RawMessage) []*subscriber {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	seq := h.nextSeq()
-	f := frame(seq, livePayload{HTML: html, Sender: sender, Seq: seq, IdentityMap: identityMap})
+	f := frame(seq, livePayload{HTML: html, Sender: sender, Seq: seq, IdentityMap: identityMap, Etag: etag})
 	if f == nil {
 		return nil
 	}
@@ -1287,6 +1296,7 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		HTML        *string         `json:"html"`
 		Sender      string          `json:"sender"`
 		IdentityMap json.RawMessage `json:"identityMap"`
+		Etag        string          `json:"etag"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid json body")
@@ -1405,10 +1415,12 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		// names, a client wanting viewers updated without a save behind it.
 		//
 		// identityMap is deliberately not carried: it pairs elements across a morph
-		// between two EDITORS, and a viewer has no working state to preserve.
+		// between two EDITORS, and a viewer has no working state to preserve. The etag
+		// is dropped here for the matching reason: it tells a tab which version its next
+		// save is answering, and a viewer makes no saves.
 		s.coord.broadcastSaved(f, relayHTML, payload.Sender)
 	} else {
-		s.coord.relay(f, relayHTML, payload.Sender, identityMap)
+		s.coord.relay(f, relayHTML, payload.Sender, payload.Etag, identityMap)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

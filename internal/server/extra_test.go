@@ -354,7 +354,7 @@ func TestSaveJSONBodyRefused(t *testing.T) {
 	if w.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("expected 415, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "unsupported-media-type") {
+	if !strings.Contains(w.Body.String(), "unsupported-type") {
 		t.Errorf("expected the spec error code in the body, got %s", w.Body.String())
 	}
 	if string(mustRead(t, f.AbsPath)) != content {

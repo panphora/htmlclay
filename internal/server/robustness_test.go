@@ -458,7 +458,7 @@ func TestFramesCarryAnSSEID(t *testing.T) {
 	sub := newSubscriber("/tmp/a.html", laneLive)
 	h.add(sub)
 
-	h.relay("/tmp/a.html", "<html>peer</html>", "c1", nil)
+	h.relay("/tmp/a.html", "<html>peer</html>", "c1", "", nil)
 
 	raw := testutil.Receive(t, 10*time.Second, "a frame", sub.ch)
 	id, payload := splitFrame(t, raw)
@@ -471,8 +471,8 @@ func TestReplayDeliversFramesMissedWhileDisconnected(t *testing.T) {
 	h := newHub("")
 
 	// Nobody is listening: this is the connection-setup gap, and the eviction gap.
-	h.relay("/tmp/a.html", "<html>one</html>", "c1", nil)
-	h.relay("/tmp/a.html", "<html>two</html>", "c1", nil)
+	h.relay("/tmp/a.html", "<html>one</html>", "c1", "", nil)
+	h.relay("/tmp/a.html", "<html>two</html>", "c1", "", nil)
 
 	h.mu.Lock()
 	inc := h.incs["/tmp/a.html"]
@@ -504,7 +504,7 @@ func TestReplayDeliversFramesMissedWhileDisconnected(t *testing.T) {
 
 func TestFreshSubscriberIsNotReplayedTo(t *testing.T) {
 	h := newHub("")
-	h.relay("/tmp/a.html", "<html>old</html>", "c1", nil)
+	h.relay("/tmp/a.html", "<html>old</html>", "c1", "", nil)
 
 	sub := newSubscriber("/tmp/a.html", laneLive)
 	_, replay, _ := h.add(sub)
@@ -520,7 +520,7 @@ func TestEvictedSubscriberRecoversItsEventsOnReconnect(t *testing.T) {
 	h.add(sub)
 
 	for i := 0; i < subQueueSize+3; i++ {
-		h.relay("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "c1", nil)
+		h.relay("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "c1", "", nil)
 	}
 	testutil.Receive(t, 10*time.Second, "the overflowing subscriber to be evicted", sub.done)
 

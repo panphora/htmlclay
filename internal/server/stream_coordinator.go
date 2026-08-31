@@ -91,8 +91,8 @@ func (co *streamCoordinator) evict(f *session.File, evicted []*subscriber) {
 	}
 }
 
-func (co *streamCoordinator) relay(f *session.File, html, sender string, identityMap json.RawMessage) {
-	co.evict(f, co.hub.relay(f.AbsPath, html, sender, identityMap))
+func (co *streamCoordinator) relay(f *session.File, html, sender, etag string, identityMap json.RawMessage) {
+	co.evict(f, co.hub.relay(f.AbsPath, html, sender, etag, identityMap))
 }
 
 func (co *streamCoordinator) broadcastSaved(f *session.File, html, sender string) {

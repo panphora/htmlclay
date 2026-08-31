@@ -89,7 +89,7 @@ func TestSequenceSeededFromWallClock(t *testing.T) {
 
 	sub := newSubscriber("/tmp/a.html", laneLive)
 	h.add(sub)
-	h.relay("/tmp/a.html", "<html></html>", "c1", nil)
+	h.relay("/tmp/a.html", "<html></html>", "c1", "", nil)
 	msg := waitFrame(t, sub, time.Second)
 	if seq, _ := msg["seq"].(float64); int64(seq) < before {
 		t.Fatalf("broadcast seq %v is below the startup seed %d", msg["seq"], before)
@@ -126,7 +126,7 @@ func TestRelayGoesToLiveLaneOnly(t *testing.T) {
 	h.add(live)
 	h.add(saved)
 
-	h.relay("/tmp/a.html", "<html>peer</html>", "c1", json.RawMessage(`{"0":"x"}`))
+	h.relay("/tmp/a.html", "<html>peer</html>", "c1", "", json.RawMessage(`{"0":"x"}`))
 
 	msg := waitFrame(t, live, time.Second)
 	if msg["html"] != "<html>peer</html>" || msg["sender"] != "c1" {
@@ -136,6 +136,42 @@ func TestRelayGoesToLiveLaneOnly(t *testing.T) {
 		t.Fatal("identityMap was dropped")
 	}
 	expectNoFrame(t, saved, 100*time.Millisecond)
+}
+
+// Spec §6: the stamp of what this host stored for the bytes the sending tab just saved.
+// It rides ON the snapshot, and the two must arrive together: a receiver adopts the stamp
+// as part of applying the content it describes, so it can never be told it is in step with
+// disk while holding older bytes. The frame this replaces was a stamp with no content, and
+// the race it opened let a tab pass If-Match and overwrite a save it had never received.
+func TestRelayCarriesTheEtagWithTheSnapshot(t *testing.T) {
+	h := newHub("")
+	live := newSubscriber("/tmp/a.html", laneLive)
+	h.add(live)
+
+	h.relay("/tmp/a.html", "<html>peer</html>", "c1", "stored-3", nil)
+
+	msg := waitFrame(t, live, time.Second)
+	if msg["etag"] != "stored-3" {
+		t.Fatalf("etag = %v, want stored-3", msg["etag"])
+	}
+	if msg["html"] != "<html>peer</html>" {
+		t.Fatalf("the stamp arrived without its content: %v", msg)
+	}
+}
+
+// A pre-spec client sends no stamp and must go on receiving exactly the frame it
+// received before, or the field itself becomes a change to every existing document.
+func TestRelayOmitsTheEtagWhenThereIsNone(t *testing.T) {
+	h := newHub("")
+	live := newSubscriber("/tmp/a.html", laneLive)
+	h.add(live)
+
+	h.relay("/tmp/a.html", "<html>peer</html>", "c1", "", nil)
+
+	msg := waitFrame(t, live, time.Second)
+	if _, ok := msg["etag"]; ok {
+		t.Fatalf("an absent stamp was written into the frame anyway: %v", msg)
+	}
 }
 
 // An external change notifies the live lane with the disk HTML riding the
@@ -223,7 +259,7 @@ func TestSlowSubscriberIsEvictedAndUnblocked(t *testing.T) {
 	h.add(sub)
 
 	for i := 0; i < subQueueSize+5; i++ {
-		h.relay("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "c1", nil)
+		h.relay("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "c1", "", nil)
 	}
 
 	testutil.Receive(t, 10*time.Second, "an overflowed subscriber to be unblocked", sub.done)
@@ -281,6 +317,48 @@ func postLiveSync(t *testing.T, srv *Server, pageURL, body string) *httptest.Res
 	w := httptest.NewRecorder()
 	srv.handleLiveSyncSave(w, req)
 	return w
+}
+
+// The stamp has to survive the whole way from the request body to the frame, which the
+// hub-level tests above cannot show: they call relay() directly, so deleting the one line
+// that reads payload.Etag left every one of them green. This is the test that fails when
+// the route stops carrying it.
+func TestLiveSyncSaveCarriesTheEtagToSubscribers(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	sub := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(sub)
+
+	w := postLiveSync(t, srv, pageURL, `{"snapshot":"<html>peer</html>","sender":"c1","etag":"stored-5"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	msg := waitFrame(t, sub, time.Second)
+	if msg["etag"] != "stored-5" {
+		t.Fatalf("etag = %v, want stored-5; the route read it and dropped it", msg["etag"])
+	}
+}
+
+// A viewer makes no saves, so a stamp aimed at that lane names a version nobody there
+// will ever answer for. Dropping it is the same call the identity map gets.
+func TestLiveSyncSaveDropsTheEtagOnTheSavedLane(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/page.htmlclay", srv.port)
+
+	sub := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(sub)
+
+	w := postLiveSync(t, srv, pageURL, `{"document":"<html><body>doc</body></html>","sender":"c1","etag":"stored-5"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	msg := waitFrame(t, sub, time.Second)
+	if _, ok := msg["etag"]; ok {
+		t.Fatalf("a viewer was sent a stamp: %v", msg)
+	}
 }
 
 // The POST leg reads page identity from the Page-URL header, not the query.
@@ -505,7 +583,7 @@ func TestSSEStreamFlushesOverARealConnection(t *testing.T) {
 		return srv.hub.subscriberCount(f.AbsPath) > 0
 	})
 
-	srv.hub.relay(f.AbsPath, "<html>peer</html>", "c1", nil)
+	srv.hub.relay(f.AbsPath, "<html>peer</html>", "c1", "", nil)
 
 	type result struct {
 		line string
@@ -961,7 +1039,7 @@ func TestClosedStreamStopsTheWatcher(t *testing.T) {
 	// Evict the subscriber by overflowing its bounded queue, the way a wedged
 	// client would.
 	for i := 0; i < subQueueSize+5; i++ {
-		srv.hub.relay(f.AbsPath, fmt.Sprintf("<html>%d</html>", i), "c1", nil)
+		srv.hub.relay(f.AbsPath, fmt.Sprintf("<html>%d</html>", i), "c1", "", nil)
 	}
 	resp.Body.Close()
 

@@ -356,7 +356,7 @@ and this body, which names no path and does not depend on whether the file exist
 The body is the whole document as text. That is the one body shape this route has.
 
 - A JSON `Content-Type` is refused with `415` and
-  `{"ok":false,"msg":"/_/save takes the document as text, not JSON.","msgType":"error","code":"unsupported-media-type"}`.
+  `{"ok":false,"msg":"/_/save takes the document as text, not JSON.","msgType":"error","code":"unsupported-type"}`.
   A JSON body is never guessed at.
 - An empty body is `400 {"ok":false,"error":"empty body"}`.
 - A body with no `<html>` tag is `400 {"ok":false,"error":"body is not an HTML document"}`.
