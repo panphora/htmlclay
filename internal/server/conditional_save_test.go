@@ -569,3 +569,183 @@ func TestASecondTabIsStillNamed(t *testing.T) {
 		t.Errorf("changedBy is %v, want another-tab", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// §6 receipts. The point of every test below is the difference between a client
+// GUESSING that the bytes on disk are its own and being TOLD so by the host.
+// ---------------------------------------------------------------------------
+
+func saveWithID(t *testing.T, srv *Server, f *session.File, body, ifMatch, saveID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(body))
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	sameOriginHeaders(req)
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	if saveID != "" {
+		req.Header.Set("Save-ID", saveID)
+	}
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	return w
+}
+
+func TestReceiptsIsAnnouncedAlongsideConditional(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+	for _, m := range []map[string]any{metaOf(t, srv, f), decode(t, getThroughMux(t, srv, "/_/meta"))} {
+		exts, _ := m["extensions"].([]any)
+		var hasReceipts, hasConditional bool
+		for _, e := range exts {
+			if e == "receipts" {
+				hasReceipts = true
+			}
+			if e == "conditional" {
+				hasConditional = true
+			}
+		}
+		if !hasReceipts {
+			t.Errorf("receipts not announced: %v", exts)
+		}
+		// §9: a receipt proves an earlier save ran, but If-Match is what makes the
+		// send after a MISSING receipt safe. Announcing receipts alone would promise
+		// a recovery this host cannot complete safely.
+		if hasReceipts && !hasConditional {
+			t.Errorf("receipts announced without conditional: %v", exts)
+		}
+	}
+}
+
+// The whole mechanism in one test: save with an id, then ask the host what it is
+// holding, and be told that id back.
+func TestMetaReportsTheIDOfTheSaveThatProducedTheStoredBytes(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	w := saveWithID(t, srv, f, "<html><body>mine</body></html>", "", "id-abc-123")
+	if w.Code != 200 {
+		t.Fatalf("save failed: %d (%q)", w.Code, w.Body.String())
+	}
+	if got := decode(t, w)["saveId"]; got != "id-abc-123" {
+		t.Errorf("save response saveId = %v, want id-abc-123", got)
+	}
+
+	doc, _ := metaOf(t, srv, f)["document"].(map[string]any)
+	if doc == nil {
+		t.Fatal("meta carries no document block")
+	}
+	if got := doc["saveId"]; got != "id-abc-123" {
+		t.Errorf("meta saveId = %v, want id-abc-123", got)
+	}
+}
+
+// The safety rule, and the reason this needs no clearing hooks anywhere: a write
+// that did not come through /_/save moves the bytes, so the pair stops matching
+// and the receipt reads as absent rather than as a wrong answer. Without this, a
+// tab could adopt a stamp for content an outside editor wrote and overwrite it.
+func TestAnOutsideWriteInvalidatesTheReceipt(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	if w := saveWithID(t, srv, f, "<html><body>mine</body></html>", "", "id-abc-123"); w.Code != 200 {
+		t.Fatalf("save failed: %d", w.Code)
+	}
+
+	// Somebody else's text editor, straight to disk.
+	if err := os.WriteFile(f.AbsPath, []byte("<html><body>theirs</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, _ := metaOf(t, srv, f)["document"].(map[string]any)
+	if doc == nil {
+		t.Fatal("meta carries no document block")
+	}
+	if _, present := doc["saveId"]; present {
+		t.Fatalf("receipt survived an outside write: %v", doc)
+	}
+}
+
+// A save with no id still replaces the pair. Otherwise an id would outlive its own
+// bytes, and the tab that sent it would be told its content is current when a
+// later id-less save had already replaced it.
+func TestAnIDLessSaveClearsTheReceipt(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	first := "<html><body>one</body></html>"
+	if w := saveWithID(t, srv, f, first, "", "id-first"); w.Code != 200 {
+		t.Fatalf("first save failed: %d", w.Code)
+	}
+	if w := saveThroughMux(t, srv, f, "<html><body>two</body></html>", ""); w.Code != 200 {
+		t.Fatalf("second save failed: %d", w.Code)
+	}
+	// Back to the first save's bytes, so the stored etag equals the one recorded
+	// alongside the first save's id. Answer-time verification cannot tell these
+	// apart, which is the whole reason the pair is replaced on every write: without
+	// that, a receipt outlives the save that earned it and comes back to describe
+	// somebody else's write that happens to land on the same bytes.
+	if w := saveThroughMux(t, srv, f, first, ""); w.Code != 200 {
+		t.Fatalf("third save failed: %d", w.Code)
+	}
+
+	doc, _ := metaOf(t, srv, f)["document"].(map[string]any)
+	if got, present := doc["saveId"]; present {
+		t.Fatalf("an id-less save left the old receipt in place: %v", got)
+	}
+}
+
+// §6's late-duplicate rule. A client seeing its OWN id on a 412 is being told its
+// own earlier save is what moved the document, which is not a conflict with
+// anybody and must not be reported as one.
+func TestARefusalCarriesTheReceiptOfTheBytesThatCausedIt(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	first := saveWithID(t, srv, f, "<html><body>one</body></html>", "", "id-first")
+	if first.Code != 200 {
+		t.Fatalf("first save failed: %d", first.Code)
+	}
+	staleEtag := specwire.Etag([]byte("<html><body>something older</body></html>"))
+
+	refused := saveWithID(t, srv, f, "<html><body>two</body></html>", staleEtag, "id-second")
+	if refused.Code != http.StatusPreconditionFailed {
+		t.Fatalf("want 412, got %d (%q)", refused.Code, refused.Body.String())
+	}
+	body := decode(t, refused)
+	if body["saveId"] != "id-first" {
+		t.Errorf("refusal saveId = %v, want id-first (the save that stored the current bytes)", body["saveId"])
+	}
+	if body["code"] != "conflict" {
+		t.Errorf("code = %v, want conflict", body["code"])
+	}
+}
+
+// A host must never mint one. The id is a client's, and a document that never sent
+// one must not be handed an id it could then mistake for its own.
+func TestTheHostNeverMintsAReceipt(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	w := saveThroughMux(t, srv, f, "<html><body>no id here</body></html>", "")
+	if w.Code != 200 {
+		t.Fatalf("save failed: %d", w.Code)
+	}
+	if got, present := decode(t, w)["saveId"]; present {
+		t.Errorf("host invented a saveId: %v", got)
+	}
+	doc, _ := metaOf(t, srv, f)["document"].(map[string]any)
+	if got, present := doc["saveId"]; present {
+		t.Errorf("host invented a saveId in meta: %v", got)
+	}
+}
+
+// Remembering an unbounded header per open file is memory a caller hands this host
+// for free. Dropped rather than truncated: half an id is not an id, and a truncated
+// one could collide with somebody else's.
+func TestAnOverlongReceiptIDIsDroppedNotTruncated(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+	huge := strings.Repeat("a", maxSaveIDLen+1)
+
+	if w := saveWithID(t, srv, f, "<html><body>x</body></html>", "", huge); w.Code != 200 {
+		t.Fatalf("save failed: %d", w.Code)
+	}
+	doc, _ := metaOf(t, srv, f)["document"].(map[string]any)
+	if got, present := doc["saveId"]; present {
+		t.Errorf("overlong id was kept: %v", got)
+	}
+}

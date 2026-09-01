@@ -99,6 +99,27 @@ type File struct {
 	// host's last write describes bytes an external editor put back. Only a write
 	// by this host clears it.
 	externalSinceOwnWrite bool
+
+	// The receipt of spec §6: the Save-ID of the save whose body produced the bytes
+	// this host currently stores, paired with the etag of those bytes. Written only
+	// at a save's durable-write commit point, under Lock(), and reported only after
+	// the pair's etag is confirmed against the bytes on disk.
+	//
+	// That confirmation is the whole safety argument, and it is why this needs no
+	// clearing hooks: a write arriving by any other route (an editor, a restore, a
+	// sync pull, an agent) moves the bytes and therefore the etag, so the pair stops
+	// matching on its own. Nothing has to remember to invalidate it.
+	//
+	// Deliberately NOT lastServerWrite, which is a hash for stale detection and is
+	// also seeded by NoteFirstObservation from bytes this host never wrote. A
+	// receipt must attest that a body a CLIENT sent produced these bytes, and a
+	// seeded observation cannot support that claim.
+	//
+	// Volatile by design. A restart loses it, the report is then omitted, and the
+	// client falls back to the behaviour it would use against a host with no
+	// receipts at all. Losing this costs smoothness, never safety.
+	lastSaveID   string
+	lastSaveEtag string
 }
 
 // Lock and Unlock serialize read-modify-write operations on this file (saves,
@@ -120,6 +141,28 @@ func (f *File) LastServerWrite() string { return f.lastServerWrite }
 // LastStableObservation returns the hash of the content last confirmed stable on
 // disk. Caller must hold Lock().
 func (f *File) LastStableObservation() string { return f.lastStableObservation }
+
+// RecordSaveReceipt binds a save's Save-ID to the etag of the bytes that save
+// stored. Called at the durable-write commit point; caller must hold Lock().
+//
+// An id-less save still lands here, clearing the id while setting the etag, so a
+// remembered id can never come to describe bytes newer than its own.
+func (f *File) RecordSaveReceipt(saveID, etag string) {
+	f.lastSaveID = saveID
+	f.lastSaveEtag = etag
+}
+
+// SaveReceiptFor returns the Save-ID this host recorded for the bytes it stores,
+// but only when currentEtag still matches the etag recorded alongside it. Any
+// other write has moved the bytes on, which makes the pair worthless, and an
+// unverifiable receipt must read as absent rather than as an answer.
+// Caller must hold Lock().
+func (f *File) SaveReceiptFor(currentEtag string) string {
+	if f.lastSaveID == "" || f.lastSaveEtag == "" || f.lastSaveEtag != currentEtag {
+		return ""
+	}
+	return f.lastSaveID
+}
 
 // HistoryKey returns this file's resolved backup identity, or "" if it has not
 // been resolved yet. Caller must hold Lock().

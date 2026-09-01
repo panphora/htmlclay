@@ -84,7 +84,14 @@ const maxSaveSize = 50 * 1024 * 1024
 // MUST honour it, because accepting If-Match and ignoring it tells clients they are
 // protected when they are not. Announce it only while handleSave still refuses on a
 // stamp mismatch.
-var hostExtensions = []string{"conditional", "sync", "upload"}
+var hostExtensions = []string{"conditional", "receipts", "sync", "upload"}
+
+// maxSaveIDLen caps the §6 receipt id this host will remember. The spec asks for
+// at least 128 bits of randomness, which is 32 hex characters or 22 in base64url;
+// this is generous room above either. An id longer than this is dropped rather
+// than truncated, because half an id is not an id, and remembering an unbounded
+// header per open file is memory a caller could hand this host for free.
+const maxSaveIDLen = 128
 
 // hostMeta is the host-scope half of the discovery answer, and the whole of what
 // the tokenless route returns. Separate from fileMeta rather than reusing it with
@@ -146,6 +153,15 @@ type fileMeta struct {
 // documentMeta is the per-document half of a discovery answer.
 type documentMeta struct {
 	Etag string `json:"etag"`
+	// §6's receipt: which save produced the bytes this etag stamps. Reported only
+	// when the pair still verifies against those bytes, so a client that sees its
+	// own id here has been TOLD what it stores came from a body that client sent,
+	// rather than having guessed it from the document merely having moved. That is
+	// the entire difference between this and the reconcile it replaces.
+	//
+	// It lives in the document block, and so is withheld from a caller who may not
+	// read the document, for the same reason the etag is: both describe one file.
+	SaveID string `json:"saveId,omitempty"`
 	// §9: a host that announces `upload` caps the size it accepts and REPORTS that
 	// cap here. Without it a conforming client does not upload at all and does not
 	// probe the route to find out, so announcing the capability while omitting this
@@ -857,6 +873,14 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	// the core last-write-wins save and is left exactly as it was, which is why
 	// announcing `conditional` changes nothing for a client that never asks.
 	//
+	// §6's receipt id. Opaque, never a credential, never minted here: this host
+	// only ever echoes what a client sent. Length-capped because it is remembered
+	// per open file and an unbounded header would be free memory to hand away.
+	saveID := r.Header.Get("Save-ID")
+	if len(saveID) > maxSaveIDLen {
+		saveID = ""
+	}
+
 	// Present-but-empty is a different case from absent, and Values distinguishes
 	// them where Get cannot: an empty field is a client that computed its stamp
 	// wrong, and dropping it back to last-write-wins would silently remove the
@@ -880,9 +904,11 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		}
 		if !specwire.IfMatchSatisfied(ifMatch, current) {
 			changedBy := conflictAttribution(f, current, readErr)
+			currentEtag := specwire.Etag(current)
+			receipt := f.SaveReceiptFor(currentEtag)
 			f.Unlock()
 			s.logger.Printf("Refusing a conditional save of %s: the stored bytes have moved on", f.RelPath)
-			conflictRefusal(w, f.Name, specwire.Etag(current), changedBy)
+			conflictRefusal(w, f.Name, currentEtag, changedBy, receipt)
 			return
 		}
 	}
@@ -953,6 +979,11 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		f.RecordServerWrite(versions.Hash(body))
 		f.NoteWriteByThisHost()
+		// §6's receipt, bound here and nowhere else: this is the one moment the
+		// host knows both which request's body it stored and what those stored
+		// bytes stamp to. saveID is "" for a client that sent none, which still
+		// replaces the pair so a remembered id cannot outlive its own bytes.
+		f.RecordSaveReceipt(saveID, specwire.Etag(body))
 		// This save makes the history durable. The backup above already defaulted
 		// the meta to non-provisional, but a save that only deduplicated skips that
 		// write, so clear the flag explicitly.
@@ -988,19 +1019,32 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	// re-reading would stamp whatever landed in between rather than this save.
 	etag := specwire.Etag(body)
 
+	// Echoed straight back rather than re-read from the file: this response is
+	// about the save that just happened, and a client matches it against the id it
+	// sent. An id-less save echoes nothing, which omits the field.
+	saveIDEcho := saveID
+
 	if stale {
 		s.logger.Printf("Stale write: %s changed on disk since this server last wrote it", f.RelPath)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		stalePayload := map[string]interface{}{
 			"ok":      true,
 			"msg":     f.Name + " had been changed outside this tab. Your version was saved; the previous one is in Backups.",
 			"msgType": "warning",
 			"etag":    etag,
-		})
+		}
+		if saveIDEcho != "" {
+			stalePayload["saveId"] = saveIDEcho
+		}
+		json.NewEncoder(w).Encode(stalePayload)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	okPayload := map[string]interface{}{
 		"ok": true, "msg": "Saved", "msgType": "success", "etag": etag,
-	})
+	}
+	if saveIDEcho != "" {
+		okPayload["saveId"] = saveIDEcho
+	}
+	json.NewEncoder(w).Encode(okPayload)
 }
 
 // isJSONContentType reports whether a Content-Type declares JSON, including the
@@ -1161,11 +1205,18 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	// Report the tracked identity, which the host injects when serving. Between
 	// first serve and first save the disk carries no id, so reading it off disk
 	// would report none while the served document already has one.
+	storedEtag := specwire.Etag(stored)
+
 	var htmlclayID string
+	var saveID string
 	f.Lock()
 	if id, ok := versions.IDFromKey(f.HistoryKey()); ok {
 		htmlclayID = id
 	}
+	// Verified against the bytes this answer is about to stamp, not against
+	// whatever was stored when the pair was written. Any other writer moved the
+	// bytes on, and an unverifiable receipt reads as absent.
+	saveID = f.SaveReceiptFor(storedEtag)
 	f.Unlock()
 	if htmlclayID == "" {
 		htmlclayID = htmlutil.ReadHTMLClayID(stored)
@@ -1190,7 +1241,8 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// token and id that never reach the file, so stamping them would hand a
 		// client a value no save of its own could ever match.
 		Document: &documentMeta{
-			Etag: specwire.Etag(stored),
+			Etag:   storedEtag,
+			SaveID: saveID,
 			// The same constant the upload route enforces, not a second copy of the
 			// number: a cap that is announced and a cap that is applied drifting apart
 			// is worse than announcing none, because a client would refuse files this
@@ -1319,7 +1371,7 @@ func conflictAttribution(f *session.File, current []byte, readErr error) string 
 // request. Nothing in the spec requires it and no client is entitled to expect it,
 // but a refusal whose whole point is "your stamp is stale" may as well carry the
 // one that is not.
-func conflictRefusal(w http.ResponseWriter, name, etag, changedBy string) {
+func conflictRefusal(w http.ResponseWriter, name, etag, changedBy, saveID string) {
 	body := map[string]any{
 		"ok":      false,
 		"msg":     name + " changed since you last loaded it. Your version was not saved.",
@@ -1332,6 +1384,13 @@ func conflictRefusal(w http.ResponseWriter, name, etag, changedBy string) {
 	// value.
 	if changedBy != "" {
 		body["changedBy"] = changedBy
+	}
+	// The receipt for the bytes that caused this refusal. A client recognising its
+	// OWN id here learns that its own earlier save is what moved the document, which
+	// is a late duplicate rather than a conflict, and re-sends instead of alarming
+	// somebody about themselves. Omitted on the same terms as changedBy.
+	if saveID != "" {
+		body["saveId"] = saveID
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

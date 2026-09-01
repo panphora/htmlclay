@@ -30,10 +30,22 @@ the first entry below before upgrading either side.
 
 - **`/_/meta` discovery.** A page can ask what the host supports rather than probing
   for it: the protocol version, the two scopes, and the capability list, which on this
-  host is `conditional`, `sync` and `upload`. `format` is deliberately absent: this host
+  host is `conditional`, `receipts`, `sync` and `upload`. `format` is deliberately absent: this host
   stores the bytes it was sent, so it ignores `formathtml` entirely, and §4 says a host
   that does not declare `format` is telling every client exactly that. The `document`
   block is withheld by omission rather than by an error, per §5.
+- **Save receipts.** A save may carry a `Save-ID`, an opaque id a client mints for that
+  one attempt, and this host remembers which id belongs to the bytes it currently stores.
+  It reports that id as `saveId` in `/_/meta`, on every accepted save, and on every 412.
+  A client whose save timed out can then ask the one question it cannot answer alone,
+  whether its own write is what landed, instead of guessing and either overwriting
+  somebody else's work or showing a conflict notice over a few seconds of bad wifi.
+
+  The id is remembered beside the stamp of the bytes that save wrote and is reported
+  only while that stamp still matches what is on disk. So a write from anywhere else, a
+  text editor, a git checkout, an agent on the filesystem, invalidates it by moving the
+  bytes, with nothing having to notice. An id is never minted here and never accepted as
+  authorization for anything; the host only ever echoes what a client sent.
 - **Conditional saves.** Every save answer carries an `etag`, and a save sent with
   `If-Match` is refused with 412 and a `conflict` code, nothing written, when the
   document changed underneath it. The stamp is computed over the bytes on disk rather
