@@ -71,3 +71,54 @@ jobs:
           HTMLCLAY_HOST_GATE: "1"
           HTMLCLAY_HOST_GATE_RUNNER: ${{ github.workspace }}/testdata/conformance/host-test.mjs
           HTMLCLAY_HOST_GATE_CWD: ${{ github.workspace }}
+
+  # The shipped Linux tarball, used the way a Linux user uses it: install.sh into a
+  # fresh HOME, the desktop must know the file type, a file must serve and save from
+  # a real browser, tray mode must survive a machine with no session bus, the
+  # permission prompt must appear and fail closed without a dialog tool, and
+  # uninstall.sh must leave nothing behind. `go test` proves the code; this proves
+  # the download. Both shipped arches, on the runners that build them.
+  linux-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Build the Linux binary the tarball ships
+        run: bash packaging/linux/build.sh
+
+      # What a stock Ubuntu desktop has and a bare runner does not: the MIME and
+      # desktop-entry tooling install.sh talks to, zenity for the prompt, and a
+      # virtual display to show it on.
+      - name: Install desktop tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb zenity xdotool dbus-x11 shared-mime-info desktop-file-utils xdg-utils libglib2.0-bin imagemagick jq
+
+      - name: Install the browser driver
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+
+      - name: Linux checks
+        run: bash scripts/linux-checks/run-all.sh
+
+      - name: Upload check artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-checks-${{ matrix.runner }}
+          path: linux-check-artifacts/
