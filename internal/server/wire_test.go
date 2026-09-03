@@ -111,23 +111,23 @@ func TestWireHandlerSlotIsExclusive(t *testing.T) {
 	t.Cleanup(wh.shutdown)
 
 	first := &wireSub{key: "/f.htmlclay", handler: true, ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := wh.add(first, 0); err != nil {
+	if _, _, err := wh.add(first, 0); err != nil {
 		t.Fatalf("first handler refused: %v", err)
 	}
 	second := &wireSub{key: "/f.htmlclay", handler: true, ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := wh.add(second, 0); err != errWireHandlerTaken {
+	if _, _, err := wh.add(second, 0); err != errWireHandlerTaken {
 		t.Fatalf("second handler admitted: %v", err)
 	}
 	// An observer alongside a handler is fine; tailing must not need the slot.
 	obs := &wireSub{key: "/f.htmlclay", ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := wh.add(obs, 0); err != nil {
+	if _, _, err := wh.add(obs, 0); err != nil {
 		t.Fatalf("observer refused: %v", err)
 	}
 	// Releasing the slot lets the next handler in, so a reconnect is not
 	// permanently locked out by its own predecessor.
 	wh.remove(first)
 	third := &wireSub{key: "/f.htmlclay", handler: true, ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := wh.add(third, 0); err != nil {
+	if _, _, err := wh.add(third, 0); err != nil {
 		t.Fatalf("handler slot not released: %v", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestWireDeliveredCountsHandlersOnly(t *testing.T) {
 	key := "/f.htmlclay"
 
 	page := &wireSub{key: key, ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := wh.add(page, 0); err != nil {
+	if _, _, err := wh.add(page, 0); err != nil {
 		t.Fatal(err)
 	}
 	handlers, observers := wh.publish(key, wireEnvelope{Type: "wire/request", ID: "r1"})
@@ -153,7 +153,7 @@ func TestWireDeliveredCountsHandlersOnly(t *testing.T) {
 	}
 
 	agent := &wireSub{key: key, handler: true, ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := wh.add(agent, 0); err != nil {
+	if _, _, err := wh.add(agent, 0); err != nil {
 		t.Fatal(err)
 	}
 	handlers, observers = wh.publish(key, wireEnvelope{Type: "wire/request", ID: "r2"})
@@ -171,14 +171,14 @@ func TestWireReplayOnlyAboveLastEventID(t *testing.T) {
 	key := "/f.htmlclay"
 
 	seed := &wireSub{key: key, ch: make(chan []byte, 8), done: make(chan struct{})}
-	if _, err := wh.add(seed, 0); err != nil {
+	if _, _, err := wh.add(seed, 0); err != nil {
 		t.Fatal(err)
 	}
 	wh.publish(key, wireEnvelope{Type: "wire/status", ID: "r1", Text: "working"})
 	wh.publish(key, wireEnvelope{Type: "wire/done", ID: "r1"})
 
 	fresh := &wireSub{key: key, ch: make(chan []byte, 8), done: make(chan struct{})}
-	replay, err := wh.add(fresh, 0)
+	_, replay, err := wh.add(fresh, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestWireReplayOnlyAboveLastEventID(t *testing.T) {
 	}
 
 	resumed := &wireSub{key: key, ch: make(chan []byte, 8), done: make(chan struct{})}
-	replay, err = wh.add(resumed, 1)
+	_, replay, err = wh.add(resumed, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,14 +206,14 @@ func TestWireFirstTerminalWins(t *testing.T) {
 	t.Cleanup(wh.shutdown)
 	key := "/f.htmlclay"
 	sub := &wireSub{key: key, ch: make(chan []byte, 8), done: make(chan struct{})}
-	if _, err := wh.add(sub, 0); err != nil {
+	if _, _, err := wh.add(sub, 0); err != nil {
 		t.Fatal(err)
 	}
 	wh.publish(key, wireEnvelope{Type: "wire/done", ID: "r1"})
 	wh.publish(key, wireEnvelope{Type: "wire/error", ID: "r1", Text: "too late"})
 
 	resumed := &wireSub{key: key, ch: make(chan []byte, 8), done: make(chan struct{})}
-	replay, _ := wh.add(resumed, 1)
+	_, replay, _ := wh.add(resumed, 1)
 	if len(replay) != 1 || !strings.Contains(string(replay[0]), "wire/done") {
 		t.Fatalf("a handler rewrote an outcome a subscriber already saw: %q", replay)
 	}
@@ -226,7 +226,7 @@ func TestWireSendStampsCanonicalFile(t *testing.T) {
 	t.Cleanup(func() { srv.wire.shutdown() })
 
 	tap := &wireSub{key: f.AbsPath, ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := srv.wire.add(tap, 0); err != nil {
+	if _, _, err := srv.wire.add(tap, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -319,7 +319,7 @@ func TestWireEvictsSlowSubscriber(t *testing.T) {
 	key := "/f.htmlclay"
 
 	slow := &wireSub{key: key, ch: make(chan []byte, 1), done: make(chan struct{})}
-	if _, err := wh.add(slow, 0); err != nil {
+	if _, _, err := wh.add(slow, 0); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
@@ -339,12 +339,12 @@ func TestWireSubscriberCapIsEnforced(t *testing.T) {
 
 	for i := 0; i < maxWireSubs; i++ {
 		sub := &wireSub{key: key, ch: make(chan []byte, 2), done: make(chan struct{})}
-		if _, err := wh.add(sub, 0); err != nil {
+		if _, _, err := wh.add(sub, 0); err != nil {
 			t.Fatalf("subscriber %d refused early: %v", i, err)
 		}
 	}
 	over := &wireSub{key: key, ch: make(chan []byte, 2), done: make(chan struct{})}
-	if _, err := wh.add(over, 0); err != errWireBusy {
+	if _, _, err := wh.add(over, 0); err != errWireBusy {
 		t.Fatalf("cap not enforced: %v", err)
 	}
 }
@@ -495,7 +495,7 @@ func TestWireRefusedHandlerLeavesNoLease(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	held := &wireSub{key: f.AbsPath, handler: true, ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := srv.wire.add(held, 0); err != nil {
+	if _, _, err := srv.wire.add(held, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -521,12 +521,12 @@ func TestWireObserverCapDoesNotLockOutTheHandler(t *testing.T) {
 
 	for i := 0; i < maxWireSubs; i++ {
 		sub := &wireSub{key: key, ch: make(chan []byte, 2), done: make(chan struct{})}
-		if _, err := wh.add(sub, 0); err != nil {
+		if _, _, err := wh.add(sub, 0); err != nil {
 			t.Fatalf("observer %d refused early: %v", i, err)
 		}
 	}
 	agent := &wireSub{key: key, handler: true, ch: make(chan []byte, 2), done: make(chan struct{})}
-	if _, err := wh.add(agent, 0); err != nil {
+	if _, _, err := wh.add(agent, 0); err != nil {
 		t.Fatalf("observers locked the agent out of a free slot: %v", err)
 	}
 }
@@ -540,7 +540,7 @@ func TestWireChannelIsDroppedOnceItsTerminalsExpire(t *testing.T) {
 	key := "/f.htmlclay"
 
 	sub := &wireSub{key: key, ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := wh.add(sub, 0); err != nil {
+	if _, _, err := wh.add(sub, 0); err != nil {
 		t.Fatal(err)
 	}
 	wh.publish(key, wireEnvelope{Type: "wire/done", ID: "r1"})
@@ -562,7 +562,7 @@ func TestWireChannelIsDroppedOnceItsTerminalsExpire(t *testing.T) {
 
 	// Any later hub operation sweeps, so the map is bounded by live use.
 	other := &wireSub{key: "/g.htmlclay", ch: make(chan []byte, 4), done: make(chan struct{})}
-	if _, err := wh.add(other, 0); err != nil {
+	if _, _, err := wh.add(other, 0); err != nil {
 		t.Fatal(err)
 	}
 	wh.remove(other)
@@ -621,7 +621,7 @@ func TestWireTerminalRetentionIsBoundedAcrossChannels(t *testing.T) {
 	for file := 0; file < 40; file++ {
 		key := fmt.Sprintf("/f%d.htmlclay", file)
 		sub := &wireSub{key: key, ch: make(chan []byte, 64), done: make(chan struct{})}
-		if _, err := wh.add(sub, 0); err != nil {
+		if _, _, err := wh.add(sub, 0); err != nil {
 			t.Fatal(err)
 		}
 		for req := 0; req < maxWireTerminals; req++ {
@@ -697,5 +697,48 @@ func TestWireTerminalFrameFromAProcessPokesTheWatcher(t *testing.T) {
 	frame := waitFrame(t, sub, 2*time.Second)
 	if frame["html"] != changed {
 		t.Fatalf("saved lane html = %v", frame["html"])
+	}
+}
+
+// The cursor is the floor of what follows it, never above it. A page resuming
+// from X is handed X and then every retained frame past X; a fresh page is
+// handed a position below every frame published after it. A stream that drops
+// between the cursor and a frame therefore resumes with that frame still owed.
+func TestWireCursorIsBelowEveryFrameItPrecedes(t *testing.T) {
+	wh := newWireHub()
+	t.Cleanup(wh.shutdown)
+	key := "/f.htmlclay"
+
+	seed := &wireSub{key: key, ch: make(chan []byte, 8), done: make(chan struct{})}
+	if _, _, err := wh.add(seed, 0); err != nil {
+		t.Fatal(err)
+	}
+	wh.publish(key, wireEnvelope{Type: "wire/done", ID: "r1"})
+	doneSeq, _ := splitFrame(t, <-seed.ch)
+
+	resumed := &wireSub{key: key, ch: make(chan []byte, 8), done: make(chan struct{})}
+	cursor, replay, err := wh.add(resumed, doneSeq-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 1 {
+		t.Fatalf("resuming from just below the terminal replayed %d frames, want 1", len(replay))
+	}
+	if cursor >= doneSeq {
+		t.Fatalf("cursor %d is not below the replayed frame %d: a drop before the replay would lose it", cursor, doneSeq)
+	}
+
+	fresh := &wireSub{key: key, ch: make(chan []byte, 8), done: make(chan struct{})}
+	cursor, replay, err = wh.add(fresh, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 0 {
+		t.Fatalf("fresh subscription replayed %d frames", len(replay))
+	}
+	wh.publish(key, wireEnvelope{Type: "wire/done", ID: "r2"})
+	next, _ := splitFrame(t, <-fresh.ch)
+	if cursor <= 0 || cursor >= next {
+		t.Fatalf("fresh cursor %d, next frame %d: the cursor must be a position below every frame that follows", cursor, next)
 	}
 }

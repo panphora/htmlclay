@@ -76,6 +76,12 @@ const maxSaveSize = 50 * 1024 * 1024
 // pushes the new document out; the document lane exists for the case §10 names, a
 // client wanting viewers updated with no save behind it.
 //
+// Since the 2026-09-02 revision of §10, `sync` promises three things: the relay,
+// the stream in its list spelling (any number of subscriptions on one
+// connection), and the worker script at /_/sync/worker.js through which every tab
+// shares that one stream. The one-document spelling is served too, as an alias
+// outside the spec.
+//
 // `format` is NOT announced, and must not be while this host stores every save's
 // bytes exactly as sent. §4 says a host that does not declare it ignores
 // `formathtml` entirely, which is precisely what this host does.

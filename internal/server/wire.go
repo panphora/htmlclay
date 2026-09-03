@@ -43,8 +43,8 @@ const (
 
 	// One handler, a page or two, and a couple of tails. Past this something is
 	// wrong and growing memory is not the answer. The live-sync hub has no
-	// equivalent cap to inherit: its bounds are per-subscriber queue size and
-	// replay caps, and maxUsefulTabs is a browser limit, not a server bound.
+	// equivalent cap to inherit: its bounds are per-stream queue size, the
+	// subscriptions one shared stream may carry, and the replay caps.
 	maxWireSubs = 8
 	// Retained terminal frames per file. See wireChannel.terminal.
 	maxWireTerminals = 32
@@ -177,14 +177,17 @@ func (wh *wireHub) ensureLocked(key string) *wireChannel {
 	return c
 }
 
-// add installs a subscriber and returns the terminal frames it missed. The
-// handler slot is decided under the SAME lock as membership, so two processes can
-// never both believe they hold it.
-func (wh *wireHub) add(sub *wireSub, lastEventID int64) ([][]byte, error) {
+// add installs a subscriber and returns the position it resumes from with the
+// terminal frames retained past that position. The handler slot is decided under
+// the SAME lock as membership, so two processes can never both believe they hold
+// it. The position is chosen under that lock too, so it is never above a frame
+// the subscriber is still owed: a page that reconnects from the cursor it was
+// handed is replayed everything after it.
+func (wh *wireHub) add(sub *wireSub, lastEventID int64) (int64, [][]byte, error) {
 	wh.mu.Lock()
 	defer wh.mu.Unlock()
 	if wh.closed {
-		return nil, errWireClosed
+		return 0, nil, errWireClosed
 	}
 	wh.sweepLocked()
 	c := wh.ensureLocked(sub.key)
@@ -192,11 +195,11 @@ func (wh *wireHub) add(sub *wireSub, lastEventID int64) ([][]byte, error) {
 	// competed for: eight tails on a file must not be able to lock the user's own
 	// agent out of a slot that is free.
 	if !sub.handler && len(c.subs) >= maxWireSubs {
-		return nil, errWireBusy
+		return 0, nil, errWireBusy
 	}
 	if sub.handler {
 		if c.handler != nil {
-			return nil, errWireHandlerTaken
+			return 0, nil, errWireHandlerTaken
 		}
 		c.handler = sub
 	}
@@ -205,9 +208,11 @@ func (wh *wireHub) add(sub *wireSub, lastEventID int64) ([][]byte, error) {
 	// A fresh subscription replays nothing. Replaying to a subscriber with no
 	// cursor would hand a reloaded page the terminal frame of a request it
 	// cancelled before reloading, and the page, having no memory of the cancel,
-	// would act on it. "Stop completely" has to survive a reload.
+	// would act on it. "Stop completely" has to survive a reload. Its position is
+	// a sequence number taken now, which every frame published from here on
+	// sorts after.
 	if lastEventID <= 0 {
-		return nil, nil
+		return wh.nextSeqLocked(), nil, nil
 	}
 	var replay [][]byte
 	for _, t := range c.terminal {
@@ -215,7 +220,7 @@ func (wh *wireHub) add(sub *wireSub, lastEventID int64) ([][]byte, error) {
 			replay = append(replay, t.frame)
 		}
 	}
-	return replay, nil
+	return lastEventID, replay, nil
 }
 
 func (wh *wireHub) remove(sub *wireSub) {
@@ -632,7 +637,7 @@ func (s *Server) handleWireSubscribe(w http.ResponseWriter, r *http.Request) {
 		done:    make(chan struct{}),
 	}
 
-	replay, err := s.wire.add(sub, parseLastEventID(r))
+	cursor, replay, err := s.wire.add(sub, parseLastEventID(r))
 	if err != nil {
 		switch {
 		case errors.Is(err, errWireHandlerTaken):
@@ -676,6 +681,18 @@ func (s *Server) handleWireSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := rc.Flush(); err != nil {
 		return
+	}
+
+	// A page's first frame is a cursor: a named event that never reaches
+	// onmessage, carrying the position it resumes from. It is the floor of what
+	// follows: the replay below and every live frame sort after it, so a stream
+	// that drops between the cursor and a frame resumes with the frame still
+	// owed. Pages only, because a process tailing the wire parses every data line
+	// as a wire frame and has no use for a position it never presents.
+	if isBrowser && !wantHandler {
+		if !writeSSE(rc, w, cursorFrame(cursor, false)) {
+			return
+		}
 	}
 
 	for _, fr := range replay {

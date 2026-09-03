@@ -87,6 +87,7 @@ type slot struct {
 
 type Tray struct {
 	cfg           *config.Config
+	version       string
 	onOpenExample func()
 	onOpenBackups func()
 	onQuit        func()
@@ -102,9 +103,10 @@ type Tray struct {
 	notice string
 }
 
-func Run(cfg *config.Config, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, notice string) {
+func Run(cfg *config.Config, version string, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, notice string) {
 	t := &Tray{
 		cfg:           cfg,
+		version:       version,
 		onOpenExample: onOpenExample,
 		onOpenBackups: onOpenBackups,
 		onQuit:        onQuit,
@@ -278,8 +280,8 @@ func (t *Tray) onReady() {
 
 	t.addNotice()
 
-	t.updateItem = systray.AddMenuItem("", "")
-	t.updateItem.Hide()
+	t.updateItem = systray.AddMenuItem("HTML Clay v"+t.version, "Installed version")
+	t.updateItem.Disable()
 	systray.AddSeparator()
 
 	exampleItem := systray.AddMenuItem("Open Example File", "Create and open a sample self-saving HTML file")
@@ -409,7 +411,7 @@ func (t *Tray) showUpdate(info UpdateInfo) {
 	t.updateURL = info.URL
 	t.updateItem.SetTitle(fmt.Sprintf("Update available: v%s", info.Version))
 	t.updateItem.SetTooltip("Click to download")
-	t.updateItem.Show()
+	t.updateItem.Enable()
 }
 
 func (t *Tray) onExit() {

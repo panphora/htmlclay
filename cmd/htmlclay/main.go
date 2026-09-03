@@ -355,7 +355,7 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 		return
 	}
 	a.rt.logger.Printf("Starting system tray...")
-	tray.Run(a.rt.cfg, a.openExample, a.openBackups, func() {
+	tray.Run(a.rt.cfg, version, a.openExample, a.openBackups, func() {
 		a.shutdown()
 	}, updateCh, &tray.TrustedFolderHooks{
 		List:   a.trustedFolderRows,

@@ -35,6 +35,16 @@ const (
 	// subQueueSize bounds each subscriber's queue. A subscriber that cannot keep
 	// up is evicted rather than allowed to grow memory without limit.
 	subQueueSize = 32
+
+	// maxSharedSubs bounds the subscriptions one shared stream may carry (spec
+	// §10's list form). A page holds one or two, so this is hundreds of tabs; past
+	// it the caller is not a browser.
+	maxSharedSubs = 256
+
+	// sharedQueueSize is the bounded queue behind a shared stream, sized for every
+	// subscription on it rather than for one. Overflow evicts the whole stream, and
+	// the worker reopens it with each entry resuming from its own position.
+	sharedQueueSize = 256
 	// sseWriteDeadline is applied fresh before every frame, so a subscriber stuck
 	// inside Write fails on its own instead of pinning a goroutine forever. It
 	// stays strictly under ShutdownBudget: at 10s against a 3s graceful shutdown a
@@ -75,18 +85,34 @@ const (
 // cannot drift apart into a shutdown that always force-closes.
 const ShutdownBudget = 3 * time.Second
 
-// Documented limit: browsers cap HTTP/1.1 connections at six per origin, and an
-// SSE stream holds one for the life of the page. Once six htmlclay tabs are open
-// on one origin, a seventh request (including a save) queues behind them. This is
-// a real constraint of the transport, not something the server can raise.
-const maxUsefulTabs = 6
+// streamEnd is the one closer for one connection. A one-document stream owns one
+// subscriber and one streamEnd; a shared stream owns one streamEnd and as many
+// subscribers as it has subscriptions, all pointing at it, so evicting any of
+// them ends the whole connection exactly once. N subscribers each closing one
+// channel would panic on the second close.
+type streamEnd struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func newStreamEnd() *streamEnd {
+	return &streamEnd{done: make(chan struct{})}
+}
+
+func (e *streamEnd) stop() {
+	e.once.Do(func() { close(e.done) })
+}
 
 type subscriber struct {
 	key  string
 	lane string
-	ch   chan []byte
-	done chan struct{}
-	once sync.Once
+	ch   chan queued
+	end  *streamEnd
+
+	// tag is written ahead of every frame this subscriber receives. Nil on a
+	// one-document stream, whose frames are unnamed events; "event: s<i>\n" on a
+	// shared stream, where every frame names the subscription it belongs to.
+	tag []byte
 
 	// lastEventID is the client's Last-Event-ID, zero when it is a fresh
 	// connection with nothing to catch up on.
@@ -104,7 +130,19 @@ type subscriber struct {
 }
 
 func (sub *subscriber) stop() {
-	sub.once.Do(func() { close(sub.done) })
+	sub.end.stop()
+}
+
+// queued is one entry on a stream's queue: the frame, which is the hub's own
+// slice and is never copied, and the event name a shared stream writes ahead
+// of it. Retained frames are stored untagged, so a one-document stream replays
+// them byte for byte and a shared stream names the subscription on the way out.
+// Copying the frame per record would let a list that names one document many
+// times turn one relay into that many copies of it, all allocated under the
+// hub lock.
+type queued struct {
+	tag   []byte
+	frame []byte
 }
 
 // retainedFrame is one frame held for reconnect replay.
@@ -845,7 +883,7 @@ func (h *hub) enqueue(key, lane string, seq int64, f []byte) (accepted int, evic
 func offer(sub *subscriber, frames [][]byte) bool {
 	for _, f := range frames {
 		select {
-		case sub.ch <- f:
+		case sub.ch <- queued{tag: sub.tag, frame: f}:
 		default:
 			return false
 		}
@@ -949,6 +987,30 @@ func cursorFrame(seq int64, resync bool) []byte {
 	}
 	buf.WriteString("}\n\n")
 	return buf.Bytes()
+}
+
+// sharedCursorFrame is the cursor of one subscription on a shared stream. It
+// carries no id: the worker holding the stream tracks a position per subscription
+// from the frames' own ids and never reconnects through Last-Event-ID, since one
+// id for many subscriptions would name a position for none of them.
+func sharedCursorFrame(i int, seq int64, resync bool) []byte {
+	var buf bytes.Buffer
+	buf.WriteString("event: cursor\ndata: {\"sub\":")
+	buf.WriteString(strconv.Itoa(i))
+	buf.WriteString(",\"seq\":")
+	buf.WriteString(strconv.FormatInt(seq, 10))
+	if resync {
+		buf.WriteString(",\"resync\":true")
+	}
+	buf.WriteString("}\n\n")
+	return buf.Bytes()
+}
+
+// notFoundCursorFrame answers one subscription the host will not serve, inside a
+// stream that goes on serving the others. Refusing the whole connection over one
+// entry would cut every open page off because a single one closed its document.
+func notFoundCursorFrame(i int) []byte {
+	return []byte("event: cursor\ndata: {\"sub\":" + strconv.Itoa(i) + ",\"error\":\"not-found\"}\n\n")
 }
 
 // relay broadcasts a peer snapshot to the live lane. It never persists, backs up,
@@ -1124,13 +1186,29 @@ func (s *Server) resolvePageURL(r *http.Request, raw string) (*session.File, boo
 }
 
 func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
-	// Spec §10 names the parameter document-url, matching the Document-URL
-	// header the save lane already uses. page-url is the pre-spec spelling and
-	// is still read, because a host being lenient about how it is addressed
-	// costs nothing and a stream that silently 404s is hard to diagnose.
+	// Spec §10 lists subscriptions as `s` parameters, any number on one stream.
+	// The one-document spelling below is the pre-revision form, kept as an alias
+	// because a saved document is a frozen client: vendored runtimes and the
+	// Collection dashboard's inline script name it, and no library update reaches
+	// them.
+	if entries := r.URL.Query()["s"]; len(entries) > 0 {
+		s.handleSharedSyncStream(w, r, entries)
+		return
+	}
+
+	// document-url was the spelling of the pre-revision text and page-url the
+	// pre-spec one. Both are still read, because a host being lenient about how it
+	// is addressed costs nothing and a stream that silently 404s is hard to
+	// diagnose.
 	href := r.URL.Query().Get("document-url")
 	if href == "" {
 		href = r.URL.Query().Get("page-url")
+	}
+	// Spec §10: a request with no subscriptions is a bad request, not a document
+	// that is not there.
+	if href == "" {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
 	}
 	f, ok := s.resolvePageURL(r, href)
 	if !ok {
@@ -1160,8 +1238,8 @@ func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
 	sub := &subscriber{
 		key:         f.AbsPath,
 		lane:        lane,
-		ch:          make(chan []byte, subQueueSize),
-		done:        make(chan struct{}),
+		ch:          make(chan queued, subQueueSize),
+		end:         newStreamEnd(),
 		lastEventID: parseLastEventID(r),
 		resumeID:    resumeID,
 	}
@@ -1209,10 +1287,143 @@ func (s *Server) handleLiveSyncStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-s.hub.closing:
 			return
-		case <-sub.done:
+		case <-sub.end.done:
 			return
 		case msg := <-sub.ch:
-			if !writeSSE(rc, w, msg) {
+			if !writeQueued(rc, w, msg) {
+				return
+			}
+		case <-ticker.C:
+			if !writeSSE(rc, w, []byte(": keepalive\n\n")) {
+				return
+			}
+		}
+	}
+}
+
+// sharedEntry is one parsed `s` value: lane:since:document-url.
+type sharedEntry struct {
+	lane  string
+	since int64
+	href  string
+}
+
+func parseSharedEntry(raw string) (sharedEntry, bool) {
+	parts := strings.SplitN(raw, ":", 3)
+	if len(parts) != 3 {
+		return sharedEntry{}, false
+	}
+	lane := parts[0]
+	if lane != laneLive && lane != laneSaved {
+		return sharedEntry{}, false
+	}
+	since, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || since < 0 {
+		return sharedEntry{}, false
+	}
+	return sharedEntry{lane: lane, since: since, href: parts[2]}, true
+}
+
+// handleSharedSyncStream serves spec §10's list form: one connection, one writer,
+// one bounded queue, and one subscriber record per entry. Every record shares the
+// queue and the streamEnd and carries its own tag, so the hub fans out exactly as
+// it does to one-document streams while the connection sees named events.
+func (s *Server) handleSharedSyncStream(w http.ResponseWriter, r *http.Request, raw []string) {
+	if len(raw) > maxSharedSubs {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	entries := make([]sharedEntry, 0, len(raw))
+	for _, v := range raw {
+		e, ok := parseSharedEntry(v)
+		if !ok {
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+			return
+		}
+		entries = append(entries, e)
+	}
+
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		s.logger.Printf("live-sync: cannot clear write deadline: %v", err)
+		http.Error(w, "Not Implemented", http.StatusNotImplemented)
+		return
+	}
+
+	ch := make(chan queued, sharedQueueSize)
+	end := newStreamEnd()
+
+	// Every entry is registered before the headers are flushed, for the reason the
+	// one-document handler gives: nothing that happens during setup may have no
+	// recipient. An entry that does not resolve is answered inside the stream and
+	// registers nothing. Each file is locked on its own, one after another, never
+	// nested.
+	type opened struct {
+		cursor []byte
+		replay [][]byte
+		sub    *subscriber
+	}
+	out := make([]opened, 0, len(entries))
+	for i, e := range entries {
+		f, ok := s.resolvePageURL(r, e.href)
+		if !ok {
+			out = append(out, opened{cursor: notFoundCursorFrame(i)})
+			continue
+		}
+		sub := &subscriber{
+			key:         f.AbsPath,
+			lane:        e.lane,
+			ch:          ch,
+			end:         end,
+			tag:         []byte("event: s" + strconv.Itoa(i) + "\n"),
+			lastEventID: e.since,
+		}
+		f.Lock()
+		baseline, replay, resync := s.coord.add(sub, f)
+		f.Unlock()
+		defer s.coord.remove(sub, f)
+		out = append(out, opened{cursor: sharedCursorFrame(i, baseline, resync), replay: replay, sub: sub})
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if err := rc.Flush(); err != nil {
+		s.logger.Printf("live-sync: cannot flush stream: %v", err)
+		return
+	}
+
+	// Per entry, in query order: its cursor, then its replay, every frame named.
+	// A frame that arrived during setup sits in the queue behind all of this, and
+	// is always newer than its entry's replay, which was selected under the hub
+	// lock at registration.
+	for _, o := range out {
+		if !writeSSE(rc, w, o.cursor) {
+			return
+		}
+		for _, fr := range o.replay {
+			if !writeQueued(rc, w, queued{tag: o.sub.tag, frame: fr}) {
+				return
+			}
+		}
+	}
+
+	ticker := time.NewTicker(keepaliveInterval)
+	defer ticker.Stop()
+
+	// One writer per connection, as for the one-document stream.
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-s.hub.closing:
+			return
+		case <-end.done:
+			return
+		case msg := <-ch:
+			if !writeQueued(rc, w, msg) {
 				return
 			}
 		case <-ticker.C:
@@ -1257,12 +1468,23 @@ func parseResumeID(r *http.Request) string {
 }
 
 func writeSSE(rc *http.ResponseController, w http.ResponseWriter, msg []byte) bool {
+	return writeQueued(rc, w, queued{frame: msg})
+}
+
+// writeQueued writes one queue entry: its tag, when it has one, then the frame,
+// under one flush, so a frame's name and its body always leave together.
+func writeQueued(rc *http.ResponseController, w http.ResponseWriter, q queued) bool {
 	// A rolling per-write deadline, so an evicted slow subscriber actually
 	// unblocks instead of leaking a goroutine stuck inside Write.
 	if err := rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline)); err != nil {
 		return false
 	}
-	if _, err := w.Write(msg); err != nil {
+	if q.tag != nil {
+		if _, err := w.Write(q.tag); err != nil {
+			return false
+		}
+	}
+	if _, err := w.Write(q.frame); err != nil {
 		return false
 	}
 	return rc.Flush() == nil

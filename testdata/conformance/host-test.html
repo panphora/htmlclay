@@ -606,7 +606,7 @@
     //    preimage, then send {document} and {snapshot} and assert the stored bytes never
     //    move — comparing full bytes, not just "not equal to the relayed payload".
     {
-      const r = row('sync: POST /_/sync relays without writing to disk');
+      const r = row('sync: one stream carries both lanes, the worker is served, and POST /_/sync never writes');
       if (!caps.has('sync')) r.set('skip', 'Host does not declare `sync`.');
       else if (!roundTripped) r.set('skip', 'Needs a working save round-trip first.');
       else {
@@ -625,39 +625,86 @@
             // or the other before this page was pointed at them.
             //
             // §10 puts both directions on one address, so the stream is opened at the
-            // same route the POST goes to. A host announcing `sync` without serving
-            // that stream is not wrong (§10 is informative in v1), so it is reported
-            // as a skip naming what could not be observed, never as a pass.
-            const streamUrl = (lane) =>
-              `/_/sync?document-url=${encodeURIComponent(target)}&lane=${lane}` +
+            // same route the POST goes to, carrying both lanes as two subscriptions on
+            // ONE stream. That list spelling is the only one §10 defines: a client holds
+            // one stream per origin, so a host that serves one document per stream is
+            // a host no client can share.
+            const streamUrl =
+              `/_/sync?s=live:0:${encodeURIComponent(target)}&s=saved:0:${encodeURIComponent(target)}` +
               (token ? `&token=${encodeURIComponent(token)}` : '');
 
-            const openLane = (lane) => new Promise((resolve) => {
+            const openStream = () => new Promise((resolve) => {
               let es;
-              try { es = new EventSource(streamUrl(lane)); } catch (_) { return resolve(null); }
-              const frames = [];
-              es.onmessage = (ev) => {
-                try { frames.push(JSON.parse(ev.data)); } catch (_) {}
+              try { es = new EventSource(streamUrl); } catch (_) { return resolve(null); }
+              const cursors = [];
+              const frames = { live: [], saved: [] };
+              const collect = (lane) => (ev) => {
+                try { frames[lane].push(JSON.parse(ev.data)); } catch (_) {}
               };
-              const settle = (ok) => { clearTimeout(t); resolve(ok ? { es, frames } : (es.close(), null)); };
+              es.addEventListener('cursor', (ev) => {
+                try { cursors.push(JSON.parse(ev.data)); } catch (_) {}
+              });
+              es.addEventListener('s0', collect('live'));
+              es.addEventListener('s1', collect('saved'));
+              const settle = (ok) => { clearTimeout(t); resolve(ok ? { es, cursors, frames } : (es.close(), null)); };
               const t = setTimeout(() => settle(false), 2000);
               es.onopen = () => settle(true);
               es.onerror = () => { if (es.readyState === EventSource.CLOSED) settle(false); };
             });
 
-            const [live, saved] = await Promise.all([openLane('live'), openLane('saved')]);
-            if (!live || !saved) {
-              if (live) live.es.close();
-              if (saved) saved.es.close();
+            const stream = await openStream();
+            // The worker is the third thing `sync` promises (§10): a SharedWorker script
+            // must be same-origin, so a client cannot bring its own. Served is not enough.
+            // An empty file served as JavaScript passes a type check, and every client
+            // that picks the shared transport would then wait on a worker that never
+            // answers. So the worker is created, asked to follow this document, and must
+            // answer with a cursor. One page cannot prove that two tabs share it; it can
+            // prove the contract a second tab would rely on.
+            let worker;
+            try {
+              const wres = await fetch('/_/sync/worker.js', { cache: 'no-store' });
+              worker = { ok: wres.ok, type: (wres.headers.get('content-type') || '').toLowerCase() };
+            } catch (_) { worker = { ok: false, type: '' }; }
+            const exerciseWorker = () => new Promise((resolve) => {
+              if (typeof SharedWorker !== 'function') return resolve({ ok: true, skipped: true });
+              let w;
+              try { w = new SharedWorker('/_/sync/worker.js', 'clay-sync'); } catch (_) { return resolve({ ok: false, why: 'could not be created' }); }
+              const finish = (result) => {
+                clearTimeout(t);
+                try { w.port.postMessage({ v: 1, type: 'unsubscribe' }); w.port.close(); } catch (_) {}
+                resolve(result);
+              };
+              const t = setTimeout(() => finish({ ok: false, why: 'answered no `cursor` within 4 s of `subscribe`' }), 4000);
+              w.onerror = () => finish({ ok: false, why: 'failed to start' });
+              w.port.onmessage = (ev) => {
+                const m = ev.data;
+                if (!m || m.v !== 1) return;
+                if (m.type === 'cursor') finish({ ok: true });
+                else if (m.type === 'gone') finish({ ok: false, why: 'answered `gone` for the document this page just saved' });
+              };
+              w.port.start();
+              w.port.postMessage({ v: 1, type: 'subscribe', document: target, lane: 'saved', since: 0 });
+            });
+            const exercised = worker.ok && /javascript|ecmascript/.test(worker.type) ? await exerciseWorker() : null;
+            if (!stream) {
               // A declared capability is a promise, and §12 holds a host to the rules of
               // every capability it announces. Announcing `sync` and serving no stream is
               // exactly the case this row exists to catch: clients read `extensions` and
-              // open the lane on the strength of it. Skipping here passed the host that
+              // open the stream on the strength of it. Skipping here passed the host that
               // lies, which is the only host that needed catching. A host that does not
               // announce `sync` never reaches this branch and is still skipped.
               r.set('fail', 'Host declares `sync` in `extensions` but does not serve the §10 stream at /_/sync'
-                + (live || saved ? ' on both lanes (' + (live ? 'saved' : 'live') + ' did not open).' : '.')
-                + ' A client reads `extensions` and opens the lane because the host said it was there.');
+                + ' with two subscriptions (s=live:0:…&s=saved:0:…).'
+                + ' A client reads `extensions` and opens the stream because the host said it was there.');
+            } else if (!worker.ok || !/javascript|ecmascript/.test(worker.type)) {
+              stream.es.close();
+              r.set('fail', 'Host declares `sync` but GET /_/sync/worker.js '
+                + (worker.ok ? 'is not served as JavaScript (' + (worker.type || 'no content-type') + ').' : 'does not answer 2xx.')
+                + ' §10: a SharedWorker script must be same-origin, so every `sync` host serves one.');
+            } else if (!exercised.ok) {
+              stream.es.close();
+              r.set('fail', 'Host serves /_/sync/worker.js but the worker ' + exercised.why + '.'
+                + ' §10: a page posts `subscribe` and the worker answers with that subscription\'s `cursor`.');
             } else {
               const sender = 'mhf-host-test';
               const sent = {};
@@ -676,8 +723,11 @@
               // The frames are already in flight; give them a moment to land before
               // asking what arrived.
               await new Promise((res) => setTimeout(res, 500));
-              live.es.close();
-              saved.es.close();
+              stream.es.close();
+              const live = { frames: stream.frames.live };
+              const saved = { frames: stream.frames.saved };
+              // In query order: §10 sends one cursor per subscription, sub 0 first.
+              const cursorFor = (i) => (stream.cursors[i] && stream.cursors[i].sub === i) ? stream.cursors[i] : null;
 
               const carries = (frames, field) =>
                 frames.some((f) => typeof f.html === 'string' && f.html.includes('sync-relay-' + field));
@@ -686,11 +736,15 @@
               const refused = relays.find((x) => !x.ok);
               if (wrote) r.set('fail', `A /_/sync {${wrote.field}} message changed the stored document. Only /_/save may write.`);
               else if (refused) r.set('fail', `Host declares sync but refused /_/sync {${refused.field}} (non-2xx).`);
-              else if (!carries(live.frames, 'snapshot')) r.set('fail', 'A {snapshot} was accepted but never reached the editor lane (§10: editors follow the snapshot).');
-              else if (!carries(saved.frames, 'document')) r.set('fail', 'A {document} was accepted but never reached the viewer lane (§10: viewers follow the document).');
+              else if (!cursorFor(0) || !cursorFor(1)) r.set('fail', 'The stream opened but did not send one `cursor` event per subscription in query order (§10: {"sub":0,…} then {"sub":1,…}).');
+              else if (cursorFor(0).error || cursorFor(1).error) r.set('fail', `The host refused a subscription to the document it just saved (${JSON.stringify(cursorFor(0).error || cursorFor(1).error)}).`);
+              else if (!carries(live.frames, 'snapshot')) r.set('fail', 'A {snapshot} was accepted but never reached the editor lane as an s0 event (§10: editors follow the snapshot).');
+              else if (!carries(saved.frames, 'document')) r.set('fail', 'A {document} was accepted but never reached the viewer lane as an s1 event (§10: viewers follow the document).');
               else if (carries(saved.frames, 'snapshot')) r.set('fail', "A {snapshot} reached the VIEWER lane. That is how an editor's toolbar ends up on a reader's screen (§10).");
               else if (carries(live.frames, 'document')) r.set('fail', 'A {document} reached the EDITOR lane, which is the wrong audience (§10).');
-              else r.set('pass', 'A {snapshot} reached the editors and a {document} the viewers, each on its own lane; the document on disk never changed.');
+              else r.set('pass', 'One stream, two subscriptions: a {snapshot} reached the editors as s0 and a {document} the viewers as s1, the worker '
+                + (exercised.skipped ? 'script is served (no SharedWorker in this browser to run it)' : 'answers a subscription')
+                + ', and the document on disk never changed.');
             }
           }
         } catch (e) { blockedOr(r, e); }

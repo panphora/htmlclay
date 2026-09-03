@@ -461,7 +461,7 @@ func TestFramesCarryAnSSEID(t *testing.T) {
 	h.relay("/tmp/a.html", "<html>peer</html>", "c1", "", nil)
 
 	raw := testutil.Receive(t, 10*time.Second, "a frame", sub.ch)
-	id, payload := splitFrame(t, raw)
+	id, payload := splitFrame(t, raw.frame)
 	if seq, _ := payload["seq"].(float64); int64(seq) != id {
 		t.Fatalf("SSE id %d does not match the payload seq %v", id, payload["seq"])
 	}
@@ -522,14 +522,14 @@ func TestEvictedSubscriberRecoversItsEventsOnReconnect(t *testing.T) {
 	for i := 0; i < subQueueSize+3; i++ {
 		h.relay("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "c1", "", nil)
 	}
-	testutil.Receive(t, 10*time.Second, "the overflowing subscriber to be evicted", sub.done)
+	testutil.Receive(t, 10*time.Second, "the overflowing subscriber to be evicted", sub.end.done)
 
 	// Drain what it did receive, then reconnect from there.
 	var lastSeen int64
 	for draining := true; draining; {
 		select {
 		case raw := <-sub.ch:
-			id, _ := splitFrame(t, raw)
+			id, _ := splitFrame(t, raw.frame)
 			lastSeen = id
 		default:
 			draining = false

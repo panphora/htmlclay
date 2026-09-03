@@ -124,6 +124,10 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	// is a rename for a caller that was already correct.
 	mux.HandleFunc("GET /_/sync", sameOrigin(s.handleLiveSyncStream))
 	mux.HandleFunc("POST /_/sync", sameOrigin(s.handleLiveSyncSave))
+	// Spec §10's third piece of `sync`: the worker script every tab on the origin
+	// shares one stream through. See sync_worker.go for why it sits outside the
+	// gate.
+	mux.HandleFunc("GET /_/sync/worker.js", s.handleSyncWorker)
 	// The pre-spec addresses, kept permanently rather than as a grace period. A saved
 	// document is a frozen client: the Collection dashboard opens this exact stream from
 	// inline page script, so every dashboard ever minted names this path and no library

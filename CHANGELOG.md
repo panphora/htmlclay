@@ -25,9 +25,22 @@ the first entry below before upgrading either side.
 - **The 415 on a save that is not a document answers `unsupported-type`.** It was
   `unsupported-media-type`, which is in the spec's registry nowhere; the upload route
   already answered the registered name.
+- **The six-tab limit is gone.** It was a browser limit the host documented as
+  unfixable; the shared stream under Added is the fix.
 
 ### Added
 
+- **One live-sync stream for every tab.** The `/_/sync` stream now carries any
+  number of documents and lanes at once, listed as `s=lane:since:document-url`, each
+  resuming from its own position, and the host serves a small worker at
+  `/_/sync/worker.js` through which every tab on the origin shares that one stream.
+  A browser allows six connections per origin and each tab used to hold one for the
+  life of the page, so the seventh tab of one project never loaded. With ClayJS
+  1.3.0 the tabs hold none. The one-document spelling still works for documents that
+  vendor an older runtime.
+- **The wire stream opens with a cursor for pages**, so a page whose stream drops
+  before any frame arrives can still resume from a position rather than from nothing.
+  Processes tailing the wire receive no cursor.
 - **`/_/meta` discovery.** A page can ask what the host supports rather than probing
   for it: the protocol version, the two scopes, and the capability list, which on this
   host is `conditional`, `receipts`, `sync` and `upload`. `format` is deliberately absent: this host

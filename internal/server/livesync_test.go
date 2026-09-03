@@ -27,8 +27,8 @@ func newSubscriber(key, lane string) *subscriber {
 	return &subscriber{
 		key:  key,
 		lane: lane,
-		ch:   make(chan []byte, subQueueSize),
-		done: make(chan struct{}),
+		ch:   make(chan queued, subQueueSize),
+		end:  newStreamEnd(),
 	}
 }
 
@@ -62,7 +62,7 @@ func splitFrame(t *testing.T, raw []byte) (int64, map[string]interface{}) {
 func waitFrame(t *testing.T, sub *subscriber, within time.Duration) map[string]interface{} {
 	t.Helper()
 	raw := testutil.Receive(t, within, "a frame", sub.ch)
-	_, out := splitFrame(t, raw)
+	_, out := splitFrame(t, raw.frame)
 	return out
 }
 
@@ -70,7 +70,7 @@ func expectNoFrame(t *testing.T, sub *subscriber, within time.Duration) {
 	t.Helper()
 	select {
 	case raw := <-sub.ch:
-		t.Fatalf("unexpected frame: %q", raw)
+		t.Fatalf("unexpected frame: %q", raw.frame)
 	case <-time.After(within):
 	}
 }
@@ -271,8 +271,8 @@ func TestExternalChangeEmbedsDiskHTMLUnescaped(t *testing.T) {
 	h.publishExternalChange("/tmp/a.html", "changed", "<html><body>disk</body></html>", "")
 
 	raw := testutil.Receive(t, 10*time.Second, "the notification frame", live.ch)
-	if !strings.Contains(string(raw), "<html><body>disk</body></html>") {
-		t.Fatalf("frame does not carry literal HTML (escaped?): %q", raw)
+	if !strings.Contains(string(raw.frame), "<html><body>disk</body></html>") {
+		t.Fatalf("frame does not carry literal HTML (escaped?): %q", raw.frame)
 	}
 }
 
@@ -312,7 +312,7 @@ func TestSlowSubscriberIsEvictedAndUnblocked(t *testing.T) {
 		h.relay("/tmp/a.html", fmt.Sprintf("<html>%d</html>", i), "c1", "", nil)
 	}
 
-	testutil.Receive(t, 10*time.Second, "an overflowed subscriber to be unblocked", sub.done)
+	testutil.Receive(t, 10*time.Second, "an overflowed subscriber to be unblocked", sub.end.done)
 	if h.subscriberCount("/tmp/a.html") != 0 {
 		t.Fatal("evicted subscriber is still registered")
 	}
@@ -328,7 +328,7 @@ func TestHubShutdownClosesEveryStream(t *testing.T) {
 	h.shutdown()
 
 	for name, sub := range map[string]*subscriber{"a": a, "b": b} {
-		testutil.Receive(t, 10*time.Second, "subscriber "+name+" to be closed by shutdown", sub.done)
+		testutil.Receive(t, 10*time.Second, "subscriber "+name+" to be closed by shutdown", sub.end.done)
 	}
 	if h.subscriberCount("/tmp/a.html") != 0 || h.subscriberCount("/tmp/b.html") != 0 {
 		t.Fatal("subscribers survived shutdown")
@@ -1185,7 +1185,7 @@ func TestExternalChangeDeliveryMeansSomeoneTookTheFrame(t *testing.T) {
 
 	// A subscriber whose bounded queue is full took nothing either, whatever the
 	// hub retained on its behalf.
-	slow := &subscriber{key: path, lane: laneLive, ch: make(chan []byte, 1), done: make(chan struct{})}
+	slow := &subscriber{key: path, lane: laneLive, ch: make(chan queued, 1), end: newStreamEnd()}
 	h.add(slow)
 	h.publishExternalChange(path, "changed", "<html>d</html>", "")
 	delivered, evicted := h.publishExternalChange(path, "changed", "<html>e</html>", "")

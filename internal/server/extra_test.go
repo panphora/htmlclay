@@ -726,19 +726,6 @@ func TestSidecarEncoding(t *testing.T) {
 	}
 }
 
-// The six-connection HTTP/1.1 cap is a real, documented constraint of the
-// transport: an SSE stream holds one connection for the life of the page, so a
-// seventh request queues behind six open tabs.
-//
-// Deliberately NOT exercised with Go's http.Client, which has no per-host
-// connection cap and therefore cannot reproduce the limit at all. Driving real
-// tabs with a browser is the only honest way to observe it.
-func TestTabLimitIsDocumented(t *testing.T) {
-	if maxUsefulTabs != 6 {
-		t.Fatalf("documented tab limit = %d, want the browser's 6", maxUsefulTabs)
-	}
-}
-
 // os.Root follows relative in-root symlinks, so a directory component swapped
 // for such a symlink BETWEEN the serve path being resolved and the capability
 // open that acts on it can redirect the read into the internal tree while the
