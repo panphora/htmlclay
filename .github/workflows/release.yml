@@ -1,5 +1,12 @@
 name: Release
 
+# Names the run after what it is releasing AND the commit it came from, so a
+# specific release can be found again later without matching on timestamps.
+# Two releases dispatched close together are otherwise indistinguishable in the
+# run list, and picking the wrong one means watching someone else's build go
+# green and then tagging an untested commit.
+run-name: "Release ${{ inputs.version }} (${{ inputs.source_sha || github.sha }})"
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,6 +14,36 @@ on:
         description: "Version number (without v prefix, e.g. 1.2.3)"
         required: true
         type: string
+      source_sha:
+        description: "Exact commit to build. Defaults to the dispatched ref's head."
+        required: false
+        type: string
+
+# One release at a time, and never cancel one in flight: a cancelled run can
+# leave artifacts uploaded to R2 with no manifest naming them, and notarization
+# in particular is not safe to interrupt.
+#
+# That is the ONLY guarantee here, and the comment used to claim more. GitHub
+# keeps a single pending slot, so of two runs waiting behind a third the older
+# is cancelled rather than queued, and it does not promise that queued runs
+# start in dispatch order. Neither matters for how releases actually happen
+# (one operator, minutes apart, each watching its own run), and both would if
+# releases were ever dispatched in a batch.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Every job builds this one commit rather than "whatever main is now". Without
+  # it, a push landing between dispatch and checkout ships code the test gate
+  # never saw, and the tag then claims a release that was never built.
+  #
+  # The checkout steps below spell this expression out again rather than reading
+  # SOURCE_SHA. Whether workflow-level env reaches a step's `with:` block is a
+  # context-availability rule, and this workflow signs and notarizes: a wrong
+  # guess there resolves to an empty ref and is discovered mid-release. `inputs`
+  # and `github` are available everywhere, so the checkouts use those directly.
+  SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
 
 jobs:
   # ── Test gate: nothing is released unless the suite passes on every OS ──
@@ -19,7 +56,28 @@ jobs:
     # for six hours instead of failing it.
     timeout-minutes: 20
     steps:
+      # Before the first checkout, because checkout is what would resolve a
+      # moving name. `actions/checkout` takes a branch or tag as happily as a
+      # commit, so `source_sha: refs/heads/main` would let these three jobs
+      # resolve to different trees, and would then be written into the manifest
+      # as though it identified the build. It identifies nothing: locally
+      # `git diff refs/heads/main..HEAD` is empty, so the board would read
+      # CURRENT with real work unshipped.
+      - name: Refuse a source_sha that is not a full commit id
+        if: inputs.source_sha != ''
+        shell: bash
+        # Through env, never interpolated into the script: a `run:` block that
+        # pastes a dispatch input straight into shell is a command injection.
+        env:
+          CLAIMED_SHA: ${{ inputs.source_sha }}
+        run: |
+          if ! printf '%s' "$CLAIMED_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "source_sha must be a full 40-character commit id: $CLAIMED_SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
@@ -34,6 +92,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
       - run: python3 scripts/ablation-check.py LICENSE
 
   # ── Linux: build binary, package as tar.gz ──
@@ -46,6 +106,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - uses: actions/setup-go@v5
         with:
@@ -91,6 +153,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - uses: actions/setup-go@v5
         with:
@@ -180,6 +244,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - uses: actions/setup-go@v5
         with:
@@ -294,22 +360,37 @@ jobs:
           # filename-keyed object out of it.
           SHA256=$(awk '{print $2" "$1}' SHA256SUMS | jq -R -s -c \
             'split("\n") | map(select(. != "")) | map(split(" ")) | map({(.[0]): .[1]}) | add')
+          # `schema` and `sourceSha` are additive. Every shipped binary decodes
+          # this feed with a two-field struct and no DisallowUnknownFields
+          # (internal/update/update.go), so new keys are ignored by installs
+          # already in the wild, back to the oldest release.
+          #
+          # sourceSha is what lets a tool tell "this build is what the tree
+          # holds" from "this build is older than the tree" without guessing
+          # from a tag. The tag is written AFTER this file, by a later step, so
+          # it cannot be the authority here.
           jq -n \
+            --argjson schema 2 \
             --arg latest "${{ inputs.version }}" \
+            --arg sourceSha "${{ env.SOURCE_SHA }}" \
             --arg url "https://htmlclay.com/#downloads" \
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson files "$FILES" \
             --argjson sha256 "$SHA256" \
-            '{latest: $latest, url: $url, date: $date, files: $files, sha256: $sha256}' > htmlclay-release-info.json
+            '{schema: $schema, latest: $latest, sourceSha: $sourceSha, url: $url, date: $date, files: $files, sha256: $sha256}' > htmlclay-release-info.json
 
           # Both files below are stable-named and rewritten by every release, and
           # both are read to decide something about the CURRENT one (the updater
           # checks for a new version, SHA256SUMS is what a download is verified
           # against), so neither may be served from the previous release.
-          aws s3 cp htmlclay-release-info.json "s3://${R2_BUCKET}/htmlclay-release-info.json" \
-            --endpoint-url "$ENDPOINT" \
-            --content-type "application/json" \
-            --cache-control "public, max-age=60"
+          #
+          # ORDER IS LOAD-BEARING: the manifest goes LAST, and nothing whose
+          # failure would mean the release is incomplete may follow it. It is not
+          # only the update feed, it is the receipt hypersave reads to decide
+          # whether a release happened. Uploaded first, a failing SHA256SUMS
+          # upload leaves a red workflow, no git tag and an unstamped website
+          # behind a manifest already naming the new version, so the release
+          # reads as done and the next run skips the stage.
 
           # text/plain so the download page can link it and a browser shows it
           # rather than saving an extensionless file.
@@ -318,4 +399,9 @@ jobs:
             --content-type "text/plain" \
             --cache-control "public, max-age=60"
 
-          echo "Uploaded htmlclay-release-info.json and SHA256SUMS"
+          aws s3 cp htmlclay-release-info.json "s3://${R2_BUCKET}/htmlclay-release-info.json" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/json" \
+            --cache-control "public, max-age=60"
+
+          echo "Uploaded SHA256SUMS, then htmlclay-release-info.json"

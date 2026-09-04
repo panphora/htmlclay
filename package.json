@@ -2,11 +2,9 @@
   "name": "htmlclay",
   "version": "1.0.0",
   "private": true,
-  "description": "Tooling wrapper for the htmlclay Go app: Go tests plus the wrangler deploy for htmlclay.com. Not the app itself.",
+  "description": "Tooling wrapper for the htmlclay Go app: Go tests and the local Worker preview. htmlclay.com deploys itself from git on push to main, so there is no deploy command. Not the app itself.",
   "scripts": {
     "test": "go test ./...",
-    "predeploy": "npm test",
-    "deploy": "wrangler deploy && git rev-parse HEAD > .deploy",
     "dev": "wrangler dev"
   },
   "repository": {
