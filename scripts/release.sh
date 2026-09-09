@@ -21,23 +21,79 @@ warn()    { log "${YELLOW}⚠ $1${RESET}"; }
 error()   { log "${RED}✗ $1${RESET}"; }
 section() { log "\n${CYAN}══════════════════════════════════════════════════${RESET}"; log "${CYAN}  $1${RESET}"; log "${CYAN}══════════════════════════════════════════════════${RESET}\n"; }
 
+# Component-wise, because macOS `sort -V` is not dependable. The FIRST argument
+# has matched VERSION_RE; the second is CURRENT_VERSION, read out of main.go and
+# never validated, so a hand-edited "1.9.0-dev" there makes `[` print "integer
+# expression expected" and the comparison answer false. That refuses, which is
+# the safe direction, and the bump path dies on the same input at $((PATCH + 1)).
+#
+# Only ever called in an `if !` condition, which is what suppresses errexit
+# inside it. A bare call would take the whole script down on a false answer.
+version_above() {
+  IFS=. read -r a1 a2 a3 <<< "$1"
+  IFS=. read -r b1 b2 b3 <<< "$2"
+  if [ "$a1" -ne "$b1" ]; then [ "$a1" -gt "$b1" ]; return; fi
+  if [ "$a2" -ne "$b2" ]; then [ "$a2" -gt "$b2" ]; return; fi
+  [ "$a3" -gt "$b3" ]
+}
+
 # ── Parse args ──
+# Three plain integers, no leading zeros, no `v`, no pre-release suffix. The
+# value reaches a sed pattern, a commit message, a tag, release.yml's `version`
+# input, a linker flag, the dmg filename and the R2 manifest's `latest`, and two
+# of those degrade silently on a looser string: the in-app update checker
+# (internal/update/update.go:47) Atois each dot-separated part and discards the
+# error, so 1.9.0-rc1 compares equal to 1.9.0, and 1.09.0 also compares equal
+# while tagging as v1.09.0.
+VERSION_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+# Windows builds both version resources from this number, and `winres` packs each
+# component into a uint16 without checking overflow: 1.65536.0 ships a
+# FileVersion of 1.0.0.0 while every string field still reads 1.65536.0. A regex
+# cannot express a bound, so this is a separate check, and it runs on the BUMPED
+# number too rather than only on what was typed.
+VERSION_COMPONENT_MAX=65535
+version_fits() {
+  IFS=. read -r c1 c2 c3 <<< "$1"
+  [ "$c1" -le "$VERSION_COMPONENT_MAX" ] &&
+  [ "$c2" -le "$VERSION_COMPONENT_MAX" ] &&
+  [ "$c3" -le "$VERSION_COMPONENT_MAX" ]
+}
+
 BUMP_TYPE=""
+EXPLICIT_VERSION=""
+VERSION_LABEL=""
 RESUME=false
 for arg in "$@"; do
   case "$arg" in
     --major) BUMP_TYPE="major" ;;
     --minor) BUMP_TYPE="minor" ;;
     --patch) BUMP_TYPE="patch" ;;
+    --version=*)
+      EXPLICIT_VERSION="${arg#--version=}"
+      if ! [[ "$EXPLICIT_VERSION" =~ $VERSION_RE ]]; then
+        error "--version needs X.Y.Z: plain numbers, no v prefix, no suffix (got '${EXPLICIT_VERSION}')"
+        exit 1
+      fi
+      if ! version_fits "$EXPLICIT_VERSION"; then
+        error "--version=${EXPLICIT_VERSION} has a component above ${VERSION_COMPONENT_MAX},"
+        error "which the Windows version resource silently truncates to a wrong FileVersion."
+        exit 1
+      fi ;;
+    # On most tools a bare --version prints the version. Here it can only be a
+    # half-typed --version=X.Y.Z, so say so rather than "Unknown argument".
+    --version) error "--version needs a value: --version=1.9.0"; exit 1 ;;
     --resume) RESUME=true ;;
     --help|-h)
       echo "Usage: ./scripts/release.sh [--major|--minor|--patch]"
+      echo "       ./scripts/release.sh --version=X.Y.Z"
       echo "       ./scripts/release.sh --resume"
       echo ""
-      echo "  --major    Major version bump (breaking changes)"
-      echo "  --minor    Minor version bump (new features)"
-      echo "  --patch    Patch version bump (bug fixes)"
-      echo "  --resume   Finish the release already in the source, without bumping"
+      echo "  --major        Major version bump (breaking changes)"
+      echo "  --minor        Minor version bump (new features)"
+      echo "  --patch        Patch version bump (bug fixes)"
+      echo "  --version=     Release exactly this version, e.g. --version=1.9.0"
+      echo "  --resume       Finish the release already in the source, without bumping"
       echo ""
       echo "If no option is provided, defaults to --patch."
       exit 0
@@ -51,7 +107,17 @@ if [ "$RESUME" = true ] && [ -n "$BUMP_TYPE" ]; then
   exit 1
 fi
 
-if [ -z "$BUMP_TYPE" ] && [ "$RESUME" != true ]; then
+if [ -n "$EXPLICIT_VERSION" ] && [ -n "$BUMP_TYPE" ]; then
+  error "--version names the version outright, so it cannot take a bump."
+  exit 1
+fi
+
+if [ "$RESUME" = true ] && [ -n "$EXPLICIT_VERSION" ]; then
+  error "--resume finishes the version already in the source, so it cannot take a version."
+  exit 1
+fi
+
+if [ -z "$BUMP_TYPE" ] && [ -z "$EXPLICIT_VERSION" ] && [ "$RESUME" != true ]; then
   BUMP_TYPE="patch"
   info "No bump type specified, defaulting to --patch"
 fi
@@ -130,6 +196,19 @@ if [ "$RESUME" = true ]; then
   fi
   NEW_VERSION="$CURRENT_VERSION"
   success "Resuming the unfinished release of v${NEW_VERSION}"
+elif [ -n "$EXPLICIT_VERSION" ]; then
+  if ! version_above "$EXPLICIT_VERSION" "$CURRENT_VERSION"; then
+    if [ "$EXPLICIT_VERSION" = "$CURRENT_VERSION" ]; then
+      error "v${CURRENT_VERSION} is already released (it is tagged). Pick a higher version."
+    else
+      error "--version=${EXPLICIT_VERSION} is below the current ${CURRENT_VERSION}."
+      error "The update feed compares numerically, so every installed copy would ignore"
+      error "it, and the website would advertise a downgrade."
+    fi
+    exit 1
+  fi
+  NEW_VERSION="$EXPLICIT_VERSION"
+  VERSION_LABEL="explicit"
 else
   IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
   case "$BUMP_TYPE" in
@@ -138,7 +217,31 @@ else
     patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
   esac
 
-  success "Version: ${CURRENT_VERSION} → ${NEW_VERSION} (${BUMP_TYPE})"
+  VERSION_LABEL="$BUMP_TYPE"
+fi
+
+# Covers both the bump path and the explicit path. Without it a stale checkout
+# commits locally and dies at Step 3's push as a non-fast-forward, which is safe
+# but leaves a commit to unpick and never says why. Tags were fetched above.
+if [ "$RESUME" != true ]; then
+  # Catches the bump path too: a version reachable only by arithmetic still
+  # reaches the same Windows resource.
+  if ! version_fits "$NEW_VERSION"; then
+    error "v${NEW_VERSION} has a component above ${VERSION_COMPONENT_MAX},"
+    error "which the Windows version resource silently truncates to a wrong FileVersion."
+    exit 1
+  fi
+
+  if git rev-parse -q --verify "refs/tags/v${NEW_VERSION}^{commit}" >/dev/null 2>&1; then
+    error "v${NEW_VERSION} is already tagged, so it already shipped from somewhere."
+    error "This checkout is probably behind: git pull, then release again."
+    exit 1
+  fi
+
+  # Announced only once nothing above can still refuse it. Printed before
+  # the tag check, a refusal read as "it worked, then it failed" over a run
+  # in which nothing had happened at all.
+  success "Version: ${CURRENT_VERSION} → ${NEW_VERSION} (${VERSION_LABEL})"
 
   # Update version in cmd/htmlclay/main.go
   sed -i '' "s/var version = \"${CURRENT_VERSION}\"/var version = \"${NEW_VERSION}\"/" cmd/htmlclay/main.go

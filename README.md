@@ -369,7 +369,7 @@ on a machine with neither tool.
 ### Releasing
 
 ```bash
-./scripts/release.sh --minor   # or --major, or --patch (the default)
+./scripts/release.sh --minor   # or --major, --patch (the default), or --version=1.9.0
 ```
 
 That bumps the version in `cmd/htmlclay/main.go`, tags and pushes, triggers the CI release workflow (test on three platforms, sign, notarize, upload to R2), publishes the website, and installs the new build into `/Applications`.
