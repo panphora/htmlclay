@@ -132,7 +132,16 @@ func (c *Config) AddHelperProgram(name, path string) (HelperProgram, error) {
 	if err != nil {
 		return HelperProgram{}, err
 	}
-	p := HelperProgram{ID: id, Name: name, Path: path, AddedAt: time.Now().UnixNano()}
+	// ResolveHelper proposes the earliest registration of a name, and two
+	// registrations inside one clock tick would otherwise be ordered by their
+	// random IDs. Windows advances the wall clock once per interrupt.
+	addedAt := time.Now().UnixNano()
+	for _, existing := range c.HelperPrograms {
+		if existing.AddedAt >= addedAt {
+			addedAt = existing.AddedAt + 1
+		}
+	}
+	p := HelperProgram{ID: id, Name: name, Path: path, AddedAt: addedAt}
 	c.HelperPrograms = append(c.HelperPrograms, p)
 	sortHelperPrograms(c.HelperPrograms)
 	return p, nil

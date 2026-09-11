@@ -56,8 +56,9 @@ esac
 stop_app "$PID"
 cp "$LAB/htmlclay.log" "$LAB/htmlclay-zenity.log"; keep "$LAB/htmlclay-zenity.log"
 
-# B. stub zenity answering "Trust this folder": served, and the folder is now trusted.
-printf '#!/bin/sh\necho "Trust this folder"\nexit 1\n' > "$STUBS/zenity"; chmod +x "$STUBS/zenity"
+# B. stub zenity clicking the extra button (the app's own "Trust This Folder" label, echoed
+# back the way real zenity reports it): served, and the folder is now trusted.
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --extra-button ] && { echo "$2"; exit 1; }; shift; done\nexit 1\n' > "$STUBS/zenity"; chmod +x "$STUBS/zenity"
 open_site trust
 ask_asset
 [ "$(cat "$LAB/asset.code")" = "200" ] || fail "[trust] held request got $(cat "$LAB/asset.code"), expected 200"
@@ -65,7 +66,7 @@ grep -q secret-asset "$LAB/asset.body" || fail "[trust] 200 but wrong body"
 sleep 1
 trusted "$OTHER" || fail "[trust] folder not recorded in config: $(cat "$CONFIG" 2>/dev/null)"
 stop_app "$PID"
-pass "Trust this folder: request served and the folder recorded in config"
+pass "Trust This Folder: request served and the folder recorded in config"
 
 # C. stub zenity answering Deny: the fixed 403, and no second prompt for the same tree.
 printf '#!/bin/sh\nexit 1\n' > "$STUBS/zenity"

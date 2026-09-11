@@ -27,16 +27,6 @@ func writeHelperDocument(t *testing.T, path string, names ...string) {
 	}
 }
 
-func writeStructuredHelper(t *testing.T, lines ...string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "helper")
-	body := "#!/bin/sh\n" + strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(body), 0755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func helperObserver(t *testing.T, srv *Server, file string) *wireSub {
 	t.Helper()
 	sub := &wireSub{key: file, ch: make(chan []byte, 64), done: make(chan struct{})}
@@ -93,20 +83,8 @@ func TestAttachHelpersDispatchesAndReusesCompletedID(t *testing.T) {
 	srv, file := setupLiveSyncTest(t)
 	t.Cleanup(func() { srv.wire.shutdown() })
 	writeHelperDocument(t, file.AbsPath, "search", "ocr")
-	counter := filepath.Join(t.TempDir(), "count")
-	programPath := writeStructuredHelper(t,
-		"IFS= read -r request",
-		"case \"$request\" in",
-		"  *'\"helperProtocol\":1'*) ;;",
-		"  *) printf '{\"type\":\"error\",\"code\":\"unstamped\",\"message\":\"missing helper protocol\"}\\n'; exit 0 ;;",
-		"esac",
-		"count=0",
-		fmt.Sprintf("if [ -f '%s' ]; then IFS= read -r count < '%s'; fi", counter, counter),
-		"count=$((count + 1))",
-		fmt.Sprintf("printf '%%s\\n' \"$count\" > '%s'", counter),
-		"printf '{\"type\":\"result\",\"value\":{\"count\":%s,\"cwd\":\"%s\"}}\\n' \"$count\" \"$PWD\"",
-	)
-	program := helperProgram("search", programPath)
+	t.Setenv(serverHelperArg, filepath.Join(t.TempDir(), "count"))
+	program := helperProgram("search", structuredHelper(t, "count"))
 	allowed := map[string]config.HelperProgram{"search": program}
 	denied := []string{"ocr"}
 	if err := srv.AttachHelpers(file.AbsPath, allowed, denied); err != nil {
@@ -202,7 +180,7 @@ func TestDispatcherRefusesNamesWithoutPrompting(t *testing.T) {
 	srv, file := setupLiveSyncTest(t)
 	t.Cleanup(func() { srv.wire.shutdown() })
 	writeHelperDocument(t, file.AbsPath, "search", "ocr")
-	program := helperProgram("search", writeStructuredHelper(t, "printf '{\"type\":\"result\",\"value\":null}\\n'"))
+	program := helperProgram("search", structuredHelper(t, "result-null"))
 	if err := srv.AttachHelpers(file.AbsPath, map[string]config.HelperProgram{"search": program}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +213,7 @@ func TestExternalRawHandlerStaysAttachedAndRejectsNamedCalls(t *testing.T) {
 	if _, _, err := srv.wire.add(handler, 0); err != nil {
 		t.Fatal(err)
 	}
-	program := helperProgram("search", writeStructuredHelper(t, "printf '{\"type\":\"result\",\"value\":null}\\n'"))
+	program := helperProgram("search", structuredHelper(t, "result-null"))
 	if err := srv.AttachHelpers(file.AbsPath, map[string]config.HelperProgram{"search": program}, nil); !errors.Is(err, errHelperHandlerTaken) {
 		t.Fatalf("AttachHelpers error = %v, want external handler conflict", err)
 	}
@@ -292,11 +270,7 @@ func TestRevocationCancelsAcceptedEditAndReleasesWatcher(t *testing.T) {
 	srv, file := setupLiveSyncTest(t)
 	t.Cleanup(func() { srv.wire.shutdown() })
 	writeHelperDocument(t, file.AbsPath, "search")
-	program := helperProgram("search", writeStructuredHelper(t,
-		"trap 'exit 0' TERM",
-		"printf '{\"type\":\"status\",\"text\":\"started\"}\\n'",
-		"while :; do sleep 1; done",
-	))
+	program := helperProgram("search", structuredHelper(t, "hold"))
 	if err := srv.AttachHelpers(file.AbsPath, map[string]config.HelperProgram{"search": program}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +301,7 @@ func TestEvictedDispatcherCannotPublishIntoAReplacementHandler(t *testing.T) {
 	srv, file := setupLiveSyncTest(t)
 	t.Cleanup(func() { srv.wire.shutdown() })
 	writeHelperDocument(t, file.AbsPath, "search")
-	program := helperProgram("search", writeStructuredHelper(t, "printf '{\"type\":\"result\",\"value\":null}\\n'"))
+	program := helperProgram("search", structuredHelper(t, "result-null"))
 	if err := srv.AttachHelpers(file.AbsPath, map[string]config.HelperProgram{"search": program}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +338,7 @@ func TestEvictedDispatcherCannotPublishIntoAReplacementHandler(t *testing.T) {
 func TestDispatcherStopsWhenWireShutsDown(t *testing.T) {
 	srv, file := setupLiveSyncTest(t)
 	writeHelperDocument(t, file.AbsPath, "search")
-	program := helperProgram("search", writeStructuredHelper(t, "printf '{\"type\":\"result\",\"value\":null}\\n'"))
+	program := helperProgram("search", structuredHelper(t, "result-null"))
 	if err := srv.AttachHelpers(file.AbsPath, map[string]config.HelperProgram{"search": program}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +415,7 @@ func TestHelpersComeBackAfterTheExternalHandlerLeaves(t *testing.T) {
 	if _, _, err := srv.wire.add(handler, 0); err != nil {
 		t.Fatal(err)
 	}
-	program := helperProgram("search", writeStructuredHelper(t, "printf '{\"type\":\"result\",\"value\":null}\\n'"))
+	program := helperProgram("search", structuredHelper(t, "result-null"))
 	allowed := map[string]config.HelperProgram{"search": program}
 	if err := srv.AttachHelpers(file.AbsPath, allowed, nil); !errors.Is(err, errHelperHandlerTaken) {
 		t.Fatalf("AttachHelpers error = %v, want external handler conflict", err)
@@ -463,7 +437,7 @@ func TestDiscoveryTellsARefusalApartFromAnUndecidedHelper(t *testing.T) {
 	t.Cleanup(func() { srv.wire.shutdown() })
 	t.Cleanup(func() { srv.DetachHelpers(file.AbsPath) })
 	writeHelperDocument(t, file.AbsPath, "search", "ocr", "translate", "index")
-	program := helperProgram("search", writeStructuredHelper(t, "printf '{\"type\":\"result\",\"value\":null}\\n'"))
+	program := helperProgram("search", structuredHelper(t, "result-null"))
 	gone := helperProgram("index", filepath.Join(t.TempDir(), "unregistered"))
 	allowed := map[string]config.HelperProgram{"search": program, "index": gone}
 	// ocr was refused. translate was never decided: the user closed the picker,
@@ -498,11 +472,8 @@ func TestADuplicateRefusalDoesNotBecomeTheLiveRequestsOutcome(t *testing.T) {
 	t.Cleanup(func() { srv.DetachHelpers(file.AbsPath) })
 	writeHelperDocument(t, file.AbsPath, "search")
 	release := filepath.Join(t.TempDir(), "release")
-	program := helperProgram("search", writeStructuredHelper(t,
-		"printf '{\"type\":\"status\",\"text\":\"running\"}\\n'",
-		fmt.Sprintf("while [ ! -f '%s' ]; do sleep 0.05; done", release),
-		"printf '{\"type\":\"result\",\"value\":{\"real\":true}}\\n'",
-	))
+	t.Setenv(serverHelperArg, release)
+	program := helperProgram("search", structuredHelper(t, "release"))
 	if err := srv.AttachHelpers(file.AbsPath, map[string]config.HelperProgram{"search": program}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -549,19 +520,12 @@ func TestADuplicateRefusalDoesNotBecomeTheLiveRequestsOutcome(t *testing.T) {
 	}
 }
 
-
 func TestAChildReadsTheDocumentModeTheHostResolved(t *testing.T) {
 	srv, file := setupLiveSyncTest(t)
 	t.Cleanup(func() { srv.wire.shutdown() })
 	t.Cleanup(func() { srv.DetachHelpers(file.AbsPath) })
 	writeHelperDocument(t, file.AbsPath, "search")
-	program := helperProgram("search", writeStructuredHelper(t,
-		"IFS= read -r request",
-		"case \"$request\" in",
-		"  *'\"document\":\"none\"'*) printf '{\"type\":\"result\",\"value\":null}\\n' ;;",
-		"  *) printf '{\"type\":\"error\",\"code\":\"unstamped\",\"message\":\"the request carried no resolved document mode\"}\\n' ;;",
-		"esac",
-	))
+	program := helperProgram("search", structuredHelper(t, "document-mode"))
 	if err := srv.AttachHelpers(file.AbsPath, map[string]config.HelperProgram{"search": program}, nil); err != nil {
 		t.Fatal(err)
 	}

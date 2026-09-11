@@ -148,8 +148,11 @@ variables.
 **Out:** every line it prints becomes a `wire/status` frame the page can display.
 Exiting `0` becomes `wire/done`, any other code becomes `wire/error`.
 
-**Cancel:** the process is sent `SIGTERM` (Windows has no deliverable SIGTERM, so
-it is killed there). A handler that wants to finish its write can trap it.
+**Cancel:** the process is asked to stop first: `SIGTERM` on macOS and Linux,
+Ctrl+Break on Windows. A handler that wants to finish its write can catch it; one
+still running five seconds later is killed. A `.cmd` handler is the exception:
+`cmd.exe` stops at its own "Terminate batch job" prompt and takes the kill, while
+the program the batch started receives the event.
 
 **On the CLI's own stderr:** the handler's stderr, each line prefixed with the
 short request id, and then one line per request saying how it ended (`done`,

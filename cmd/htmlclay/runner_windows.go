@@ -23,5 +23,3 @@ func launchArgv(path string) ([]string, *syscall.SysProcAttr) {
 	cmdLine := fmt.Sprintf(`%s /d /s /c ""%s""`, syscall.EscapeArg(interpreter), path)
 	return argv, &syscall.SysProcAttr{CmdLine: cmdLine}
 }
-
-var helperChildStop os.Signal = os.Kill

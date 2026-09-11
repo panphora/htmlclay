@@ -297,7 +297,8 @@ func command(ctx context.Context, spec Spec, argv []string, sys *syscall.SysProc
 	cmd.Env = spec.Env
 	cmd.Stdin = bytes.NewReader(spec.Stdin)
 	cmd.Stderr = spec.Stderr
-	cmd.Cancel = func() error { return cmd.Process.Signal(childStop) }
+	// prepareStop may add creation flags, so it runs after SysProcAttr is set.
+	cmd.Cancel = prepareStop(cmd)
 	cmd.WaitDelay = waitDelay
 	return cmd
 }
