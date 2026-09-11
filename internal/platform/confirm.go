@@ -7,31 +7,47 @@ const (
 	// ConfirmDeny is also the fail-closed default: any error, timeout, or
 	// unsupported platform resolves to Deny so access is never granted by accident.
 	ConfirmDeny ConfirmChoice = iota
+	// ConfirmAllowOnce is the narrower of the two grants: the second button.
 	ConfirmAllowOnce
-	// ConfirmTrustFolder is the durable choice: allow this read AND remember the
-	// folder as trusted, so files opened from inside it stop asking. Platforms with
-	// no clean third button degrade it to ConfirmAllowOnce, which errs toward less
-	// permission rather than more.
-	ConfirmTrustFolder
+	// ConfirmAllowAlways is the wider, durable grant: the third button. What it
+	// widens to is the caller's business, not this package's. The read prompt uses
+	// it to remember a folder as trusted; the document-programs prompt uses it to
+	// allow a program for every document. Platforms with no clean third button
+	// degrade it to ConfirmAllowOnce, which errs toward less permission rather
+	// than more.
+	ConfirmAllowAlways
 )
 
 func (c ConfirmChoice) String() string {
 	switch c {
 	case ConfirmAllowOnce:
 		return "allow-once"
-	case ConfirmTrustFolder:
-		return "trust-folder"
+	case ConfirmAllowAlways:
+		return "allow-always"
 	default:
 		return "deny"
 	}
+}
+
+// ConfirmLabels names the two affirmative buttons of the three-button dialog.
+// Every caller supplies its own, because one dialog shape now backs two
+// unrelated grants, and a button that describes the other one is worse than no
+// button at all: "Trust this folder" over a prompt that actually registers a
+// program tells the user the wrong thing about what they are approving. There
+// is deliberately no default.
+type ConfirmLabels struct {
+	// Allow labels the narrower grant and comes back as ConfirmAllowOnce.
+	Allow string
+	// Always labels the wider, durable grant and comes back as ConfirmAllowAlways.
+	Always string
 }
 
 // Confirm shows a modal, foreground native dialog for a permission grant and
 // returns the user's choice. It is always a real OS dialog, never page content,
 // so a served page cannot spoof, style, obscure, or auto-confirm it. On any
 // error or unsupported platform it fails closed to ConfirmDeny.
-func Confirm(title, message string) (ConfirmChoice, error) {
-	return confirmDialog(title, message)
+func Confirm(title, message string, labels ConfirmLabels) (ConfirmChoice, error) {
+	return confirmDialog(title, message, labels)
 }
 
 // ConfirmWithButtons shows a modal, foreground native dialog with exactly two

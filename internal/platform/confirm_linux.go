@@ -29,13 +29,15 @@ const (
 // present the grant fails closed to ConfirmDeny rather than silently allowing.
 //
 // zenity prints the extra-button label to stdout when it is clicked, so the
-// stdout check runs before the exit-code check: "Trust this folder" maps to
-// ConfirmTrustFolder, a zero exit maps to ConfirmAllowOnce, and any non-zero
-// exit (Deny, window close, timeout, or a launch failure) maps to ConfirmDeny.
+// stdout check runs before the exit-code check: stdout equal to labels.Always
+// maps to ConfirmAllowAlways, a zero exit maps to ConfirmAllowOnce, and any
+// non-zero exit (Deny, window close, timeout, or a launch failure) maps to
+// ConfirmDeny. Only "Deny" is fixed here; the caller names the two affirmative
+// buttons, because the same shape asks two different questions.
 //
 // --no-markup is passed so a folder name containing Pango markup cannot restyle or
 // rewrite the prompt text; the label is rendered literally.
-func confirmDialog(title, message string) (ConfirmChoice, error) {
+func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dialogTimeout)
 	defer cancel()
 
@@ -45,12 +47,12 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 			"--no-markup",
 			"--title", title,
 			"--text", message,
-			"--ok-label", "Allow Once",
-			"--extra-button", "Trust this folder",
+			"--ok-label", labels.Allow,
+			"--extra-button", labels.Always,
 			"--cancel-label", "Deny",
 		).Output()
-		if strings.Contains(strings.TrimSpace(string(out)), "Trust this folder") {
-			return ConfirmTrustFolder, nil
+		if labels.Always != "" && strings.TrimSpace(string(out)) == labels.Always {
+			return ConfirmAllowAlways, nil
 		}
 		if err != nil {
 			return ConfirmDeny, nil
@@ -58,10 +60,12 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 		return ConfirmAllowOnce, nil
 	}
 
-	// kdialog has no clean third button, so ConfirmTrustFolder degrades to
-	// ConfirmAllowOnce here; the tray's own Add Trusted Folder flow is still the
-	// full persistent-grant path, so this is acceptable. Yes maps to
-	// ConfirmAllowOnce, No/close maps to ConfirmDeny.
+	// kdialog has no clean third button, so ConfirmAllowAlways degrades to
+	// ConfirmAllowOnce here, and its fixed Yes/No wording means labels.Allow is
+	// not shown either; the message text is what describes the grant on this
+	// path. The tray's own Add Trusted Folder flow is still the full
+	// persistent-grant path, so this is acceptable. Yes maps to ConfirmAllowOnce,
+	// No/close maps to ConfirmDeny.
 	if bin, err := exec.LookPath("kdialog"); err == nil {
 		if err := exec.CommandContext(ctx, bin, "--title", title, "--warningyesno", message).Run(); err != nil {
 			return ConfirmDeny, nil

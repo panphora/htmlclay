@@ -1505,6 +1505,10 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "unknown page")
 		return
 	}
+	if s.HelpersBound(f.AbsPath) {
+		s.writeError(w, http.StatusForbidden, "live sync disabled for helper-bound document")
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxLiveSyncSize)
 	body, err := io.ReadAll(r.Body)
@@ -1639,6 +1643,13 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.helperBindings.mu.RLock()
+	if s.helperBindings.byFile[f.AbsPath].bound {
+		s.helperBindings.mu.RUnlock()
+		s.writeError(w, http.StatusForbidden, "live sync disabled for helper-bound document")
+		return
+	}
+
 	if lane == laneSaved {
 		// Viewers, on the same lane a save publishes to. Nothing is written: §10 is
 		// flat about it, and the usual flow needs no client relay here at all, since
@@ -1653,6 +1664,7 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.coord.relay(f, relayHTML, payload.Sender, payload.Etag, identityMap)
 	}
+	s.helperBindings.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

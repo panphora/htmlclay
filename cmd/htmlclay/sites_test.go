@@ -46,7 +46,7 @@ func trustFolderConfirm(_, _ string, allowTrust bool) (platform.ConfirmChoice, e
 	if !allowTrust {
 		return platform.ConfirmDeny, nil
 	}
-	return platform.ConfirmTrustFolder, nil
+	return platform.ConfirmAllowAlways, nil
 }
 
 // countingDenyConfirm denies every prompt and counts how many were raised, so a
@@ -944,7 +944,7 @@ func TestUntrustingAPromptTrustedFolderEndsTheRead(t *testing.T) {
 		defer confirmMu.Unlock()
 		if !asked && allowTrust {
 			asked = true
-			return platform.ConfirmTrustFolder, nil
+			return platform.ConfirmAllowAlways, nil
 		}
 		return platform.ConfirmDeny, nil
 	}

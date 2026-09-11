@@ -57,6 +57,8 @@ const (
 	// the whole TTL, and the per-file limits never fire. Oldest-first eviction,
 	// like the live-sync replay cache.
 	wireGlobalMaxTerminalBytes = 8 << 20
+	helperTokenHeader          = "Save-Token"
+	helperTokenQuery           = "token"
 )
 
 var (
@@ -74,13 +76,15 @@ var (
 // From, because it identifies a connection, and a value the sender chooses is a
 // value a hostile sender can choose to be someone else's.
 type wireEnvelope struct {
-	V       int             `json:"v"`
-	Type    string          `json:"type"`
-	ID      string          `json:"id"`
-	From    string          `json:"from,omitempty"`
-	File    string          `json:"file"`
-	Text    string          `json:"text,omitempty"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	V        int             `json:"v"`
+	Type     string          `json:"type"`
+	ID       string          `json:"id"`
+	From     string          `json:"from,omitempty"`
+	File     string          `json:"file"`
+	Helper   string          `json:"helper,omitempty"`
+	Document string          `json:"document,omitempty"`
+	Text     string          `json:"text,omitempty"`
+	Payload  json.RawMessage `json:"payload,omitempty"`
 }
 
 // isTerminal reports whether this frame ends a request. Only terminal frames are
@@ -93,6 +97,7 @@ func (e wireEnvelope) isTerminal() bool {
 type wireSub struct {
 	key     string
 	handler bool
+	mode    string
 	ch      chan []byte
 	done    chan struct{}
 	once    sync.Once
@@ -101,7 +106,82 @@ type wireSub struct {
 	removed bool
 }
 
+func wireHandlerMode(mode string) (string, bool) {
+	if mode == "" {
+		return "raw", true
+	}
+	if mode == "raw" || mode == "jsonl" {
+		return mode, true
+	}
+	return "", false
+}
+
 func (sub *wireSub) stop() { sub.once.Do(func() { close(sub.done) }) }
+
+type helperBinding struct {
+	bound      bool
+	generation uint64
+}
+
+type helperBindingRegistry struct {
+	mu     sync.RWMutex
+	byFile map[string]helperBinding
+}
+
+// HelpersBound reports whether file currently has an in-process helper handler.
+func (s *Server) HelpersBound(file string) bool {
+	s.helperBindings.mu.RLock()
+	defer s.helperBindings.mu.RUnlock()
+	return s.helperBindings.byFile[file].bound
+}
+
+// HelperGeneration identifies file's current binding lifetime. It changes once
+// per real bind or unbind transition and stays stable across idempotent calls.
+func (s *Server) HelperGeneration(file string) uint64 {
+	s.helperBindings.mu.RLock()
+	defer s.helperBindings.mu.RUnlock()
+	return s.helperBindings.byFile[file].generation
+}
+
+// BindHelpers activates helper-channel admission after the dispatcher has won
+// the handler slot. The existing handler stays, while pre-bind observer queues
+// and retained outcomes are removed in the same locked transition.
+func (s *Server) BindHelpers(file string) uint64 {
+	s.helperBindings.mu.Lock()
+	state := s.helperBindings.byFile[file]
+	if state.bound {
+		s.helperBindings.mu.Unlock()
+		return state.generation
+	}
+	if s.helperBindings.byFile == nil {
+		s.helperBindings.byFile = make(map[string]helperBinding)
+	}
+	state.bound = true
+	state.generation++
+	s.helperBindings.byFile[file] = state
+	evicted := s.wire.transitionBinding(file, true)
+	s.helperBindings.mu.Unlock()
+	stopWireSubs(evicted)
+	return state.generation
+}
+
+// UnbindHelpers revokes the helper channel, disconnects every subscriber and
+// removes retained outcomes before tokenless plain-wire admission resumes.
+func (s *Server) UnbindHelpers(file string) uint64 {
+	s.helperBindings.mu.Lock()
+	state := s.helperBindings.byFile[file]
+	if !state.bound {
+		s.helperBindings.mu.Unlock()
+		return state.generation
+	}
+	state.bound = false
+	state.generation++
+	s.helperBindings.byFile[file] = state
+	evicted := s.wire.transitionBinding(file, false)
+	s.helperBindings.mu.Unlock()
+	stopWireSubs(evicted)
+	return state.generation
+}
 
 type wireTerminal struct {
 	seq   int64
@@ -250,6 +330,48 @@ func (wh *wireHub) removeFromChannelLocked(c *wireChannel, key string, sub *wire
 	}
 }
 
+func (wh *wireHub) transitionBinding(key string, bound bool) []*wireSub {
+	wh.mu.Lock()
+	defer wh.mu.Unlock()
+	c, ok := wh.chans[key]
+	if !ok {
+		return nil
+	}
+	for id := range c.terminal {
+		wh.dropTerminalLocked(c, id)
+	}
+	var evicted []*wireSub
+	for sub := range c.subs {
+		for {
+			select {
+			case <-sub.ch:
+				continue
+			default:
+			}
+			break
+		}
+		if bound && sub.handler {
+			continue
+		}
+		sub.removed = true
+		delete(c.subs, sub)
+		if c.handler == sub {
+			c.handler = nil
+		}
+		evicted = append(evicted, sub)
+	}
+	if len(c.subs) == 0 {
+		delete(wh.chans, key)
+	}
+	return evicted
+}
+
+func stopWireSubs(subs []*wireSub) {
+	for _, sub := range subs {
+		sub.stop()
+	}
+}
+
 // retainTerminalLocked records one request's outcome and enforces both the
 // channel's own count cap and the hub-wide byte cap.
 func (wh *wireHub) retainTerminalLocked(c *wireChannel, id string, t wireTerminal) {
@@ -263,6 +385,14 @@ func (wh *wireHub) dropTerminalLocked(c *wireChannel, id string) {
 	if t, ok := c.terminal[id]; ok {
 		wh.terminalBytes -= len(t.frame)
 		delete(c.terminal, id)
+	}
+}
+
+func (wh *wireHub) forgetTerminal(key, id string) {
+	wh.mu.Lock()
+	defer wh.mu.Unlock()
+	if c := wh.chans[key]; c != nil {
+		wh.dropTerminalLocked(c, id)
 	}
 }
 
@@ -337,17 +467,26 @@ func (wh *wireHub) expireLocked(c *wireChannel) {
 // observer stream took a copy of its own request, which is precisely the bug the
 // Node router shipped.
 func (wh *wireHub) publish(key string, env wireEnvelope) (handlers int, observers int) {
+	handlers, observers, _ = wh.publishFrom(key, nil, env)
+	return handlers, observers
+}
+
+func (wh *wireHub) publishFromHandler(key string, owner *wireSub, env wireEnvelope) (handlers int, observers int, published bool) {
+	return wh.publishFrom(key, owner, env)
+}
+
+func (wh *wireHub) publishFrom(key string, owner *wireSub, env wireEnvelope) (handlers int, observers int, published bool) {
 	wh.mu.Lock()
 	c, ok := wh.chans[key]
-	if !ok || wh.closed {
+	if !ok || wh.closed || owner != nil && c.handler != owner {
 		wh.mu.Unlock()
-		return 0, 0
+		return 0, 0, false
 	}
 	seq := wh.nextSeqLocked()
 	f := frame(seq, env)
 	if f == nil {
 		wh.mu.Unlock()
-		return 0, 0
+		return 0, 0, false
 	}
 	if env.isTerminal() && env.ID != "" {
 		// First terminal wins: a handler that reports done and then errors for one
@@ -358,6 +497,15 @@ func (wh *wireHub) publish(key string, env wireEnvelope) (handlers int, observer
 	}
 	var evicted []*wireSub
 	for sub := range c.subs {
+		// A handler never receives its own output. Its queue is there for the
+		// requests it exists to answer, and echoing its own frames into it means a
+		// helper reporting progress faster than the dispatcher drains the echo
+		// overflows that queue, is evicted from its own handler slot, and takes the
+		// request's terminal frame down with it. Nothing but valid status is needed
+		// to do it: 40 frames overflow the 32-entry queue.
+		if sub == owner {
+			continue
+		}
 		select {
 		case sub.ch <- f:
 			if sub.handler {
@@ -380,7 +528,69 @@ func (wh *wireHub) publish(key string, env wireEnvelope) (handlers int, observer
 	for _, sub := range evicted {
 		sub.stop()
 	}
-	return handlers, observers
+	return handlers, observers, true
+}
+
+func (wh *wireHub) handlerMode(key string) (string, bool) {
+	wh.mu.Lock()
+	defer wh.mu.Unlock()
+	c, ok := wh.chans[key]
+	if !ok || c.handler == nil {
+		return "", false
+	}
+	mode := c.handler.mode
+	if mode == "" {
+		mode = "raw"
+	}
+	return mode, true
+}
+
+func (wh *wireHub) rejectNamedForRawHandler(key string, request wireEnvelope) (bool, int) {
+	wh.mu.Lock()
+	c, ok := wh.chans[key]
+	if !ok || c.handler == nil || (c.handler.mode != "" && c.handler.mode != "raw") || wh.closed {
+		wh.mu.Unlock()
+		return false, 0
+	}
+	env := wireEnvelope{
+		V:       1,
+		Type:    "wire/error",
+		ID:      request.ID,
+		From:    "process",
+		File:    key,
+		Helper:  request.Helper,
+		Text:    "this handler does not support named helpers",
+		Payload: json.RawMessage(`{"source":"host","code":"helper_protocol_unsupported"}`),
+	}
+	seq := wh.nextSeqLocked()
+	fr := frame(seq, env)
+	if fr == nil {
+		wh.mu.Unlock()
+		return true, 0
+	}
+	if _, seen := c.terminal[env.ID]; !seen {
+		wh.retainTerminalLocked(c, env.ID, wireTerminal{seq: seq, frame: fr, at: time.Now()})
+	}
+	var evicted []*wireSub
+	observers := 0
+	for sub := range c.subs {
+		if sub.handler {
+			continue
+		}
+		select {
+		case sub.ch <- fr:
+			observers++
+		default:
+			evicted = append(evicted, sub)
+		}
+	}
+	for _, sub := range evicted {
+		sub.removed = true
+		wh.removeFromChannelLocked(c, key, sub)
+	}
+	wh.mu.Unlock()
+	stopWireSubs(evicted)
+	return true, observers
 }
 
 func (wh *wireHub) shutdown() {
@@ -406,12 +616,13 @@ func (wh *wireHub) shutdown() {
 	}
 }
 
-// wireCaller classifies who is asking and whether to admit them.
+// wireCaller classifies who is asking and whether the origin gate admits them.
 //
 // A browser attests at least one of Sec-Fetch-Site or Origin on every fetch and
 // every EventSource and cannot forge either; a local process attests neither.
-// That is the whole classifier, and it is why the wire needs no secret and no
-// custom header: a local process runs as the user and needs no confused deputy.
+// That remains sufficient for a plain wire. A helper-bound channel adds the
+// target document's save token after target resolution, including for callers
+// classified as local processes.
 //
 // Origin is checked only WHEN PRESENT, never required. Chrome omits it on
 // same-origin GETs, including EventSource's stream GET, and requiring it is what
@@ -467,10 +678,11 @@ func (s *Server) wireMux() http.Handler {
 // handleLiveSyncSave uses, and any supplied file field is discarded. A local
 // process has no page, so it names an absolute path, which is then validated.
 //
-// Note that origin-wide trust is inherited here, not introduced: resolvePageURL
-// already lets one served page name another registered path on the same origin
-// (livesync.go). So a page can open a wire on a sibling file of its own project.
-// That is the existing model; "one wire per file" is addressing, not isolation.
+// Note that origin-wide trust is inherited here, not introduced: on an unbound
+// channel resolvePageURL already lets one served page name another registered
+// path on the same origin (livesync.go). A helper-bound channel adds the target's
+// save token after this function returns. "One wire per file" is addressing,
+// not isolation.
 func (s *Server) wireTarget(r *http.Request, isBrowser bool, supplied string) (*session.File, bool) {
 	if isBrowser {
 		// Document-URL first, Page-URL after it, and the query last. §3 names the
@@ -593,16 +805,17 @@ func (s *Server) handleWireSubscribe(w http.ResponseWriter, r *http.Request) {
 	// take it away from the user's agent, receive every request on this file
 	// including other tabs', and answer them with fabricated terminal frames.
 	//
-	// KNOWN RESIDUAL, and the classifier cannot close it: a browser that predates
+	// On a plain wire, the classifier has one known residual: a browser that predates
 	// Sec-Fetch-Site attests nothing at all on a same-origin GET (Safari before
 	// 16.4, Firefox before 90), so wireCaller reads such a page as a process. What
 	// it buys is squatting the slot and lying to its own origin's tabs; it is
 	// already allowed to send frames, it cannot read or write any file, and it
-	// cannot reach another project's origin. No header fixes this, because a
-	// same-origin fetch may set any header without a preflight; only a secret a
-	// page cannot read would, and that is a bigger change than the residual is
-	// worth. A cross-origin caller is never affected: every cross-origin request,
-	// EventSource included, carries Origin.
+	// cannot reach another project's origin. Helper-bound channels close this
+	// ambiguity with the target's save token. No header fixes the plain-wire
+	// classifier because a same-origin fetch may set any header without a preflight;
+	// only a secret a page cannot read would, and that is a bigger change than the
+	// residual is worth. A cross-origin caller is never affected: every cross-origin
+	// request, EventSource included, carries Origin.
 	//
 	// Refused before the file is resolved: the answer does not depend on which
 	// file, so resolving first would tell a caller that is being refused anyway
@@ -614,6 +827,15 @@ func (s *Server) handleWireSubscribe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
+	mode := ""
+	if wantHandler {
+		var valid bool
+		mode, valid = wireHandlerMode(r.URL.Query().Get("mode"))
+		if !valid {
+			s.writeError(w, http.StatusBadRequest, "invalid handler mode")
+			return
+		}
+	}
 
 	f, ok := s.wireTarget(r, isBrowser, r.URL.Query().Get("file"))
 	if !ok {
@@ -621,23 +843,22 @@ func (s *Server) handleWireSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rc := http.NewResponseController(w)
-	// Clear the write deadline for this connection only; zeroing the server-wide
-	// WriteTimeout would remove the bound from every other request.
-	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
-		s.logger.Printf("wire: cannot clear write deadline: %v", err)
-		http.Error(w, "Not Implemented", http.StatusNotImplemented)
-		return
-	}
-
 	sub := &wireSub{
 		key:     f.AbsPath,
 		handler: wantHandler,
+		mode:    mode,
 		ch:      make(chan []byte, wireQueueSize),
 		done:    make(chan struct{}),
 	}
 
+	s.helperBindings.mu.RLock()
+	if s.helperBindings.byFile[f.AbsPath].bound && r.URL.Query().Get(helperTokenQuery) != f.Token {
+		s.helperBindings.mu.RUnlock()
+		s.writeError(w, http.StatusForbidden, "invalid token")
+		return
+	}
 	cursor, replay, err := s.wire.add(sub, parseLastEventID(r))
+	s.helperBindings.mu.RUnlock()
 	if err != nil {
 		switch {
 		case errors.Is(err, errWireHandlerTaken):
@@ -650,6 +871,15 @@ func (s *Server) handleWireSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.wire.remove(sub)
+
+	rc := http.NewResponseController(w)
+	// Clear the write deadline for this connection only; zeroing the server-wide
+	// WriteTimeout would remove the bound from every other request.
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		s.logger.Printf("wire: cannot clear write deadline: %v", err)
+		http.Error(w, "Not Implemented", http.StatusNotImplemented)
+		return
+	}
 
 	// The watch is the whole point of the handler role. An agent edits the FILE, and
 	// the edit reaches the page through the ordinary external-change path, which only
@@ -782,6 +1012,13 @@ func (s *Server) handleWireSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.helperBindings.mu.RLock()
+	if s.helperBindings.byFile[f.AbsPath].bound && r.Header.Get(helperTokenHeader) != f.Token {
+		s.helperBindings.mu.RUnlock()
+		s.writeError(w, http.StatusForbidden, "invalid token")
+		return
+	}
+
 	// From is a coarse origin tag, not a connection identity. Correlation is by
 	// the sender's own opaque id, and a subscriber drops ids it did not issue, so
 	// nothing needs to tell two pages apart. Stamping it server-side keeps it
@@ -792,6 +1029,28 @@ func (s *Server) handleWireSend(w http.ResponseWriter, r *http.Request) {
 	env.From = "process"
 	if isBrowser {
 		env.From = "page"
+	}
+	if env.Helper != "" && (env.Type == "wire/request" || env.Type == "wire/describe") {
+		if rejected, observers := s.wire.rejectNamedForRawHandler(f.AbsPath, env); rejected {
+			s.helperBindings.mu.RUnlock()
+			w.Header().Set("Content-Type", "application/json")
+			// The refusal rides the POST reply as well as the stream. They are two
+			// connections with no ordering between them, and "delivered":0 on its own
+			// reads as "nobody is attached": a client that settles on it discards the
+			// typed frame that arrives afterwards and reports the wrong reason for a
+			// refusal that was specific and deliberate.
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"delivered": 0,
+				"observers": observers,
+				"refused": map[string]any{
+					"source":  "host",
+					"code":    "helper_protocol_unsupported",
+					"message": "this handler does not support named helpers",
+				},
+			})
+			return
+		}
 	}
 
 	// A handler that reports a request finished has finished writing the file, so
@@ -807,6 +1066,7 @@ func (s *Server) handleWireSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handlers, observers := s.wire.publish(f.AbsPath, env)
+	s.helperBindings.mu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":        true,

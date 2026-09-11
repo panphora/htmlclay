@@ -39,7 +39,11 @@ type Server struct {
 	// wire is per-server, unlike the shared live-sync runtime above: a site is
 	// the lifetime boundary for an instruction channel, so untrusting a folder
 	// (which closes the site) cannot leave a live wire into it.
-	wire *wireHub
+	wire           *wireHub
+	helperBindings helperBindingRegistry
+	helperMu       sync.Mutex
+	helpers        map[string]*helperDispatcher
+	helperOffline  map[string][]string
 
 	// hooks are the app-level decisions this server cannot make itself. A nil
 	// field disables that route; a zero Hooks (tests, standalone servers)

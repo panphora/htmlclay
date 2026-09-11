@@ -1,16 +1,21 @@
 # The wire
 
 A page open in HTML Clay can ask a program on your machine to change the file it
-is running from, and watch the change arrive.
+is running from, and watch the change arrive. This is the default raw mode.
 
-That is the whole feature. The page sends a small request, a program in your
-terminal edits the `.htmlclay` file, and the edit reaches the page the same way
-any other file change does. **No HTML travels on the wire in either direction.**
-The file is the only thing the two sides share.
+That is the whole raw mode feature. The page sends a small request, a program in
+your terminal edits the `.htmlclay` file, and the edit reaches the page the same
+way any other file change does. **No HTML travels on the raw wire in either
+direction.** The file is the only thing the two sides share.
 
 It is how you point at a paragraph in a document and say "make this shorter", and
 have something local do it. The something can be an AI agent, a shell script, a
 formatter, or a person typing. The wire has no opinion.
+
+Structured mode lets programs return data whether or not they also edit the
+file. It uses the same request transport, but gives the program a bounded JSON
+result and lets the page skip save coordination when the document is not
+involved.
 
 ## What you need
 
@@ -21,11 +26,13 @@ formatter, or a person typing. The wire has no opinion.
 <script src="https://clayjs.com/v1/clay.js?plugins=sync,wire"></script>
 ```
 
-`sync` is not required, but you want it: without live sync the page never sees
-the change the program made, and a request that finished will say so a few
-seconds late rather than the moment the text appears.
+`sync` is not required for data only helpers. You want it for edits: without live
+sync the page never sees the change the program made, and a request that finished
+will say so a few seconds late rather than the moment the text appears.
 
-## Five minutes
+## Raw mode, the default
+
+### Five minutes
 
 Open a file in HTML Clay, then attach a program to it:
 
@@ -58,7 +65,7 @@ const outcome = await request.done;   // { state: "done" | "error" | "cancelled"
 The payload is yours. HTML Clay passes it through untouched, and your program
 decides what it means.
 
-## How a request travels
+## How a raw request travels
 
 ```
   page                    HTML Clay                  your program
@@ -88,9 +95,9 @@ A request moves through these states:
 written; the page then waits for live sync to deliver it, up to 4 seconds, before
 reporting done. A page with no `sync` plugin still reports done, just later.
 
-Timeouts, so a stuck program cannot hang the page: 15 seconds to acknowledge, then
-120 seconds of silence. **Every frame rearms the clock**, so a program that prints
-what it is doing can work for as long as it likes. A silent one gets two minutes.
+Raw mode has 15 seconds to acknowledge, then 120 seconds of silence. **Every
+frame rearms the clock**, so a program that prints what it is doing can work for
+as long as it likes. A silent one gets two minutes.
 
 ## The page API
 
@@ -105,9 +112,11 @@ clay.wire.isBusy()              // is anything in flight
 clay.wire.on(fn)                // subscribe; returns its own unsubscribe
 ```
 
-`opts` takes `{ id, type, text }`, all optional. `text` is a plain line for a
-program that wants one without parsing the payload; `id` lets you supply your own
-request id, and reusing a live one is refused as an error rather than thrown.
+`opts` takes `{ id, type, text, helper, document, onStatus, signal }`, all
+optional. `text` is a plain line for a program that wants one without parsing
+the payload; `id` lets you supply your own request id, and reusing a live one is
+refused as an error rather than thrown. Structured requests use the remaining
+options, described below.
 
 `send` returns immediately. `handle.done` resolves with the final snapshot and
 **never rejects**: a failed request is an outcome to render, not an exception to
@@ -116,13 +125,17 @@ catch.
 The DOM event `clay:wire-state` carries the same snapshot, for code that would
 rather not hold a subscription.
 
-**Sending saves the page first.** The program is about to read the file, so it has
-to read what you are looking at. Autosave is then suspended until the request
-ends, so the page cannot write over the program mid-edit. Both are automatic.
+Requests with `document: "edit"` save the page first. The program is about to
+read the file, so it has to read what you are looking at. Autosave is then
+suspended until the request ends, so the page cannot write over the program
+mid-edit. Both are automatic. This remains the default for an unnamed request.
+A named helper defaults to `document: "none"`, which skips the save, autosave
+hold, and wait for file changes.
 
-## The handler contract
+## The raw handler contract
 
-`wire serve <file> -- <cmd>` runs `<cmd>` once per request.
+`wire serve <file> -- <cmd>` runs `<cmd>` once per request. Raw mode is the
+default. `--protocol=raw` names it explicitly but is not required.
 
 **In:** the whole request envelope as JSON on stdin, plus two environment
 variables.
@@ -151,68 +164,191 @@ The program edits the file directly. There is no "return the new HTML" path, on
 purpose: the file is the state, and anything that wrote HTML back through the wire
 would be a second, competing writer.
 
-### Answering in words
+## Structured mode
 
-Status lines are how a handler says what it is doing. They are also how it says
-something back to the person who asked, if the page it is talking to knows to look
-for one. The convention redpen uses, and the one worth copying, is a single line
-that parses as a JSON object carrying a `redpen` key:
-
-```json
-{"redpen":1,"reply":"Cut the second clause and moved the date into the caption."}
-```
-
-| field | meaning |
-|---|---|
-| `redpen` | the marker, value `1`. Required, and conventionally the first key |
-| `reply` | the text, plain. A blank line starts a paragraph |
-| `append` | optional `true`: concatenate onto the reply so far instead of replacing it |
-
-Every other line stays progress. The marker is what stops a handler that pipes
-`jq` or an HTTP response to stdout from having its tool output read as the agent's
-own words. Put `redpen` first, because a line cut at the size limit keeps its head,
-and that head is the only thing a reader can use to tell a truncated reply from a
-line that was never meant to be one.
-
-Three rules that are easy to get wrong:
-
-- **Budget the reply at about 3,500 bytes** after JSON escaping. The line cap is
-  4096 bytes and it is enforced twice, in the CLI's reader and again in the server.
-  Longer replies split across several lines with `append: true`.
-- **Print the reply before you exit.** Frames for a request that has already
-  finished are dropped, silently, so a reply printed after the process ends is
-  simply lost.
-- **The last non-append line wins**, which makes printing the same reply twice
-  free. The status lane is documented as lossy on both sides, so a handler that
-  prints its reply when it has the answer and again just before exit halves the
-  chance of losing it.
-
-Hand-escaping JSON in bash is how people ship broken handlers, so let `jq` do it:
+Use structured mode when the answer is JSON data rather than an edit to the
+document:
 
 ```bash
-echo "rewriting the intro"
-REPLY=$(node rewrite.js "$HTMLCLAY_WIRE_FILE")
-printf '{"redpen":1,"reply":%s}\n' "$(jq -Rs . <<<"$REPLY")"
+htmlclay wire serve ~/notes/page.htmlclay --protocol=jsonl -- ./search-helper.sh
 ```
 
-A page that holds a conversation sends a follow-up as another ordinary request.
-**`said` is always the newest message**, so a handler that only reads
-`payload.said` keeps working with no change; the exchanges so far ride alongside
-it as `thread`, a list of `{you, agent}` pairs, and appear only from the second
-message onwards.
+The relative helper path is correct. Raw mode runs the command from the directory
+where you started `htmlclay`. Structured mode resolves the executable there
+first, then runs it with the document's directory as its working directory.
+
+Without `--protocol=jsonl`, nothing in this section applies. A JSON looking line
+from a raw handler remains plain status text, and its `wire/done` still has no
+payload.
+
+### Request and result
+
+The helper receives the request envelope on stdin, as in raw mode. HTML Clay adds
+`helperProtocol: 1` before starting it:
+
+```json
+{"v":1,"helperProtocol":1,"type":"wire/request","id":"...","file":"/abs/path.htmlclay","helper":"search","document":"none","text":"...","payload":{"query":"needle","target":"notes"}}
+```
+
+The helper reserves stdout for UTF-8 JSON Lines records. It emits zero or more
+`status` records, followed by exactly one terminal `result` or `error` record:
+
+```json
+{"type":"status","text":"Scanning","progress":{"completed":40,"total":100,"unit":"files"}}
+{"type":"result","value":{"matches":["notes/a.txt:12:needle"]}}
+```
+
+An expected failure is an `error` terminal and an exit status of zero:
+
+```json
+{"type":"error","code":"invalid_request","message":"Query is empty","details":{"field":"query"}}
+```
+
+HTML Clay holds the terminal record until the child exits zero and stdout reaches
+clean EOF. Any record after the terminal, malformed output, a nonzero exit, or a
+forced stdout close turns the request into a host error. Status is replaceable
+progress and may be dropped, but a record is never truncated into apparent
+success. Stderr is for diagnostics and never carries protocol records.
+
+The terminal value reaches the page as `outcome.result`:
+
+```js
+const request = clay.wire.send(
+  { query: "needle", target: "notes" },
+  {
+    helper: "search",
+    onStatus: ({ text, progress }) => showProgress(text, progress),
+    signal: controller.signal
+  }
+);
+
+const outcome = await request.done;
+if (outcome.state === "done") renderMatches(outcome.result.matches);
+else showFailure(outcome.error);
+```
+
+`document` is either `"edit"` or `"none"`. It defaults to `"edit"` for an
+unnamed call and `"none"` for a named helper call. An invalid value is refused.
+`onStatus` receives `{ text, progress }`, with `progress` omitted when the helper
+did not supply it. `signal` uses the same cancellation lifecycle as
+`request.cancel()`.
+
+Structured acknowledgements include `{ "mode": "jsonl", "budgetMs": 300000 }`.
+The five minute execution budget does not extend when progress arrives. The page
+allows a short delivery and cleanup grace after that budget.
+
+### Record grammar
+
+- Every record is one UTF-8 JSON object. LF, CRLF, and a complete final record at
+  EOF without a trailing newline are accepted. Blank lines, pretty printed
+  multiline records, and nonobject records are rejected.
+- Protocol field names match exactly. Duplicate top level keys are rejected, as
+  are duplicate keys inside `progress`. Unknown object fields are ignored. An
+  unknown record `type` is an error in version 1.
+- `result` requires a `value` member. Explicit `null`, `false`, `0`, `""`, and
+  `[]` are valid. A missing member is not `null`.
+- `error` requires nonempty string `code` and `message` members. `details` is
+  optional JSON.
+- `status` requires a string `text`. `progress` is optional. When present, it is
+  an object with a nonnegative finite number in `completed`. `total` may be
+  absent, `null`, or a nonnegative finite number. `unit`, when present, is a
+  string. Neither a percentage nor a known total is required.
+
+### Limits
+
+| boundary | value | what it includes |
+|---|---:|---|
+| Any stdout line before parsing | 512 KiB | The complete line, excluding its line ending |
+| Terminal record | 512 KiB | The complete encoded `result` or `error` record |
+| Status record | 32 KiB | The complete encoded record |
+| `status.text` and `error.message` | 4 KiB each | Decoded UTF-8 text |
+| `error.code` | 128 bytes | Decoded string |
+| `progress.unit` | 64 bytes | Decoded string |
+| Final encoded wire envelope | 1 MiB | The frame HTML Clay posts |
+| Structured execution | 5 minutes | Independent of progress |
+
+The 512 KiB terminal limit includes the record wrapper, so a result value must be
+slightly smaller. Results are bounded, not streamed. A helper should cap or
+paginate larger answers.
+
+### `wire/describe`
+
+HTML Clay can start a structured helper with a `wire/describe` request before it
+sends ordinary work:
+
+```json
+{"v":1,"helperProtocol":1,"type":"wire/describe","id":"...","file":"/abs/path.htmlclay","helper":"search"}
+```
+
+The helper returns one ordinary terminal result whose value identifies its
+contract and operations:
+
+```json
+{"type":"result","value":{"helperProtocol":1,"contract":"text-search/1","operations":["search"]}}
+```
+
+Description runs use a separate 5 second deadline and an 8 KiB result cap. The
+helper should answer from static information. It must not scan folders or start
+the operation it is describing.
+
+### A complete shell helper
+
+This helper handles description, validation, progress, no matches, matches, and
+tool failure. `jq -cn` produces every record, so shell escaping cannot corrupt
+the protocol. The explicit `rg` branch distinguishes no matches, exit 1, from a
+real failure.
+
+```sh
+#!/bin/sh
+request=$(cat) || exit 1
+request_type=$(printf '%s' "$request" | jq -er '.type | select(type == "string")') || exit 1
+
+if [ "$request_type" = "wire/describe" ]; then
+  jq -cn '{type:"result",value:{helperProtocol:1,contract:"text-search/1",operations:["search"]}}'
+  exit $?
+fi
+
+if [ "$request_type" != "wire/request" ]; then
+  jq -cn '{type:"error",code:"invalid_request",message:"Unsupported request type"}'
+  exit 0
+fi
+
+query=$(printf '%s' "$request" | jq -er '.payload.query | select(type == "string" and length > 0)') || {
+  jq -cn '{type:"error",code:"invalid_request",message:"Query is empty"}'
+  exit 0
+}
+target=$(printf '%s' "$request" | jq -er '.payload.target | select(type == "string")') || {
+  jq -cn '{type:"error",code:"invalid_request",message:"Target is missing"}'
+  exit 0
+}
+
+jq -cn '{type:"status",text:"Scanning"}' || exit 1
+if matches=$(rg -n -F -- "$query" "$target"); then
+  jq -cn --arg matches "$matches" '{type:"result",value:{matches:($matches | split("\n"))}}'
+else
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    jq -cn '{type:"result",value:{matches:[]}}'
+  else
+    exit "$rc"
+  fi
+fi
+```
 
 ## The CLI
 
 ```
-htmlclay wire serve  <file> -- <cmd> [args...]   run <cmd> for every request
-htmlclay wire listen <file> [--handler]          print frames as JSON lines
-htmlclay wire send   <file> --type <type> ...    send one frame, payload on stdin
-htmlclay wire where  <file>                      print the origin serving <file>
+htmlclay wire serve  <file> [--protocol=jsonl] -- <cmd> [args...]
+                                                   run <cmd> for every request
+htmlclay wire listen <file> [--handler]             print frames as JSON lines
+htmlclay wire send   <file> --type <type> ...       send one frame, payload on stdin
+htmlclay wire where  <file>                         print the origin serving <file>
 ```
 
 Flags may sit on either side of the file. `--port <n>` names the origin directly,
 which is how you reach a file whose folder HTML Clay does not remember a port for:
-read the port off the page's own address bar.
+read the port off the page's own address bar. `serve` uses raw mode unless you
+pass `--protocol=jsonl`.
 
 `listen` is an observer unless you pass `--handler`. The handler slot is exclusive
 (one program per file) and it also keeps HTML Clay watching the file while no tab
@@ -246,9 +382,9 @@ project's page drive another project's wire.
 **Only a program may be a handler.** A page can send and observe. It cannot claim
 the handler slot, so an open tab cannot impersonate your agent.
 
-**Nothing but text crosses.** Requests and status lines are small JSON frames.
-The content is in the file, where you can read it, diff it, and put it in version
-control.
+**Every frame is bounded JSON.** Raw mode carries requests and small status
+lines. Structured mode adds a bounded result. Document edits remain in the file,
+where you can read them, diff them, and put them in version control.
 
 **Every write is versioned.** An edit made by a program is backed up before it
 lands, exactly like one made by the page, and it is in Backups whether or not a
@@ -277,9 +413,9 @@ program rewrites another, live sync merges the two by matching elements. Give th
 regions a program will touch a stable `data-id` or `id`, or a structural change
 has nothing to match and quietly does not appear.
 
-**A reply printed after the work is done is thrown away.** Frames are dropped for
-a request that has already finished, and exiting finishes it. Print anything you
-want the page to read, then exit.
+**Print raw status before the work is done.** Frames are dropped for a request
+that has already finished, and exiting finishes it. Structured helpers use a
+terminal result instead, which HTML Clay holds until clean exit and EOF.
 
 **The first save after a program's edit warns you.** It reports that the file
 changed outside this tab and that your version was saved with the previous one in

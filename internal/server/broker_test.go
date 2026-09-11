@@ -170,7 +170,7 @@ func TestBrokerSuppressesAfterDeny(t *testing.T) {
 func TestBrokerNeverPromptsForHome(t *testing.T) {
 	mgr, home := brokerManager(t)
 	var prompts int32
-	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmAllowAlways, &prompts))
 
 	if b.await(context.Background(), filepath.Join(home, "loose.txt")) {
 		t.Error("a home-root sibling must be denied")
@@ -256,7 +256,7 @@ func TestBrokerGuardVetoNeverPrompts(t *testing.T) {
 		return session.EqualOrUnder(dir, forbidden) || session.EqualOrUnder(forbidden, dir)
 	})
 	var prompts int32
-	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmAllowAlways, &prompts))
 
 	// The asset's own folder is the guarded config dir, so the LCA is guard-vetoed and
 	// the broker must deny without ever prompting.
@@ -420,7 +420,7 @@ func TestTrustFolderChoiceGrantsAndTrusts(t *testing.T) {
 	mustWrite(t, asset)
 
 	var prompts int32
-	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmAllowAlways, &prompts))
 	b.mayTrust = func(string) bool { return true }
 	// The waiter is woken before the trust hook runs, so the trusted folder arrives
 	// on its own goroutine and is collected through a channel.
@@ -455,7 +455,7 @@ func TestTrustFolderChoiceStillGrantsWhenTrustFails(t *testing.T) {
 	mustWrite(t, asset)
 
 	var prompts int32
-	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmTrustFolder, &prompts))
+	b := newBroker(mgr, logging.NewStdout(), countingConfirm(platform.ConfirmAllowAlways, &prompts))
 	b.mayTrust = func(string) bool { return true }
 	b.trust = func(string) error { return fmt.Errorf("refused") }
 
@@ -493,7 +493,7 @@ func TestAllowOnceDoesNotTrust(t *testing.T) {
 }
 
 // The durable choice is decided BEFORE the dialog is drawn: a folder mayTrust
-// refuses is never offered, and an answer of ConfirmTrustFolder from a dialog
+// refuses is never offered, and an answer of ConfirmAllowAlways from a dialog
 // that could not have offered it grants the read without recording anything.
 // Drawing the button always and refusing afterwards asked the user for a choice
 // that could not be honored.
@@ -506,7 +506,7 @@ func TestMayTrustFalseSuppressesTheChoiceAndTheTrust(t *testing.T) {
 	offered.Store(true)
 	b := newBroker(mgr, logging.NewStdout(), func(_, _ string, allowTrust bool) (platform.ConfirmChoice, error) {
 		offered.Store(allowTrust)
-		return platform.ConfirmTrustFolder, nil
+		return platform.ConfirmAllowAlways, nil
 	})
 	var mayTrustCalls, trustCalls int32
 	b.mayTrust = func(string) bool {

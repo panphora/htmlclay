@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/helper"
 	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/platform"
 	"github.com/panphora/htmlclay/internal/session"
@@ -90,7 +91,7 @@ const maxSaveSize = 50 * 1024 * 1024
 // MUST honour it, because accepting If-Match and ignoring it tells clients they are
 // protected when they are not. Announce it only while handleSave still refuses on a
 // stamp mismatch.
-var hostExtensions = []string{"conditional", "receipts", "sync", "upload"}
+var hostExtensions = []string{"conditional", "receipts", "sync", "upload", "wire"}
 
 // maxSaveIDLen caps the §6 receipt id this host will remember. The spec asks for
 // at least 128 bits of randomness, which is 32 hex characters or 22 in base64url;
@@ -158,7 +159,10 @@ type fileMeta struct {
 
 // documentMeta is the per-document half of a discovery answer.
 type documentMeta struct {
-	Etag string `json:"etag"`
+	Etag         string       `json:"etag"`
+	WireMode     string       `json:"wireMode,omitempty"`
+	WireBudgetMS int          `json:"wireBudgetMs"`
+	Helpers      []helperMeta `json:"helpers,omitempty"`
 	// §6's receipt: which save produced the bytes this etag stamps. Reported only
 	// when the pair still verifies against those bytes, so a client that sees its
 	// own id here has been TOLD what it stores came from a body that client sent,
@@ -1247,8 +1251,9 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		// token and id that never reach the file, so stamping them would hand a
 		// client a value no save of its own could ever match.
 		Document: &documentMeta{
-			Etag:   storedEtag,
-			SaveID: saveID,
+			Etag:         storedEtag,
+			SaveID:       saveID,
+			WireBudgetMS: helper.StructuredDeadline,
 			// The same constant the upload route enforces, not a second copy of the
 			// number: a cap that is announced and a cap that is applied drifting apart
 			// is worse than announcing none, because a client would refuse files this
@@ -1263,6 +1268,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			LegacyDocumentID: htmlclayID,
 		},
 	}
+	meta.Document.WireMode, meta.Document.Helpers = s.helperDiscovery(f.AbsPath)
 
 	noStoreJSON(w)
 	json.NewEncoder(w).Encode(meta)

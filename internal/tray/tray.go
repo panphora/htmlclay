@@ -67,6 +67,14 @@ type TrustedFolderHooks struct {
 	Remove func(path string) []Row
 }
 
+// HelperHooks are the app operations the Programs submenu drives. Each returns
+// the authoritative list so the tray always re-renders from config state.
+type HelperHooks struct {
+	List func() []Row
+	Add  func() []Row
+	Row  func(id string) []Row
+}
+
 // slotCount is how many submenu rows exist before any list is rendered. The pool
 // grows from there as entries need places to sit.
 //
@@ -97,13 +105,15 @@ type Tray struct {
 
 	trusted     *TrustedFolderHooks
 	trustedMenu *listMenu
+	helpers     *HelperHooks
+	helpersMenu *listMenu
 
 	// notice is a permanent row for something about this machine that HTML Clay
 	// cannot fix and the user can. Empty means there is nothing to say.
 	notice string
 }
 
-func Run(cfg *config.Config, version string, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, notice string) {
+func Run(cfg *config.Config, version string, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, helpers *HelperHooks, notice string) {
 	t := &Tray{
 		cfg:           cfg,
 		version:       version,
@@ -112,6 +122,7 @@ func Run(cfg *config.Config, version string, onOpenExample func(), onOpenBackups
 		onQuit:        onQuit,
 		updateCh:      updateCh,
 		trusted:       trusted,
+		helpers:       helpers,
 		notice:        notice,
 	}
 	systray.Run(t.onReady, t.onExit)
@@ -290,6 +301,8 @@ func (t *Tray) onReady() {
 
 	addTrustedItem := t.buildTrustedMenu()
 	systray.AddSeparator()
+	addHelperItem := t.buildHelpersMenu()
+	systray.AddSeparator()
 
 	loginItem := systray.AddMenuItemCheckbox("Start on Login", "", t.cfg.StartOnLoginEnabled())
 	systray.AddSeparator()
@@ -320,6 +333,7 @@ func (t *Tray) onReady() {
 	}()
 
 	t.watchTrustedMenu(addTrustedItem)
+	t.watchHelpersMenu(addHelperItem)
 }
 
 // addNotice puts the machine notice at the very top of the menu, disabled
@@ -379,6 +393,43 @@ func (t *Tray) watchTrustedMenu(addItem *systray.MenuItem) {
 		}()
 	}
 	t.trustedMenu.watch(t.trusted.Remove, t.trusted.List)
+}
+
+func (t *Tray) buildHelpersMenu() *systray.MenuItem {
+	if t.helpers == nil {
+		return nil
+	}
+	lm, addItem := newListMenu(
+		"Programs",
+		"Programs HTML Clay documents can ask to run",
+		"No programs registered yet",
+		"Add a Program…",
+		"Choose a program and give it a name",
+	)
+	lm.rowTooltip = "Click to manage this program"
+	t.helpersMenu = lm
+	if t.helpers.List != nil {
+		lm.render(t.helpers.List())
+	}
+	return addItem
+}
+
+func (t *Tray) watchHelpersMenu(addItem *systray.MenuItem) {
+	if t.helpers == nil || t.helpersMenu == nil {
+		return
+	}
+	if addItem != nil && t.helpers.Add != nil {
+		go func() {
+			for range addItem.ClickedCh {
+				go func() {
+					if rows := t.helpers.Add(); rows != nil {
+						t.helpersMenu.render(rows)
+					}
+				}()
+			}
+		}()
+	}
+	t.helpersMenu.watch(t.helpers.Row, t.helpers.List)
 }
 
 func (t *Tray) toggleLoginItem(loginItem *systray.MenuItem) {

@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -115,7 +114,8 @@ type wireFrame struct {
 
 const wireUsage = `htmlclay wire — talk to one open HTML Clay file from this terminal
 
-  htmlclay wire serve  <file> -- <cmd> [args...]   run <cmd> for every request
+  htmlclay wire serve  <file> [--protocol=jsonl] -- <cmd> [args...]
+                                                   run <cmd> for every request
   htmlclay wire listen <file> [--handler]          print frames as JSON lines
   htmlclay wire send   <file> --type <type> ...    send one frame, payload on stdin
   htmlclay wire where  <file>                      print the origin serving <file>
@@ -129,6 +129,9 @@ serve runs <cmd> once per wire/request with the request envelope on stdin, and
 sets HTMLCLAY_WIRE_FILE and HTMLCLAY_WIRE_ID in its environment. Each line the
 command prints becomes a wire/status; exiting 0 becomes wire/done and any other
 exit becomes wire/error. A wire/cancel stops the command it names.
+
+serve --protocol=jsonl requires JSON Lines helper output, returns result payloads,
+and runs the helper from the document's directory with a five minute deadline.
 
 listen is an observer unless --handler is given. The handler slot is exclusive
 and also keeps HTML Clay watching the file while no tab is open on it.
@@ -521,16 +524,19 @@ var wireStreamClient = &http.Client{
 	CheckRedirect: wireNoRedirects,
 }
 
-func wireSubscribeURL(port int, file string, handler bool) string {
+func wireSubscribeURL(port int, file string, handler bool, mode string) string {
 	q := url.Values{"file": {file}}
 	if handler {
 		q.Set("role", "handler")
+		if mode != "" {
+			q.Set("mode", mode)
+		}
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d/_/wire/subscribe?%s", port, q.Encode())
 }
 
-func wireSubscribe(ctx context.Context, c wireCandidate, file string, handler bool, lastID string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wireSubscribeURL(c.port, file, handler), nil)
+func wireSubscribe(ctx context.Context, c wireCandidate, file string, handler bool, lastID, mode string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wireSubscribeURL(c.port, file, handler, mode), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -567,6 +573,7 @@ type wireStreamOpts struct {
 	file    string
 	port    int
 	handler bool
+	mode    string
 	onFrame func(raw []byte, f wireFrame)
 }
 
@@ -621,7 +628,7 @@ func wireStream(ctx context.Context, env *wireEnv, opts wireStreamOpts) int {
 
 		cands := wireResolveCandidates(env, opts.file, opts.port)
 		resp, c, err := wireTry(cands, "text/event-stream", func(c wireCandidate) (*http.Response, error) {
-			return wireSubscribe(attemptCtx, c, opts.file, opts.handler, lastID)
+			return wireSubscribe(attemptCtx, c, opts.file, opts.handler, lastID, opts.mode)
 		})
 
 		switch {
@@ -734,7 +741,7 @@ func wireWhereCmd(env *wireEnv, args []string) int {
 	resp, c, err := wireTry(cands, "text/event-stream", func(c wireCandidate) (*http.Response, error) {
 		// An observer, always. A handler probe would take the exclusive slot and
 		// the watch lease from whatever is meant to hold them.
-		return wireSubscribe(ctx, c, file, false, "")
+		return wireSubscribe(ctx, c, file, false, "", "")
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -942,11 +949,12 @@ func wireReadPayload(env *wireEnv) (json.RawMessage, error) {
 // handler is whatever the user typed after --, so `claude -p "$(cat)"` is a
 // working agent with no code.
 type wireServer struct {
-	env    *wireEnv
-	ctx    context.Context
-	file   string
-	cmd    []string
-	sender *wireSender
+	env      *wireEnv
+	ctx      context.Context
+	file     string
+	cmd      []string
+	protocol string
+	sender   *wireSender
 
 	mu   sync.Mutex
 	live map[string]context.CancelFunc
@@ -968,8 +976,13 @@ func wireServeCmd(env *wireEnv, args []string) int {
 
 	fs := wireFlagSet(env, "serve")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
+	protocol := fs.String("protocol", "raw", "helper output protocol: raw or jsonl")
 	operands, err := wireParse(fs, args[:sep])
 	if err != nil {
+		return wireExitUsage
+	}
+	if *protocol != "raw" && *protocol != "jsonl" {
+		fmt.Fprintf(env.stderr, "htmlclay wire: unsupported helper protocol %q\n", *protocol)
 		return wireExitUsage
 	}
 	file, code := wireFileArg(env, operands)
@@ -978,15 +991,16 @@ func wireServeCmd(env *wireEnv, args []string) int {
 	}
 
 	sv := &wireServer{
-		env:    env,
-		ctx:    env.ctx,
-		file:   file,
-		cmd:    args[sep+1:],
-		sender: &wireSender{env: env, file: file, port: *port},
-		live:   make(map[string]context.CancelFunc),
+		env:      env,
+		ctx:      env.ctx,
+		file:     file,
+		cmd:      args[sep+1:],
+		protocol: *protocol,
+		sender:   &wireSender{env: env, file: file, port: *port},
+		live:     make(map[string]context.CancelFunc),
 	}
 	exit := wireStream(env.ctx, env, wireStreamOpts{
-		file: file, port: *port, handler: true, onFrame: sv.onFrame,
+		file: file, port: *port, handler: true, mode: *protocol, onFrame: sv.onFrame,
 	})
 	sv.stopAll()
 	return exit
@@ -1003,6 +1017,10 @@ func (sv *wireServer) onFrame(raw []byte, f wireFrame) {
 	switch f.Type {
 	case "wire/request":
 		sv.start(raw, f)
+	case "wire/describe":
+		if sv.protocol == "jsonl" {
+			sv.start(raw, f)
+		}
 	case "wire/cancel":
 		sv.cancel(f.ID)
 	}
@@ -1012,7 +1030,14 @@ func (sv *wireServer) start(raw []byte, f wireFrame) {
 	if f.ID == "" {
 		return
 	}
-	ctx, cancel := context.WithCancel(sv.ctx)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if sv.protocol == "jsonl" {
+		budgetMS, _ := structuredRequestLimits(f.Type)
+		ctx, cancel = context.WithTimeout(sv.ctx, time.Duration(budgetMS)*time.Millisecond)
+	} else {
+		ctx, cancel = context.WithCancel(sv.ctx)
+	}
 
 	sv.mu.Lock()
 	if _, running := sv.live[f.ID]; running {
@@ -1038,10 +1063,10 @@ func (sv *wireServer) start(raw []byte, f wireFrame) {
 	sv.wg.Add(1)
 	sv.mu.Unlock()
 
-	go sv.run(ctx, raw, f.ID)
+	go sv.run(ctx, raw, f.ID, f.Type)
 }
 
-func (sv *wireServer) run(ctx context.Context, raw []byte, id string) {
+func (sv *wireServer) run(ctx context.Context, raw []byte, id, requestType string) {
 	defer sv.wg.Done()
 	defer func() {
 		sv.mu.Lock()
@@ -1051,109 +1076,109 @@ func (sv *wireServer) run(ctx context.Context, raw []byte, id string) {
 		}
 		sv.mu.Unlock()
 	}()
+	if sv.protocol == "jsonl" {
+		sv.runStructuredRequest(ctx, raw, id, requestType)
+		return
+	}
 
 	// The ack rides this goroutine rather than the stream reader's, so picking a
 	// request up can never stall the subscription that delivers the next one.
 	sv.sender.send(wireFrame{Type: "wire/ack", ID: id, File: sv.file})
 
-	cmd := exec.CommandContext(ctx, sv.cmd[0], sv.cmd[1:]...)
-	// The whole request envelope on stdin, so a handler that wants the payload
-	// has it and one that only wants to be poked can ignore it.
-	cmd.Stdin = bytes.NewReader(raw)
-	cmd.Env = append(os.Environ(),
-		"HTMLCLAY_WIRE_FILE="+sv.file,
-		"HTMLCLAY_WIRE_ID="+id,
-	)
-	// A cancelled request is asked to stop, not shot: a handler mid-write should
-	// get to finish the file. WaitDelay is what stops one that ignores the ask.
-	cmd.Cancel = func() error { return cmd.Process.Signal(wireChildStop) }
-	cmd.WaitDelay = 5 * time.Second
 	stderr := &wirePrefixWriter{w: sv.env.stderr, prefix: "[" + wireShortID(id) + "] "}
-	cmd.Stderr = stderr
-
-	// A pipe this process owns, rather than cmd.StdoutPipe: Wait closes the pipe
-	// it hands out, so the only safe order there is drain-then-Wait, and that
-	// order hangs forever when a DESCENDANT of the handler inherited stdout and
-	// outlived it. Owning the read end means the drain can be ended from here.
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		sv.sender.send(wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: err.Error()})
-		sv.say(id, "error: "+err.Error())
-		return
+	type queuedEvent struct {
+		event HelperEvent
+		sent  chan struct{}
 	}
-	cmd.Stdout = pw
-
-	if err := cmd.Start(); err != nil {
-		pw.Close()
-		pr.Close()
-		sv.sender.send(wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: err.Error()})
-		sv.say(id, "error: "+err.Error())
-		return
-	}
-	// The parent's copy of the write end must go, or EOF never arrives even when
-	// the handler exits cleanly.
-	pw.Close()
-
-	read := make(chan struct{})
+	events := make(chan queuedEvent, 16)
+	drained := make(chan struct{})
 	go func() {
-		defer close(read)
-		r := bufio.NewReaderSize(pr, 64<<10)
-		for {
-			line, rErr := wireReadLine(r, wireMaxStatus)
-			if line != "" {
-				// Status is lossy by design: the server bounds the text and a
-				// dropped status frame is repaired by the next one.
-				sv.sender.send(wireFrame{Type: "wire/status", ID: id, File: sv.file, Text: line})
+		defer close(drained)
+		for queued := range events {
+			event := queued.event
+			frame := wireFrame{ID: id, File: sv.file, Text: event.Text}
+			switch event.Kind {
+			case "status":
+				frame.Type = "wire/status"
+			case "result":
+				frame.Type = "wire/done"
+			case "error":
+				frame.Type = "wire/error"
 			}
-			if rErr != nil {
-				return
+			sv.sender.send(frame)
+			if queued.sent != nil {
+				close(queued.sent)
 			}
 		}
 	}()
 
-	waitErr := cmd.Wait()
-	stderr.Flush()
+	Run(ctx, HelperSpec{
+		Argv:   sv.cmd,
+		Env:    append(os.Environ(), "HTMLCLAY_WIRE_FILE="+sv.file, "HTMLCLAY_WIRE_ID="+id),
+		Stdin:  raw,
+		Stderr: stderr,
+	}, func(event HelperEvent) {
+		queued := queuedEvent{event: event}
+		if event.Kind == "result" || event.Kind == "error" {
+			queued.sent = make(chan struct{})
+		}
+		events <- queued
+		if queued.sent != nil {
+			<-queued.sent
+		}
+	})
+	close(events)
+	<-drained
+}
 
-	// Give the reader a moment to finish the output of a handler that has already
-	// exited, then take the pipe away from whatever is still holding it.
-	select {
-	case <-read:
-	case <-time.After(wireChildDrain):
-		pr.Close()
-		<-read
+func (sv *wireServer) runStructuredRequest(ctx context.Context, raw []byte, id, requestType string) {
+	budgetMS, resultLimit := structuredRequestLimits(requestType)
+	ack := wireFrame{
+		Type: "wire/ack", ID: id, File: sv.file,
+		Payload: rawJSON(struct {
+			Mode     string `json:"mode"`
+			BudgetMS int    `json:"budgetMs"`
+		}{Mode: "jsonl", BudgetMS: budgetMS}),
 	}
-	pr.Close()
+	if err := sv.sender.sendStructured(ack); err != nil {
+		fmt.Fprintf(sv.env.stderr, "[wire] cannot encode wire/ack: %v\n", err)
+	}
 
-	// Every outcome is written to stderr as well as sent. A request that ends
-	// with no terminal frame is otherwise indistinguishable from one whose frame
-	// was posted and lost downstream, and the two have nothing in common: the
-	// first means this goroutine never got past Wait, the second means it did.
-	// One line here is what tells them apart afterwards, from the log alone.
-	//
-	// The line goes out AFTER the send returns, so that it means the frame was
-	// posted rather than merely decided on. Printing it first would let the log
-	// claim an outcome the server was never told about, which is the exact
-	// confusion the line exists to remove.
-	var out wireFrame
-	var said string
-	switch {
-	case ctx.Err() != nil:
-		out = wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: "cancelled"}
-		said = "cancelled"
-	case waitErr == nil:
-		out = wireFrame{Type: "wire/done", ID: id, File: sv.file}
-		said = "done"
-	case errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0:
-		// The handler exited 0 and something it left behind held a pipe open past
-		// WaitDelay. The request succeeded; only the cleanup was late.
-		out = wireFrame{Type: "wire/done", ID: id, File: sv.file}
-		said = "done, after waiting out something the handler left holding a pipe"
-	default:
-		out = wireFrame{Type: "wire/error", ID: id, File: sv.file, Text: waitErr.Error()}
-		said = "error: " + waitErr.Error()
+	input, err := stampHelperProtocol(raw)
+	if err != nil {
+		event := structuredHostError("helper_bad_output", "cannot prepare the helper request", helperFailureDetails("request", err.Error()))
+		frame, body, frameErr := encodeHelperEventFrame(id, sv.file, event, resultLimit)
+		if frameErr == nil {
+			sv.sender.sendBody(frame, body)
+		}
+		return
 	}
-	sv.sender.send(out)
-	sv.say(id, said)
+
+	stderr := &wirePrefixWriter{w: sv.env.stderr, prefix: "[" + wireShortID(id) + "] "}
+	queue := newStructuredEventQueue(func(event HelperEvent) {
+		frame, body, err := encodeHelperEventFrame(id, sv.file, event, resultLimit)
+		if err != nil {
+			fmt.Fprintf(sv.env.stderr, "[wire] cannot encode helper outcome for %s: %v\n", wireShortID(id), err)
+			return
+		}
+		sv.sender.sendBody(frame, body)
+	})
+	Run(ctx, HelperSpec{
+		Argv:       sv.cmd,
+		Dir:        filepath.Dir(sv.file),
+		Env:        append(os.Environ(), "HTMLCLAY_WIRE_FILE="+sv.file, "HTMLCLAY_WIRE_ID="+id),
+		Deadline:   time.Duration(budgetMS) * time.Millisecond,
+		Structured: true,
+		Stdin:      input,
+		Stderr:     stderr,
+	}, queue.emit)
+}
+
+func structuredRequestLimits(requestType string) (budgetMS, resultLimit int) {
+	if requestType == "wire/describe" {
+		return helperDescribeDeadline, helperDescribeResultLimit
+	}
+	return helperStructuredDeadline, helperMaxTerminalRecord
 }
 
 // say reports one request's outcome on the CLI's own stderr, in the same
@@ -1307,6 +1332,22 @@ func (s *wireSender) send(f wireFrame) {
 		fmt.Fprintf(s.env.stderr, "[wire] cannot encode %s: %v\n", f.Type, err)
 		return
 	}
+	s.sendBody(f, body)
+}
+
+func (s *wireSender) sendStructured(f wireFrame) error {
+	body, err := encodeFrame(f)
+	if err != nil {
+		return err
+	}
+	if len(body) > helperMaxWireEnvelope {
+		return fmt.Errorf("encoded frame is %d bytes, limit is %d", len(body), helperMaxWireEnvelope)
+	}
+	s.sendBody(f, body)
+	return nil
+}
+
+func (s *wireSender) sendBody(f wireFrame, body []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for pass := 0; pass < 2; pass++ {

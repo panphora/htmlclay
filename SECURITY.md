@@ -1,65 +1,106 @@
 # Security
 
-HTML Clay serves your files to your own browser through a small server that listens only on your own machine. Two rules carry the whole design:
+HTML Clay has two different security boundaries. Keep them separate:
 
-1. **Only files you choose can be saved.** That choice takes two forms: a file you open yourself, and any HTML Clay file inside a folder you have trusted. Everything else — a file reached by a link, an iframe, or a typed URL — is served read-only and never gets a save token.
-2. **A page can only read inside the folder you opened it from.** A request for anything outside that folder pauses and asks you, in a dialog HTML Clay draws itself, to widen reads to one named folder.
+1. **The HTML Clay server limits what a page can read and save through HTML Clay.** A page normally changes only itself. A trusted folder is the exception: every HTML Clay file in it can read named files in the folder and can acquire the save capability for every other HTML Clay file in it.
+2. **A registered helper program runs as you.** It has your access to files, processes, environment variables, and the network. HTML Clay decides whether to start the program. It does not sandbox the program or constrain what the program does after it starts.
 
-One sentence to remember: **a page can only change itself. A trusted folder is the one exception: inside it, every HTML Clay file can change every other, forever, including files that arrive later. Trust only a folder you control completely.**
+A document is not the program being approved. A document asks for a helper by a short name. You select the program when it is registered, and the stored document decision points to that program's local ID. HTML Clay does not let the document supply an executable path or command line, but the document supplies the request on the program's standard input. The program must treat every request as hostile input.
 
-Everything else below is detail on those rules, plus an honest list of what they do not cover.
+## Registered helper programs
 
-## What protects what
+A document declares helpers in `<meta name="htmlclay-helper">` elements near the start of its `<head>`. HTML Clay reads at most the first 512 KiB and accepts at most eight valid, distinct names. Later declarations are silently ignored.
 
-- **Each project gets its own origin.** A trusted folder runs on its own local port, and so does each folder you open a loose file from, so your browser treats two projects as two different sites and will not let one read the other.
-- **A trusted folder's address stays the same.** Its port is remembered and bound again the next time HTML Clay starts, so a bookmark keeps working. An address HTML Clay remembers but is not serving answers with a fixed page that tells you so; it holds no permissions of any kind and never touches the disk, so it cannot be asked which of your files exist.
-- **"Allow Once" is reads only.** It widens reading, never writing, and is forgotten when you quit. "Trust this folder" is the other button in that dialog, and it is the one that grants writing; the dialog says so in full before you click it, and it is not offered at all for a folder HTML Clay will not trust on that route (see limitation 2).
-- **Save tokens ride only on real navigations.** A page's silent background `fetch()` of another file gets the bytes it is allowed to read, never a save token. Anything that wants a token has to be a page the browser actually shows you.
-- **The read-only banner cannot trust a folder by itself.** Its button presents a single-use code that resolves, on the server, to the exact file that page was served from, so a page cannot point it at a different file, and the folder offered is always and only the one that file sits in. A native dialog still decides. The code expires in ten minutes, dies on first use, and a Deny quiets that folder for the rest of the session.
+The decision happens when HTML Clay receives a direct file open, before that page's script runs. For every name with no stored decision, HTML Clay raises one native dialog. The dispatcher never raises a permission dialog in response to a request. A denied helper call fails immediately.
+
+A linked `.htmlclay` file can auto-register when it is opened inside a trusted folder. The current auto-registration path does not inspect helper declarations, ask for helper permission, or attach a dispatcher. Such a file has no helper access until it is opened directly. This differs from the general plan that authorization happens whenever a document opens.
+
+The dialog offers two affirmative choices. Neither is a one-time grant:
+
+- **"Allow for This Document"** allows the selected program for that one document, across reloads and restarts.
+- **"Allow for Any Document"** allows the selected program for every document that declares the same helper name. It is not limited to one folder.
+
+The tray's row for a program turns any-document access back off and forgets the stored document decisions.
+
+The prompt lists helper names but not the registered program paths. If more than one registered program has the same name, the current code selects the earliest registration without asking which program to use. The saved decision still identifies one concrete program, but the prompt does not tell you which one. This is also release blocking because a user cannot knowingly approve the program that will run.
+
+A refusal is stored and the document does not ask again, including after restart. It is supposed to remain permanent until changed in the tray. In the current build, the tray's "Forget document permissions" action can clear allowed decisions but cannot clear a refusal, because a refusal stores no program ID. A refusal therefore cannot currently be changed in the tray. This is a release blocking limitation.
+
+### What approval gives the program
+
+For each request, HTML Clay starts the registered path with the document's folder as its working directory. It passes the full request as JSON on standard input, inherits the app's environment, and supplies the document path and request ID in environment variables. On macOS and Linux it also supplies a login shell `PATH` so ordinary script interpreters can be found.
+
+The five minute execution deadline, the structured output parser, and the result size limits protect HTML Clay from an unbounded request or malformed response. They do not restrict the program's operating system access. A helper can, among other things:
+
+- Read, create, change, or delete any file your account can access, including files outside the document folder and files HTML Clay itself refuses to serve.
+- List directories, start other programs, and leave descendant processes running.
+- Use the network and send away anything it can read.
+- Read or change HTML Clay's `config.json`, including its program registry and permission decisions. The file is mode 0600, but the helper runs as the same account that owns it.
+
+HTML Clay permits up to eight concurrent helper requests per document. This is not an app wide limit. Several documents can each run eight children, so the limit is not resource isolation.
+
+Register only programs you trust with your account. The security boundary inside a helper is what that program does with hostile standard input. Validate the operation, types, paths, sizes, and every other value before using them. HTML Clay validates the helper's output protocol. It cannot validate the meaning of the input for the program.
+
+HTML Clay stores the selected program path, not a hash or a pinned file identity. Replacing the program at that path, or changing the target behind a selected symlink, changes what runs without another prompt. Whoever can update that program controls the code future requests execute.
+
+### Who can invoke an approved program
+
+The dispatcher accepts only names declared by that document and allowed in its stored decisions. Helper wire sends and subscriptions also require that document's save token. Another HTML Clay origin and a local process without the token are refused.
+
+Files in one trusted folder share an origin. A hostile file in that folder can open an approved sibling in a visible top level tab, read the sibling's save token through their shared origin, and use that token to reach the sibling's approved helper. Document specific approval therefore does not isolate a helper from hostile files in the same trusted folder.
+
+When a document has a helper dispatcher, both live sync relay addresses refuse page supplied updates to that target, on both relay lanes. This prevents a sibling from silently pushing a script into an already open, helper enabled tab. It does not stop the visible navigation and token path above, and it does not limit the helper after execution starts.
+
+### Removing or revoking a program
+
+Removing a program or its document permissions stops future dispatch. HTML Clay advances the document's helper generation, rejects late output, and cancels work it is tracking.
+
+That cancellation is not containment. The runner signals only the direct child process and waits for it. Descendants can survive, including descendants that keep output pipes open. Process group cleanup, if added, would be tidying rather than a security boundary because a program running as the user can escape the group or arrange work elsewhere.
+
+Removing or revoking a program does not undo writes, recover data already sent away, or stop work that escaped the tracked process. It also cannot protect the registry from that program, because the registry is owned by the same account.
+
+Removing a program leaves every document decision that pointed at it in place. Each one reads as undecided while the program is gone, so the next open asks again, and restoring the same program ID makes those decisions grant once more. Registering a new program under the same display name does not inherit them: registration mints a new ID, and the stored decisions name the old one.
+
+## What HTML Clay itself protects
+
+These protections apply to requests handled by HTML Clay. They are not a sandbox around registered programs.
+
+- **Only files you choose can be saved through HTML Clay.** That choice takes two forms: a file you open yourself, and any HTML Clay file inside a folder you have trusted. Everything else, including a file reached by a link, an iframe, or a typed URL, is served read only and never gets a save token.
+- **A page can only read through HTML Clay inside the folder it was opened from.** A request outside that folder pauses and asks you, in a dialog HTML Clay draws itself, to widen reads to one named folder.
+- **Each project gets its own origin.** A trusted folder runs on its own local port. Each folder containing an opened loose file also gets its own port. The browser therefore treats unrelated projects as different sites.
+- **Save tokens ride only on real navigations.** A silent background `fetch()` of another file receives no save token. Getting a sibling's token requires a visible top level document navigation.
+- **The read only banner cannot select another file.** Its single use code resolves on the server to the exact file that was served. The code expires after ten minutes and dies on first use.
 - **Always refused, trusted or not:** anything outside your home folder, dotfiles and dot-directories such as `.env`, `.git`, and `.ssh`, HTML Clay's own settings and version history, and directory listings.
-- **Other websites cannot reach it.** The server checks the `Host` header, rejects cross-site requests, and listens only on the loopback address, so a page on the open internet cannot drive it. Every route that changes anything — saving, restoring, live sync, and both permission requests — additionally requires the browser's own attestation that the request came from this very site, which a page cannot forge, so another local program or another HTML Clay site cannot drive them either.
-- **Permission prompts are never drawn by a page.** Only HTML Clay itself can raise the Allow or Deny dialog, so a page cannot fake, restyle, or auto-click one.
-- **Reads are judged by the file actually opened**, using the real path the operating system reports for the open handle, not the name in the request. Swapping a symlink halfway through a request cannot redirect a read into HTML Clay's own state.
-- **A refused read tells a page nothing.** Denials are a single fixed response that names no path, and the answer does not depend on whether the file is there, so a page cannot use refusals to work out which files you have.
-- **Reading a file as JSON is the same read, in a different shape.** The `?data=` and `/_/api/` routes run every check above, in the same order, and answer exactly what a normal request for that file would answer, refusals included. They cannot reach a file an ordinary request could not, they never hand out a save token or turn on edit mode, and they are not readable by other websites, since HTML Clay sends no header that would permit that. A save token that somehow ended up written into a file on disk is stripped before any of this runs, so it cannot be read back out.
+- **Other websites cannot drive the server.** It listens only on loopback, validates the `Host` header, rejects cross site browser requests, and requires same origin browser attestation on routes that save, restore, upload, relay live updates, or change folder permissions.
+- **Permission prompts are native.** Page content cannot draw, restyle, or click them.
+- **Reads are judged by the file actually opened.** HTML Clay checks the real path reported for the open handle, so swapping a symlink during a request cannot redirect the read into its own settings or version history.
+- **A refused read reveals no target path.** Out of scope denials use one fixed response and are decided before checking whether the requested file exists.
+- **JSON data routes use the same read checks.** The `?data=` and `/_/api/` routes cannot reach a file an ordinary request could not, never supply a save token, and strip any token that was written to disk.
 
 ## Trusted folders
 
-A trusted folder is the one trust that grants writing. Declaring one tells HTML Clay: every HTML Clay file in this folder, now or later, may edit itself and follow links to edit every other HTML Clay file in it, with no prompts. That is the point — a project whose pages link to each other just works — and it is also the whole risk.
+A trusted folder is HTML Clay's durable write grant. Every HTML Clay file in it, now or later, can become editable without another prompt and can follow links to other HTML Clay files in the folder.
 
-Plainly: **one hostile HTML file inside a trusted folder can rewrite every other HTML Clay file in that folder.** Not "read", rewrite, version history and all, going forward. Three things bound the damage:
+Plainly: **one hostile HTML file inside a trusted folder can rewrite every other HTML Clay file in that folder.** It can open each sibling in a visible tab, read that page's save token through the shared origin, and overwrite it. A silent background fetch still receives no token, so this path is visible, but it is possible.
 
-- **Writes still go through per-file tokens, and tokens ride only on real navigations.** A silent background `fetch()` harvests no tokens, so a page that wants to take over its siblings has to open a visible browser tab for each one. A worm is possible, but it is not invisible.
-- **Version history still records every save.** Each file keeps at least its last 20 versions and everything from the last 60 days, so a rewritten project can be rolled back file by file.
-- **Untrusting genuinely ends the capability.** The folder's origin closes, files it auto-registered lose their save tokens immediately, their live-sync streams close, and a save from a page that was already open is re-checked at write time. Files you had opened yourself survive, on a new address of their own, because opening a file is its own decision and untrusting a folder was never meant to take it back.
+Version history records saves made through HTML Clay and normally keeps at least the last 20 versions plus everything from the last 60 days. It helps recover from page based overwrites. It is not protection from a helper, which can change or delete the version store with the user's file permissions.
 
-You can trust a folder in three ways. From the tray, "Trust a Folder…" opens a folder picker, which warns once before letting you choose one of your main personal folders. From the read-only banner on a file you reached by a link, one click asks. And from a page you opened yourself, a script may ask. On both page routes HTML Clay raises a native dialog naming the requesting file and the folder — always and only the folder that file actually sits in; a page cannot pick a different one. When you reached the file from a link rather than opening it yourself, the dialog says so on its first line, because on that path a page chose which file you were offered, and so which folder is being proposed. Both page routes refuse your main personal folders (Desktop, Documents, Downloads, and their kin, plus OneDrive, Dropbox, and the other sync folders), judged by what the folder is on disk, not how its name is spelled. OneDrive is matched by the start of its name, so a work account's "OneDrive - Contoso" is refused too, and on Windows with folder backup turned on the personal folders it holds, such as OneDrive/Documents, are refused as the personal folders they are. Deliberately choosing one of those from the tray picker still works.
+Untrusting a folder closes that origin, revokes registrations created only through the trust, closes their live streams, and rechecks any later save. Files you opened yourself remain open on another origin because opening a file was a separate decision. Stored helper decisions for those files remain separate from folder trust.
 
-The page routes rest on a single fact: a file is served with a save token, or offered the banner, only because you opened it or navigated to it yourself, so anything able to ask is already something you acted on. That is what makes it safe to let a page ask at all. It also means the token is now the whole of the entry requirement here, so any future change that hands out a save token without a decision from you would widen this route along with it.
-
-When two trusted folders are nested, the outer one owns the whole tree and serves it on one address. The inner one shows in the menu as covered by the outer, because while the outer stands the inner entry grants nothing of its own and removing it takes nothing away. Untrusting the outer one hands the inner folder back its own address.
-
-Each trusted folder is pinned to the folder's identity on disk. If the folder is later deleted and replaced, or swapped for a link to somewhere else, the entry stops granting anything, its address stops being served at all, and it shows in the tray as "missing or replaced" instead of silently covering the newcomer. Approving the dialog again for a folder in that state re-pins it to the folder now on disk, which is the one way back: your approval names the full path, so it is a fresh decision about the folder that is there now. An entry in that state is never quietly dropped from your settings, because it is the record of what you granted.
-
-That pin is a macOS and Linux protection only. Windows has no cheap, lasting equivalent of the identity a folder carries on disk, so there the stored path is the whole of the entry's identity: a folder deleted and replaced at the same path keeps the trust the old one had, and nothing shows as "missing or replaced". Re-pinning has nothing to move, so it does nothing there either. This matters more now that a trusted folder also owns a lasting address.
-
-## Live sync's relay
-
-Open tabs of the same file stay in sync through the server. Those streams pass the same same-origin check as every other mutating route, so no other site or local program can inject into them. Inside a trusted folder, the relay is part of the worm surface described above: a page that takes over a file can push the new content into that file's other open tabs. That is the same capability the trust already grants, stated for completeness, not an extra hole.
+Each trusted folder is normally pinned to the folder identity reported by the operating system. If the folder is deleted, replaced, or changed into a link to another folder, the entry stops granting and appears as missing or replaced. If the filesystem cannot supply a stable identity, HTML Clay falls back to treating the stored path as the identity.
 
 ## Known limitations
 
-These are real and current. They are listed here rather than left to be discovered.
-
-1. **A trusted folder trusts everything in it.** A hostile HTML file placed inside a trusted folder can read that whole tree and send it somewhere when you open it, and it can open its siblings in tabs of its own, lift their save tokens, and overwrite those files too. Only trust folders where you control the HTML and JavaScript.
-2. **A page can offer you one-click trust of a folder it chose, and that trust grants writing.** The read-permission dialog's "Trust this folder" button is durable and write-granting, and the folder it names is picked by the page, through which files it asks for, so read the path before you click it. Your main personal folders, including Desktop, Documents, Downloads, OneDrive and the other sync folders, are refused on this route, **and so is anything inside them**, because a page aims this dialog by choosing which files it asks for. The button is not shown at all in that case. The practical cost is real and worth knowing: if your projects live under ~/Documents or ~/Desktop, this route will never offer to trust them, and you want the read-only banner on a file you opened, or the HTML Clay menu, instead. You can still trust one deliberately from the HTML Clay menu. On Linux without zenity, this button falls back to "Allow Once", which grants less rather than more. The other page route is narrower: a page asking to trust its own folder can only ever name the folder it was itself opened from.
-3. **The Linux and Windows prompts are beta.** They are implemented and reviewed but have not yet been exercised on real Linux and Windows machines. They fail closed: if a dialog cannot run, access is denied. The realistic failure is a permission that will not grant, not one that silently succeeds. Please report anything that looks wrong.
-4. **Mixed-capitalization disks are not fully handled.** HTML Clay checks, once per run, whether your home folder's disk ignores capitalization in filenames, and compares folder names accordingly, rather than assuming from the operating system as it used to. The remaining gap is a volume of the opposite flavor mounted inside your home folder: it is judged by the home disk's rule, so there a trust can cover a folder whose name differs only in capitalization from the one named. The refused personal folders above are also checked by what they are on disk, so capitalization tricks do not reach them. A folder is now recorded under the spelling the disk itself reports, so trusting one folder twice under two capitalizations makes one entry rather than two, and a settings file that already holds both is merged the next time HTML Clay starts.
-5. **Accented characters can still spell one folder two ways.** Some accented letters have two encodings that look identical and that your disk treats as the same folder, and HTML Clay does not yet equate them. Two trusted entries for one folder can result, showing as two identical-looking rows, and untrusting the one you recognize leaves the other still granting writing. Untrust both rows, or check your settings file, if you ever see a duplicate.
-6. **The prompt can describe a choice your desktop cannot draw.** On Linux with kdialog and no zenity, the permission dialog explains three outcomes and offers two, because kdialog has no third button that can be told apart from pressing Escape. The missing one is always "Trust this folder", the durable choice, so what you get grants less than what you read, never more. On Windows the same is true only if the three-button dialog fails to run, in which case HTML Clay falls back to the older two-outcome box. Trusting a folder from the HTML Clay menu works everywhere.
-7. **Hard links.** Someone who can already create hard links inside your home folder could link HTML Clay's own files into a folder you then trust. That takes an attacker who is already on your machine and can read those files directly, so it adds no exposure they did not already have.
-8. **Inside a folder you allowed or trusted, a page can tell which files exist.** That comes with read access and is not separately preventable.
-9. **A page can make HTML Clay ask about a folder that does not exist.** Because the question is decided from the path a page requests rather than from what is on disk, a page can name any folder, including invented ones, and get a prompt. Denying one stops that whole branch from asking again, but a page can keep inventing new names, so a hostile page can be annoying. Allowing an invented folder grants nothing. This is the cost of the prompt looking the same whether or not the file exists.
+1. **A trusted folder trusts everything in it.** A hostile file can read that tree, send data away, overwrite sibling HTML Clay files, and reach a sibling's approved helper after acquiring its token through a visible navigation.
+2. **A page can steer a read permission prompt.** It chooses the requested path. Read the full path before allowing it. Page steered trust refuses your main personal folders and everything inside them. You can still choose a folder deliberately from the tray.
+3. **The Linux and Windows prompts still need native verification.** They are covered by tests and fail closed when a dialog process fails, but they have not been exercised on those operating systems for this release.
+4. **Mixed capitalization across mounted filesystems is not fully handled.** HTML Clay detects the rule used by the home filesystem. A mounted filesystem with the opposite rule can still be compared incorrectly.
+5. **Unicode equivalent folder names can briefly produce duplicate trusted entries.** Load normalization merges entries that the operating system reports as the same directory, but two equivalent spellings added during one run can coexist until restart. Remove every duplicate row if you see one.
+6. **Some Linux desktops cannot draw every permission choice.** With kdialog and no zenity, the durable third folder permission choice is unavailable and degrades to the narrower choice. Program management still uses a radiolist.
+7. **Hard links are not a boundary against a local attacker.** Someone who can already create hard links inside your home folder can link files into an allowed tree. That attacker already has local file access.
+8. **Inside a folder you allowed or trusted, a page can tell which files exist.** That follows from read access.
+9. **A hostile page can cause repeated prompts for invented folders.** Allowing an invented folder grants nothing. Denying suppresses that branch for the session, but the page can invent other names.
+10. **A fresh helper subscription may not recover a missed outcome.** Terminal result retention is bounded. Do not automatically repeat a helper request merely because its result was lost, since the program may already have completed side effects.
 
 ## Reporting a problem
 

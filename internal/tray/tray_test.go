@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"fyne.io/systray"
 	"github.com/panphora/htmlclay/internal/testutil"
 )
 
@@ -99,6 +100,39 @@ func TestGrowingThePoolLeavesPlacedEntriesWhereTheyAre(t *testing.T) {
 		if lm.slots[i].path != path {
 			t.Errorf("slot %d moved from %q to %q; a queued click would land on the wrong folder", i, path, lm.slots[i].path)
 		}
+	}
+}
+
+func TestProgramsMenuPassesTheRegistrationIDToItsRowHook(t *testing.T) {
+	const id = "7ccd34a6061ca7bb37404e60e740c448"
+	clicked := make(chan string, 1)
+	tr := &Tray{helpers: &HelperHooks{
+		List: func() []Row {
+			return []Row{{Path: id, Label: "search  (missing)"}}
+		},
+		Row: func(got string) []Row {
+			clicked <- got
+			return nil
+		},
+	}}
+	tr.buildHelpersMenu()
+	tr.watchHelpersMenu(nil)
+
+	tr.helpersMenu.mu.Lock()
+	var item *systray.MenuItem
+	for _, s := range tr.helpersMenu.slots {
+		if s.path == id {
+			item = s.item
+			break
+		}
+	}
+	tr.helpersMenu.mu.Unlock()
+	if item == nil {
+		t.Fatal("program did not receive a menu row")
+	}
+	item.ClickedCh <- struct{}{}
+	if got := testutil.Receive(t, 2*time.Second, "the program row hook", clicked); got != id {
+		t.Fatalf("row hook received %q, want registration ID %q", got, id)
 	}
 }
 

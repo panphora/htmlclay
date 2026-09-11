@@ -41,11 +41,13 @@ func (a *app) openFile(filePath string) {
 		}()
 		return
 	}
+	helpers := a.helpersForOpen(absPath, true)
 
 	s, rel, ok := a.route(absPath, session.ViaOsOpen)
 	if !ok {
 		return
 	}
+	a.applyHelperPlan(s, absPath, helpers)
 
 	target := fileURL(s.port, rel)
 	a.rt.logger.Printf("Serving %s at %s", filepath.Base(absPath), target)

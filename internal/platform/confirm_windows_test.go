@@ -18,10 +18,10 @@ func TestChoiceFromDialogResultFailsClosed(t *testing.T) {
 		want ConfirmChoice
 		why  string
 	}{
-		{"Yes", ConfirmTrustFolder, "the Trust This Folder button"},
+		{"Yes", ConfirmAllowAlways, "the Trust This Folder button"},
 		{"OK", ConfirmAllowOnce, "the Allow Once button"},
 		{"Cancel", ConfirmDeny, "the Deny button, and Escape, and the close box"},
-		{"Yes\r\n", ConfirmTrustFolder, "PowerShell writes CRLF"},
+		{"Yes\r\n", ConfirmAllowAlways, "PowerShell writes CRLF"},
 		{"  OK  \n", ConfirmAllowOnce, "surrounding whitespace is not meaning"},
 		{"", ConfirmDeny, "no output at all"},
 		{"Ja", ConfirmDeny, "a localized or unexpected name is not a grant"},

@@ -26,7 +26,7 @@ const (
 
 // confirmDialog shows a three-button permission prompt via a PowerShell WinForms
 // window. MessageBox cannot relabel its buttons, so until 1.4.0 this was a
-// YesNoCancel box where only Yes meant anything and ConfirmTrustFolder was
+// YesNoCancel box where only Yes meant anything and ConfirmAllowAlways was
 // unreachable: the prompt text described three outcomes and Windows could deliver
 // two. A custom Form can carry three labelled buttons, so the durable choice is
 // now offered here as it is on macOS.
@@ -36,20 +36,27 @@ const (
 // dialog, so a script that breaks on some Windows build degrades to the previous
 // behaviour rather than to Deny on every read prompt.
 //
-// The button clicked comes back as a bare word on stdout: TRUST, ALLOW, or
-// anything else (window closed, timeout, error) meaning deny. Escape and the
-// window's close box both land on the deny button, so the dialog fails closed.
+// The button clicked comes back on stdout as its DialogResult name: Yes for the
+// wider grant, OK for the narrower one, and anything else (Cancel, window closed,
+// timeout, error) meaning deny. Escape and the window's close box both land on the
+// deny button, so the dialog fails closed.
 //
-// The title and message are passed as environment variables and referenced with
-// $env:VAR inside the script, never spliced into the script text. PowerShell's
-// lexer treats several Unicode code points (U+2018/2019/201A/201B) as single-quote
-// delimiters, so escaping untrusted text into a quoted literal is not safe; an env
-// var is pure data and immune to every quoting trick.
-func confirmDialog(title, message string) (ConfirmChoice, error) {
+// The title, the message and both affirmative labels are passed as environment
+// variables and referenced with $env:VAR inside the script, never spliced into the
+// script text. PowerShell's lexer treats several Unicode code points
+// (U+2018/2019/201A/201B) as single-quote delimiters, so escaping untrusted text
+// into a quoted literal is not safe; an env var is pure data and immune to every
+// quoting trick.
+func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, error) {
 	// Each button carries a DialogResult, so WinForms closes the window and
 	// ShowDialog returns the answer with no event handlers, no closures, and no
 	// scope tricks. That matters more than usual here: nothing in CI can click this
 	// window, so the script has to be the plainest thing that works.
+	//
+	// The buttons sit in a right-to-left FlowLayoutPanel and size themselves to
+	// their text rather than to fixed bounds. The labels are the caller's now, and
+	// a fixed 140px button silently clips a longer one, which turns a security
+	// prompt into a button whose meaning the user has to guess.
 	//
 	// CancelButton makes Escape and the window's close box both return Cancel, which
 	// is Deny. AcceptButton is deliberately unset, so Enter selects nothing.
@@ -60,21 +67,28 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 		"$f.Text = $env:HTMLCLAY_DIALOG_TITLE; " +
 		"$f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; " +
 		"$f.StartPosition = 'CenterScreen'; $f.TopMost = $true; " +
-		"$f.ClientSize = New-Object System.Drawing.Size(480, 212); " +
+		"$f.ClientSize = New-Object System.Drawing.Size(560, 220); " +
 		"$l = New-Object System.Windows.Forms.Label; " +
-		"$l.Text = $env:HTMLCLAY_DIALOG_MESSAGE; " +
-		"$l.SetBounds(16, 16, 448, 132); " +
-		"$f.Controls.Add($l); " +
+		"$l.Text = $env:HTMLCLAY_DIALOG_MESSAGE; $l.AutoSize = $false; $l.Dock = 'Fill'; " +
+		"$l.Padding = New-Object System.Windows.Forms.Padding(16, 16, 16, 8); " +
+		"$row = New-Object System.Windows.Forms.FlowLayoutPanel; " +
+		"$row.FlowDirection = 'RightToLeft'; $row.Dock = 'Bottom'; $row.Height = 52; " +
+		"$row.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8); " +
 		"$deny = New-Object System.Windows.Forms.Button; " +
-		"$deny.Text = 'Deny'; $deny.SetBounds(16, 162, 140, 32); " +
+		"$deny.Text = 'Deny'; " +
 		"$deny.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; " +
 		"$allow = New-Object System.Windows.Forms.Button; " +
-		"$allow.Text = 'Allow Once'; $allow.SetBounds(166, 162, 140, 32); " +
+		"$allow.Text = $env:HTMLCLAY_DIALOG_ALLOW; " +
 		"$allow.DialogResult = [System.Windows.Forms.DialogResult]::OK; " +
-		"$trust = New-Object System.Windows.Forms.Button; " +
-		"$trust.Text = 'Trust This Folder'; $trust.SetBounds(316, 162, 148, 32); " +
-		"$trust.DialogResult = [System.Windows.Forms.DialogResult]::Yes; " +
-		"$f.Controls.AddRange(@($deny, $allow, $trust)); " +
+		"$always = New-Object System.Windows.Forms.Button; " +
+		"$always.Text = $env:HTMLCLAY_DIALOG_ALWAYS; " +
+		"$always.DialogResult = [System.Windows.Forms.DialogResult]::Yes; " +
+		"foreach ($b in @($deny, $allow, $always)) { $b.AutoSize = $true; " +
+		"$b.AutoSizeMode = 'GrowAndShrink'; " +
+		"$b.MinimumSize = New-Object System.Drawing.Size(96, 32); " +
+		"$b.Margin = New-Object System.Windows.Forms.Padding(6, 4, 6, 4) }; " +
+		"$row.Controls.AddRange(@($always, $allow, $deny)); " +
+		"$f.Controls.AddRange(@($l, $row)); " +
 		"$f.CancelButton = $deny; " +
 		"Write-Output $f.ShowDialog()"
 
@@ -87,10 +101,12 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 	cmd.Env = append(os.Environ(),
 		"HTMLCLAY_DIALOG_TITLE="+title,
 		"HTMLCLAY_DIALOG_MESSAGE="+message,
+		"HTMLCLAY_DIALOG_ALLOW="+labels.Allow,
+		"HTMLCLAY_DIALOG_ALWAYS="+labels.Always,
 	)
 	out, err := cmd.Output()
 	if err != nil {
-		return confirmDialogMessageBox(title, message)
+		return confirmDialogMessageBox(title, message, labels)
 	}
 	return choiceFromDialogResult(string(out)), nil
 }
@@ -100,7 +116,7 @@ func confirmDialog(title, message string) (ConfirmChoice, error) {
 func choiceFromDialogResult(out string) ConfirmChoice {
 	switch strings.TrimSpace(out) {
 	case "Yes":
-		return ConfirmTrustFolder
+		return ConfirmAllowAlways
 	case "OK":
 		return ConfirmAllowOnce
 	}
@@ -110,7 +126,14 @@ func choiceFromDialogResult(out string) ConfirmChoice {
 // confirmDialogMessageBox is the pre-1.4.0 prompt, kept as the fallback for a
 // machine where the custom form will not run. It offers two outcomes: Yes maps to
 // ConfirmAllowOnce, and No, Cancel, timeout and any error all fail closed.
-func confirmDialogMessageBox(title, message string) (ConfirmChoice, error) {
+//
+// MessageBox cannot relabel Yes, so labels.Allow is appended to the message text
+// instead. Without it the user is asked to say Yes to a grant this dialog never
+// names.
+func confirmDialogMessageBox(title, message string, labels ConfirmLabels) (ConfirmChoice, error) {
+	if labels.Allow != "" {
+		message += "\n\nYes: " + labels.Allow
+	}
 	const script = "$ErrorActionPreference = 'Stop'; " +
 		"Add-Type -AssemblyName System.Windows.Forms; " +
 		"$r = [System.Windows.Forms.MessageBox]::Show(" +

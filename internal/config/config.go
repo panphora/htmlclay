@@ -47,8 +47,10 @@ type Config struct {
 	// TrustedFolders once on Load and cleared on the next Save, which is the
 	// completion marker. Distinct Go field, distinct JSON key, distinct type, so
 	// the decoder never sees a shape it does not expect.
-	LegacyTrusted []string `json:"trustedFolders,omitempty"`
-	baseDir       string
+	LegacyTrusted   []string         `json:"trustedFolders,omitempty"`
+	HelperPrograms  []HelperProgram  `json:"helperPrograms,omitempty"`
+	HelperDecisions []HelperDecision `json:"helperDecisions,omitempty"`
+	baseDir         string
 }
 
 // TrustedFolder is one declared folder. Identity is the folder's device+inode
@@ -392,6 +394,10 @@ type Result struct {
 	// gained one, which is what a config written by a Windows build from before
 	// DirIdentity answered there looks like.
 	PinnedIdentities bool
+	// DroppedHelperPrograms and DroppedHelperDecisions report malformed,
+	// duplicate, dangling, or over-cap helper records removed during Load.
+	DroppedHelperPrograms  int
+	DroppedHelperDecisions int
 }
 
 func Load(identity func(string) string) (*Config, Result, error) {
@@ -448,6 +454,7 @@ func LoadFrom(baseDir string, identity func(string) string) (*Config, Result, er
 	// After the dedupe, so a pin is never derived for an entry that is about to
 	// be dropped as an alias of one already kept.
 	res.PinnedIdentities = cfg.backfillIdentities(identity)
+	res.DroppedHelperPrograms, res.DroppedHelperDecisions = cfg.normalizeHelpers()
 	cfg.capSitePorts()
 	return cfg, res, nil
 }

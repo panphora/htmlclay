@@ -48,9 +48,16 @@ type trustFunc func(dir string) error
 // two buttons is the platform's own two-button dialog, whose affirmative answer
 // can only ever be Allow Once. A platform that cannot draw three buttons already
 // folds Trust down to Allow Once, which errs toward less permission.
+//
+// The labels belong to this call, not to the platform package: this is the read
+// prompt, so its wider grant really is "trust this folder". The document-programs
+// prompt raises the same dialog with its own pair.
 var defaultConfirm brokerConfirm = func(title, message string, allowTrust bool) (platform.ConfirmChoice, error) {
 	if allowTrust {
-		return platform.Confirm(title, message)
+		return platform.Confirm(title, message, platform.ConfirmLabels{
+			Allow:  "Allow Once",
+			Always: "Trust This Folder",
+		})
 	}
 	ok, err := platform.ConfirmWithButtons(title, message, "Allow")
 	if err != nil || !ok {
@@ -366,7 +373,7 @@ func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm, 
 	// replacement for the grant, because the folder in this dialog is often a
 	// cousin of the opened page rather than an ancestor of it, and the page must
 	// keep reading through the grant whatever the durable half does.
-	if choice == platform.ConfirmTrustFolder && allowTrust {
+	if choice == platform.ConfirmAllowAlways && allowTrust {
 		if tErr := trust(grantPath); tErr != nil {
 			b.logger.Printf("broker: could not trust %s: %v", grantPath, tErr)
 		} else {

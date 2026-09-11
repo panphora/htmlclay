@@ -231,9 +231,12 @@ func (a *app) untrustFolder(dir string) error {
 		a.rt.ls.DropSubscribers(p)
 	}
 	for _, p := range reopen {
-		if _, _, ok := a.route(p, session.ViaOsOpen); !ok {
+		s, _, ok := a.route(p, session.ViaOsOpen)
+		if !ok {
 			a.rt.logger.Printf("Could not re-home %s after untrusting %s", p, dir)
+			continue
 		}
+		a.applyHelperPlan(s, p, a.helpersForOpen(p, false))
 	}
 	// Hold the freed port with the recovery page, so a live bookmark degrades to a
 	// page rather than a connection refusal for the rest of this run. Re-homing

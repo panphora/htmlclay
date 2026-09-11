@@ -63,6 +63,13 @@ type appRuntime struct {
 	// that auto-approves read grants must not silently auto-approve the
 	// write-granting dialog too.
 	confirmTrust func(title, message, affirmative string) (bool, error)
+	// confirmHelpers overrides the dialog that asks whether a document may use
+	// the programs it declares. Separate from confirm for the same reason
+	// confirmTrust is, and for one more: the two dialogs grant different things
+	// and so carry different button labels, and running the helper question
+	// through the read prompt's seam is what let it ask "Trust this folder"
+	// about a program.
+	confirmHelpers func(title, message string, allowBroad bool) (platform.ConfirmChoice, error)
 	// notify, when set, overrides the native notification. Production leaves it nil
 	// (a real banner); tests capture the message instead of putting one on the
 	// user's screen. Unlike confirm, this is read live from background goroutines
@@ -73,6 +80,7 @@ type appRuntime struct {
 type app struct {
 	rt       *appRuntime
 	mu       sync.Mutex
+	helperMu sync.Mutex
 	sites    []*site
 	parked   []*parked
 	stopping bool
@@ -361,6 +369,10 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 		List:   a.trustedFolderRows,
 		Add:    a.pickAndTrustFolder,
 		Remove: a.removeTrustedFolder,
+	}, &tray.HelperHooks{
+		List: a.helperProgramRows,
+		Add:  a.pickHelperProgram,
+		Row:  a.manageHelperProgramAndRefresh,
 	}, a.dialogAdvice)
 	a.rt.logger.Printf("Tray exited")
 }
