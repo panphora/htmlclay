@@ -352,14 +352,22 @@ func (a *app) trustFromPage(requestingFile string, openedByUser bool) (string, b
 	return a.serveURL(requestingFile)
 }
 
-// serveURL routes absPath and reports where it is served. A file already
-// registered keeps its origin; one that is not gets the origin its anchor now
-// implies, which after a trust is the trusted folder's.
+// serveURL routes absPath, attaches its helper dispatcher, and reports where it
+// is served. A file already registered keeps its origin; one that is not gets
+// the origin its anchor now implies, which after a trust is the trusted
+// folder's. Attaching here rather than only in openFile is what lets a document
+// reached by navigation, a bookmark or the banner's trust button use a helper it
+// already has permission for: those paths never pass through openFile, so
+// without this the document reports every declared name as unavailable and a
+// reload cannot change it.
 func (a *app) serveURL(absPath string) (string, bool) {
 	s, rel, ok := a.route(absPath, session.ViaTrusted)
 	if !ok {
 		return "", false
 	}
+	// Browser navigation restores stored permissions; only an explicit file
+	// open should ask the user to approve a new program.
+	a.applyHelperPlan(s, absPath, a.helpersForNavigation(absPath))
 	return fileURL(s.port, rel), true
 }
 

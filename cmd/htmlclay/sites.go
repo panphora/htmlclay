@@ -403,7 +403,10 @@ func (a *app) route(absPath string, via session.Provenance) (*site, string, bool
 	return pending, rel, true
 }
 
-// routeTrusted is the server's auto-registration seam (Hooks.Route): route
+// routeTrusted is the server's auto-registration seam (Hooks.Route). It routes
+// the file and attaches its helper dispatcher through serveURL, which is the
+// only reason a trusted-folder document can use a helper it already has
+// permission for. Original contract below: route
 // absPath and report where it serves, so the serving site can redirect when the
 // registration landed on another origin.
 //
@@ -416,11 +419,7 @@ func (a *app) routeTrusted(absPath string) (string, bool) {
 	if _, trusted := a.anchorFor(absPath); !trusted {
 		return "", false
 	}
-	s, rel, ok := a.route(absPath, session.ViaTrusted)
-	if !ok {
-		return "", false
-	}
-	return fileURL(s.port, rel), true
+	return a.serveURL(absPath)
 }
 
 // startSites binds every remembered port before argv is processed, so a URL

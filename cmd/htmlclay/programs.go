@@ -97,6 +97,7 @@ func (a *app) pickHelperProgramWith(dialogs helperProgramDialogs) []tray.Row {
 		return a.helperProgramRows()
 	}
 
+	a.helperStateMu.Lock()
 	a.mu.Lock()
 	program, err := a.rt.cfg.AddHelperProgram(name, path)
 	if err == nil {
@@ -106,6 +107,7 @@ func (a *app) pickHelperProgramWith(dialogs helperProgramDialogs) []tray.Row {
 		}
 	}
 	a.mu.Unlock()
+	a.helperStateMu.Unlock()
 	if err != nil {
 		a.reportHelperProgramError("Could not add the program", err)
 	}
@@ -216,6 +218,7 @@ func (a *app) manageHelperProgramWith(id string, manage func(platform.ProgramSum
 	}
 
 	var saveErr error
+	a.helperStateMu.Lock()
 	a.mu.Lock()
 	switch choice {
 	case platform.ManageToggleAnyDocument:
@@ -241,6 +244,7 @@ func (a *app) manageHelperProgramWith(id string, manage func(platform.ProgramSum
 		}
 	}
 	a.mu.Unlock()
+	a.helperStateMu.Unlock()
 	if saveErr != nil {
 		a.reportHelperProgramError("Could not save the program change", saveErr)
 	}

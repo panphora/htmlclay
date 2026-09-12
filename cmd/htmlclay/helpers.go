@@ -68,17 +68,35 @@ func (a *app) systemHelperApprovalDialogs() helperApprovalDialogs {
 	}
 }
 
+// helpersForOpen resolves a document's permissions for something the user did:
+// opening a file, a tray action, untrusting a folder. A failure is reported on
+// screen because someone is waiting on the action that caused it.
 func (a *app) helpersForOpen(document string, prompt bool) helperOpenPlan {
-	return a.helpersForOpenWith(document, prompt, a.systemHelperApprovalDialogs())
+	return a.helpersForOpenWith(document, prompt, true, a.systemHelperApprovalDialogs())
 }
 
-func (a *app) helpersForOpenWith(document string, prompt bool, dialogs helperApprovalDialogs) helperOpenPlan {
-	a.helperMu.Lock()
-	defer a.helperMu.Unlock()
+// helpersForNavigation resolves the same permissions for an HTTP request, which
+// nobody asked for directly. It never prompts, so it never takes helperMu and
+// cannot hold a page load behind a dialog someone left open elsewhere, and it
+// reports a failure to the log alone rather than raising a banner over whatever
+// the user is actually doing.
+func (a *app) helpersForNavigation(document string) helperOpenPlan {
+	return a.helpersForOpenWith(document, false, false, a.systemHelperApprovalDialogs())
+}
+
+func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs helperApprovalDialogs) helperOpenPlan {
+	if prompt {
+		a.helperMu.Lock()
+		defer a.helperMu.Unlock()
+	}
 
 	names, err := readDocumentHelperNames(document)
 	if err != nil {
-		a.reportHelperSetupError(document, err)
+		if notify {
+			a.reportHelperSetupError(document, err)
+		} else {
+			a.rt.logger.Printf("Could not configure helpers for %s: %v", document, err)
+		}
 		return helperOpenPlan{}
 	}
 	plan := helperOpenPlan{names: names}
@@ -183,6 +201,8 @@ func helperApprovalMessage(document string, candidates []helperCandidate) string
 // A name that is in neither result was never decided: nobody was asked, the
 // picker was cancelled, or the program behind an old allow is gone.
 func (a *app) resolvedHelpers(document string, names []string) (map[string]config.HelperProgram, []string) {
+	a.helperStateMu.Lock()
+	defer a.helperStateMu.Unlock()
 	allowed := make(map[string]config.HelperProgram)
 	var denied []string
 	for _, name := range names {
@@ -199,6 +219,8 @@ func (a *app) resolvedHelpers(document string, names []string) (map[string]confi
 }
 
 func (a *app) saveHelperDecisionSet(document string, candidates []helperCandidate, choice platform.ConfirmChoice) error {
+	a.helperStateMu.Lock()
+	defer a.helperStateMu.Unlock()
 	added := make([]config.HelperProgram, 0, len(candidates))
 	flagUndo := make(map[string]bool)
 	decisionUndo := make([]helperDecisionUndo, 0, len(candidates))

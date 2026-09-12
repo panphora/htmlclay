@@ -85,6 +85,11 @@ type app struct {
 	parked   []*parked
 	stopping bool
 	noTray   bool
+	// helperStateMu guards the permission transactions themselves, so a read can
+	// see a whole one without waiting behind helperMu, which a native dialog can
+	// hold for minutes. Lock order is helperMu, then helperStateMu, then mu.
+	// Never take helperMu while holding either of the others.
+	helperStateMu sync.Mutex
 	// dialogAdvice is non-empty when this machine cannot raise a permission
 	// dialog at all. It is read once at startup and shown in two places, so it
 	// is held rather than asked for again: platform.MissingDialogAdvice runs

@@ -7,10 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/panphora/htmlclay/internal/config"
 	"github.com/panphora/htmlclay/internal/platform"
+	"github.com/panphora/htmlclay/internal/session"
 )
 
 func writeHelperPage(t *testing.T, dir string, names ...string) string {
@@ -53,7 +56,7 @@ func TestHelperDenialUsesOneDialogAndPersists(t *testing.T) {
 		},
 	}
 	for i := 0; i < 2; i++ {
-		plan := a.helpersForOpenWith(document, true, dialogs)
+		plan := a.helpersForOpenWith(document, true, true, dialogs)
 		if len(plan.allowed) != 0 {
 			t.Fatalf("denied plan allowed helpers: %+v", plan.allowed)
 		}
@@ -70,7 +73,7 @@ func TestHelperDenialUsesOneDialogAndPersists(t *testing.T) {
 	}
 
 	restarted := newTestAppWithConfigDir(t, home, cfgBase)
-	restartedPlan := restarted.helpersForOpenWith(document, true, helperApprovalDialogs{
+	restartedPlan := restarted.helpersForOpenWith(document, true, true, helperApprovalDialogs{
 		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
 			t.Fatal("restart prompted after a persisted denial")
 			return platform.ConfirmDeny, nil
@@ -87,7 +90,7 @@ func TestHelperApprovalSelectsThenPersistsTheProgram(t *testing.T) {
 	document := writeHelperPage(t, home, "search")
 	programPath := writeTestProgram(t, t.TempDir(), "search", 0755)
 	var order []string
-	plan := a.helpersForOpenWith(document, true, helperApprovalDialogs{
+	plan := a.helpersForOpenWith(document, true, true, helperApprovalDialogs{
 		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
 			order = append(order, "confirm")
 			return platform.ConfirmAllowAlways, nil
@@ -179,7 +182,7 @@ func TestStoredHelperDecisionRestoresWithoutDialogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	fail := errors.New("dialog called")
-	plan := a.helpersForOpenWith(document, false, helperApprovalDialogs{
+	plan := a.helpersForOpenWith(document, false, true, helperApprovalDialogs{
 		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
 			return platform.ConfirmDeny, fail
 		},
@@ -193,6 +196,167 @@ func TestStoredHelperDecisionRestoresWithoutDialogs(t *testing.T) {
 	if got := plan.allowed["search"]; got.ID != program.ID {
 		t.Fatalf("restored helper = %+v, want %s", got, program.ID)
 	}
+}
+
+func TestTrustedNavigationRestoresHelpersWithoutDialogs(t *testing.T) {
+	for _, entry := range []string{"startup", "banner"} {
+		for _, permission := range []struct {
+			name        string
+			anyDocument bool
+			decided     bool
+			allowed     bool
+			state       string
+		}{
+			{"any document", true, true, true, "ready"},
+			{"document allow", false, true, true, "ready"},
+			{"document deny", true, true, false, "denied"},
+			{"undecided", false, false, false, "unavailable"},
+		} {
+			t.Run(entry+"/"+permission.name, func(t *testing.T) {
+				home, err := resolveSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				folder := filepath.Join(home, "search")
+				document := filepath.Join(folder, "sol.htmlclay")
+				writeTestFile(t, document, `<!doctype html><html><head><meta name="htmlclay-helper" content="search"></head></html>`)
+				cfgBase := t.TempDir()
+				first := newTestAppWithConfigDir(t, home, cfgBase)
+				program, err := first.rt.cfg.AddHelperProgram("search", writeTestProgram(t, home, "clay-search", 0755))
+				if err != nil {
+					t.Fatal(err)
+				}
+				first.rt.cfg.SetHelperAnyDocument(program.ID, permission.anyDocument)
+				if permission.decided {
+					decision := config.HelperDecision{Document: document, Name: "search", Allowed: permission.allowed}
+					if permission.allowed {
+						decision.Program = program.ID
+						if permission.anyDocument {
+							decision.Document = filepath.Join(folder, "astra.htmlclay")
+						}
+					}
+					if _, _, err := first.rt.cfg.DecideHelper(decision); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if entry == "startup" {
+					first.rt.cfg.AddTrustedFolder(folder, platform.DirIdentity(folder))
+				}
+				if err := first.rt.cfg.Save(); err != nil {
+					t.Fatal(err)
+				}
+				a := newTestAppWithConfigDir(t, home, cfgBase)
+				a.helperMu.Lock()
+				release := sync.OnceFunc(a.helperMu.Unlock)
+				defer release()
+				timer := time.AfterFunc(5*time.Second, release)
+				defer timer.Stop()
+				a.rt.confirmHelpers = func(string, string, bool) (platform.ConfirmChoice, error) {
+					t.Error("browser navigation raised a helper permission dialog")
+					return platform.ConfirmDeny, nil
+				}
+				resolution, _ := a.rt.cfg.ResolveHelper(document, "search")
+				if resolution.Decided != permission.decided || resolution.Allowed != permission.allowed {
+					t.Fatalf("stored resolution = %+v", resolution)
+				}
+				var s *site
+				if entry == "startup" {
+					a.startSites()
+					a.mu.Lock()
+					s = a.siteAtLocked(folder)
+					a.mu.Unlock()
+					if s == nil {
+						t.Fatal("startup did not bind the trusted folder")
+					}
+				} else {
+					index := filepath.Join(folder, "index.htmlclay")
+					writeTestFile(t, index, "<html></html>")
+					s, _ = a.openForTest(t, index)
+					a.rt.confirmTrust = func(string, string, string) (bool, error) { return true, nil }
+				}
+				if _, ok := s.sessions.LookupByPath(document); ok {
+					t.Fatal("the fixture registered the helper document before navigation")
+				}
+				target := fileURL(s.port, filepath.Join("search", "sol.htmlclay"))
+				if entry == "banner" {
+					status, body := fetchNav(t, target)
+					nonce := bannerNonceRe.FindStringSubmatch(body)
+					if status != 200 || nonce == nil {
+						t.Fatalf("read-only banner = %d: %s", status, body)
+					}
+					status, body = postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/open-request", s.port),
+						"application/json", `{"nonce":"`+nonce[1]+`"}`)
+					if status != 200 || !strings.Contains(body, `"ok":true`) {
+						t.Fatalf("trust request = %d: %s", status, body)
+					}
+				}
+				for visit := 1; visit <= 2; visit++ {
+					status, body := fetchNav(t, target)
+					token := tokenAttrRe.FindStringSubmatch(body)
+					if status != 200 || token == nil {
+						t.Fatalf("navigation = %d: %s", status, body)
+					}
+					status, body = fetch(t, fmt.Sprintf("http://127.0.0.1:%d/_/meta/%s", s.port, token[1]))
+					var meta struct {
+						Document struct {
+							Helpers []struct{ Name, State string }
+						}
+					}
+					if status != 200 {
+						t.Fatalf("meta = %d: %s", status, body)
+					}
+					if err := json.Unmarshal([]byte(body), &meta); err != nil {
+						t.Fatal(err)
+					}
+					helpers := meta.Document.Helpers
+					if len(helpers) != 1 || helpers[0].Name != "search" || helpers[0].State != permission.state {
+						t.Fatalf("visit %d: discovery helpers = %+v, want search:%s", visit, helpers, permission.state)
+					}
+					t.Logf("visit %d: discovery search=%s", visit, helpers[0].State)
+				}
+				if via := s.sessions.Via(document); via != session.ViaTrusted {
+					t.Fatalf("document provenance = %v, want only ViaTrusted", via)
+				}
+				if !timer.Stop() {
+					t.Fatal("navigation waited for the helper dialog lock to be released")
+				}
+				t.Log("navigation and discovery completed while the helper dialog lock was held")
+			})
+		}
+	}
+}
+
+// A navigation and a tray action both resolve without prompting, but only one
+// of them has a user waiting on it. Reporting a bad declaration is keyed on
+// that, not on whether the pass prompts, or a tray action on an unreadable file
+// would fail with nothing on screen anywhere.
+func TestOnlyAUserActionReportsADeclarationItCannotRead(t *testing.T) {
+	missing := func(a *app) string { return filepath.Join(a.rt.home, "missing.htmlclay") }
+
+	t.Run("navigation stays silent", func(t *testing.T) {
+		a := newTestApp(t, t.TempDir())
+		a.rt.notify = func(string, string) error {
+			t.Error("an HTTP navigation raised a native notification")
+			return nil
+		}
+		plan := a.helpersForNavigation(missing(a))
+		if len(plan.names) != 0 || len(plan.allowed) != 0 {
+			t.Fatalf("failed declaration read returned a plan: %+v", plan)
+		}
+	})
+
+	t.Run("a tray action reports", func(t *testing.T) {
+		a := newTestApp(t, t.TempDir())
+		reported := 0
+		a.rt.notify = func(string, string) error {
+			reported++
+			return nil
+		}
+		a.helpersForOpen(missing(a), false)
+		if reported != 1 {
+			t.Fatalf("notifications raised = %d, want 1", reported)
+		}
+	})
 }
 
 func TestRefreshingOpenDispatchersAppliesRevocationWithoutPrompt(t *testing.T) {
@@ -213,7 +377,7 @@ func TestRefreshingOpenDispatchersAppliesRevocationWithoutPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, _ := a.openForTest(t, document)
-	a.applyHelperPlan(s, document, a.helpersForOpenWith(document, false, helperApprovalDialogs{}))
+	a.applyHelperPlan(s, document, a.helpersForOpenWith(document, false, false, helperApprovalDialogs{}))
 	before := s.srv.HelperGeneration(document)
 	if before == 0 || !s.srv.HelpersBound(document) {
 		t.Fatal("allowed helper did not attach")
