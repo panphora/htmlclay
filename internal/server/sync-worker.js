@@ -99,7 +99,7 @@ function subscribe(port, meta, msg) {
       send(port, { type: "gone" });
       return;
     }
-    sub = { document: msg.document, lane: msg.lane, since, opened: false, latest: null, ports: new Set(), index: -1 };
+    sub = { document: msg.document, lane: msg.lane, since, opened: false, latest: null, content: new Map(), needsResync: false, ports: new Set(), index: -1 };
     subs.set(key, sub);
     scheduleRebuild();
   } else if (!sub.opened && since > 0 && (sub.since === 0 || since < sub.since)) {
@@ -123,8 +123,8 @@ function subscribe(port, meta, msg) {
 // not see, unless a frame has arrived since: a frame is the whole state, and
 // deliverLatest hands it over. A page with no position has no gap.
 function sendCursor(port, meta, sub, resync) {
-  const behind = meta.since > 0 && meta.since < sub.since && sub.latest === null;
-  send(port, { type: "cursor", seq: sub.since, resync: resync || behind });
+  const behind = meta.since > 0 && meta.since < sub.since && sub.content.size === 0;
+  send(port, { type: "cursor", seq: sub.since, resync: resync || sub.needsResync || behind });
 }
 
 function unsubscribe(port, meta) {
@@ -154,8 +154,12 @@ function deliverLatest(port, meta) {
   if (meta.key === null || !meta.visible) return;
   const sub = subs.get(meta.key);
   if (!sub || sub.latest === null || sub.latest.id === meta.seen) return;
-  meta.seen = sub.latest.id;
-  send(port, { type: "frame", data: sub.latest.data });
+  const frames = [...sub.content.values(), sub.latest].sort((a, b) => a.id - b.id);
+  for (const frame of frames) {
+    if (frame.id <= meta.seen) continue;
+    meta.seen = frame.id;
+    send(port, { type: "frame", data: frame.data });
+  }
 }
 
 function scheduleRebuild() {
@@ -225,6 +229,12 @@ function onCursor(order, e) {
     return;
   }
   sub.opened = true;
+  if (cursor.resync === true) {
+    sub.latest = null;
+    sub.content.clear();
+    // A cursor cannot prove that a later frame repairs both peer and disk state.
+    sub.needsResync = true;
+  }
   if (typeof cursor.seq === "number") sub.since = cursor.seq;
   for (const port of sub.ports) {
     const meta = ports.get(port);
@@ -236,6 +246,15 @@ function onFrame(sub, e) {
   const id = Number(e.lastEventId);
   if (Number.isFinite(id) && id > sub.since) sub.since = id;
   sub.latest = { id: sub.since, data: e.data };
+  try {
+    const data = JSON.parse(e.data);
+    if (data.type === "notification" && (data.data?.kind === "external-change" ||
+        (typeof data.msg === "string" && data.msg.endsWith("changed on disk outside this tab")))) {
+      sub.content.set("disk", sub.latest);
+    } else if (typeof data.html === "string") {
+      sub.content.set("peer", sub.latest);
+    }
+  } catch (_) {}
   for (const port of sub.ports) {
     const meta = ports.get(port);
     if (!meta || !meta.visible) continue;

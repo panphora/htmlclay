@@ -90,11 +90,11 @@ assert.equal(p2.take("frame"), null);
 
 // 4. A hidden page gets nothing until it is visible, then only the latest frame.
 p1.push({ v: 1, type: "hidden" });
-es.emit("s0", '{"seq":43}', "43");
-es.emit("s0", '{"seq":44}', "44");
+es.emit("s0", '{"seq":43,"html":"older"}', "43");
+es.emit("s0", '{"seq":44,"html":"latest"}', "44");
 assert.equal(p1.take("frame"), null);
 p1.push({ v: 1, type: "visible" });
-assert.deepEqual(p1.drain().filter((m) => m.type === "frame").map((m) => m.data), ['{"seq":44}']);
+assert.deepEqual(p1.drain().filter((m) => m.type === "frame").map((m) => m.data), ['{"seq":44,"html":"latest"}']);
 p1.push({ v: 1, type: "visible" });
 assert.equal(p1.take("frame"), null, "a frame already delivered is not delivered again");
 
@@ -104,7 +104,7 @@ const p3 = connect();
 p3.take("status");
 p3.push({ v: 1, type: "subscribe", document: A, lane: "live", since: 0 });
 assert.deepEqual(p3.take("cursor"), { v: 1, type: "cursor", seq: 44, resync: false });
-assert.equal(p3.take("frame").data, '{"seq":44}');
+assert.equal(p3.take("frame").data, '{"seq":44,"html":"latest"}');
 await sleep(20);
 assert.equal(FakeEventSource.latest(), es, "joining an existing subscription does not rebuild");
 
@@ -234,15 +234,58 @@ assert.deepEqual(pc3.take("cursor"), { v: 1, type: "cursor", seq: 5000, resync: 
 const pc4 = connect(); pc4.take("status");
 pc4.push({ v: 1, type: "subscribe", document: C, lane: "live", since: 4000 });
 assert.deepEqual(pc4.take("cursor"), { v: 1, type: "cursor", seq: 5000, resync: true }, "joining an open stream from behind resyncs too");
-esC.emit("s1", '{"seq":5001}', "5001");
+esC.emit("s1", '{"seq":5001,"html":"current"}', "5001");
 const pc5 = connect(); pc5.take("status");
 pc5.push({ v: 1, type: "subscribe", document: C, lane: "live", since: 4000 });
 assert.deepEqual(pc5.take("cursor"), { v: 1, type: "cursor", seq: 5001, resync: false }, "with a frame in hand the gap is closed by the frame");
-assert.equal(pc5.take("frame").data, '{"seq":5001}');
+assert.equal(pc5.take("frame").data, '{"seq":5001,"html":"current"}');
 for (const p of [pc1, pc2, pc3, pc4, pc5]) p.push({ v: 1, type: "unsubscribe" });
 await sleep(20);
 
-// 14. Silent pages are dropped on the sweep, and with the last of them the stream.
+// 14. Peer and disk state survive a later notification while a page is hidden.
+const D = ORIGIN + "/d.htmlclay";
+const pd1 = connect(); pd1.take("status");
+pd1.push({ v: 1, type: "subscribe", document: D, lane: "live", since: 0 });
+await sleep(20);
+const esD = FakeEventSource.latest();
+const di = entries(esD.url).findIndex(entry => entry.endsWith(":" + D));
+esD.emit("cursor", JSON.stringify({ sub: di, seq: 0 }));
+pd1.push({ v: 1, type: "hidden" });
+const peer = JSON.stringify({ seq: 10, html: "peer state", sender: "peer" });
+const disk = JSON.stringify({ seq: 11, type: "notification", data: { kind: "external-change", html: "disk state", sender: "file-system", etag: "disk11" } });
+const notice = JSON.stringify({ seq: 12, type: "notification", msg: "warning" });
+esD.emit("s" + di, peer, "10");
+esD.emit("s" + di, disk, "11");
+esD.emit("s" + di, notice, "12");
+pd1.push({ v: 1, type: "visible" });
+assert.deepEqual(pd1.drain().filter(m => m.type === "frame").map(m => m.data), [peer, disk, notice]);
+
+pd1.push({ v: 1, type: "hidden" });
+const largeDisk = JSON.stringify({ seq: 13, type: "notification", msgType: "warning", msg: "d.htmlclay changed on disk outside this tab" });
+const laterNotice = JSON.stringify({ seq: 14, type: "notification", msg: "warning" });
+esD.emit("s" + di, largeDisk, "13");
+esD.emit("s" + di, laterNotice, "14");
+pd1.push({ v: 1, type: "visible" });
+assert.deepEqual(pd1.drain().filter(m => m.type === "frame").map(m => m.data), [largeDisk, laterNotice]);
+const largeJoin = connect(); largeJoin.take("status");
+largeJoin.push({ v: 1, type: "subscribe", document: D, lane: "live", since: 0 });
+assert.deepEqual(largeJoin.drain().filter(m => m.type === "frame").map(m => m.data), [peer, largeDisk, laterNotice]);
+largeJoin.push({ v: 1, type: "unsubscribe" });
+
+// 15. A replay gap invalidates cached content and remains visible to later joins.
+esD.emit("cursor", JSON.stringify({ sub: di, seq: 14, resync: true }));
+const pd2 = connect(); pd2.take("status");
+pd2.push({ v: 1, type: "subscribe", document: D, lane: "live", since: 9 });
+assert.equal(pd2.take("cursor").resync, true);
+assert.equal(pd2.take("frame"), null, "the pre-gap cache must not replay after repair");
+esD.emit("s" + di, JSON.stringify({ seq: 15, type: "notification", msg: "another warning" }), "15");
+const pd3 = connect(); pd3.take("status");
+pd3.push({ v: 1, type: "subscribe", document: D, lane: "live", since: 0 });
+assert.equal(pd3.take("cursor").resync, true, "a notification does not repair a gap for a new tab");
+assert.equal(JSON.parse(pd3.take("frame").data).html, undefined);
+for (const p of [pd1, pd2, pd3]) p.push({ v: 1, type: "unsubscribe" });
+
+// 16. Silent pages are dropped on the sweep, and with the last of them the stream.
 await sleep(600);
 assert.equal(FakeEventSource.live().length, 0, "no stream once every page has gone silent");
 assert.equal(p1.closed && p3.closed && p4.closed, true, "silent ports are closed");

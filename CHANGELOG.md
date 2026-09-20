@@ -26,7 +26,7 @@ the first entry below before upgrading either side.
   `unsupported-media-type`, which is in the spec's registry nowhere; the upload route
   already answered the registered name.
 - **The six-tab limit is gone.** It was a browser limit the host documented as
-  unfixable; the shared stream under Added is the fix.
+  unfixable; the shared stream under Added and the matching ClayJS client integration are the fix.
 
 ### Added
 
@@ -36,8 +36,9 @@ the first entry below before upgrading either side.
   `/_/sync/worker.js` through which every tab on the origin shares that one stream.
   A browser allows six connections per origin and each tab used to hold one for the
   life of the page, so the seventh tab of one project never loaded. With ClayJS
-  1.3.0 the tabs hold none. The one-document spelling still works for documents that
+  shared-worker support, tabs share one connection. The one-document spelling still works for documents that
   vendor an older runtime.
+- The `sync-worker` compatibility marker identifies workers that preserve separate peer and disk updates across notifications and invalidate cached content after a replay gap. Clients can keep the direct transport on older hosts.
 - **The wire stream opens with a cursor for pages**, so a page whose stream drops
   before any frame arrives can still resume from a position rather than from nothing.
   Processes tailing the wire receive no cursor.
