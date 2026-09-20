@@ -113,18 +113,17 @@ function subscribe(port, meta, msg) {
   meta.key = key;
   meta.seen = 0;
   meta.since = since;
+  meta.cursored = false;
   if (sub.opened) {
-    sendCursor(port, meta, sub, false);
+    sendCursor(port, meta, sub, sub.needsResync);
     deliverLatest(port, meta);
   }
 }
 
-// A page behind the position the stream resumed from has a gap the worker did
-// not see, unless a frame has arrived since: a frame is the whole state, and
-// deliverLatest hands it over. A page with no position has no gap.
 function sendCursor(port, meta, sub, resync) {
-  const behind = meta.since > 0 && meta.since < sub.since && sub.content.size === 0;
-  send(port, { type: "cursor", seq: sub.since, resync: resync || sub.needsResync || behind });
+  const behind = !meta.cursored && meta.since > 0 && meta.since < sub.since && sub.content.size === 0;
+  meta.cursored = true;
+  send(port, { type: "cursor", seq: sub.since, resync: resync || behind });
 }
 
 function unsubscribe(port, meta) {
