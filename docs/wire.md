@@ -353,6 +353,10 @@ which is how you reach a file whose folder HTML Clay does not remember a port fo
 read the port off the page's own address bar. `serve` uses raw mode unless you
 pass `--protocol=jsonl`.
 
+Discovery reads HTML Clay's remembered ports first, then the folders Hyperclay
+Local publishes for the same purpose. When both apps serve the same file, the
+command cannot tell which origin you meant, so it exits 8 and asks for `--port`.
+
 `listen` is an observer unless you pass `--handler`. The handler slot is exclusive
 (one program per file) and it also keeps HTML Clay watching the file while no tab
 is open on it, so an edit made while you are away is still versioned and still
@@ -368,6 +372,7 @@ appears when you come back.
 | 5 | another program holds the handler slot |
 | 6 | refused |
 | 7 | sent, and nothing was attached to take it |
+| 8 | both HTML Clay and Hyperclay Local serve that file, so pass `--port` |
 
 ## What keeps this safe
 

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -204,6 +205,224 @@ func TestWireSitePortsLeavesACorruptConfigAlone(t *testing.T) {
 	}
 	if !bytes.Equal(after, garbage) {
 		t.Fatalf("the config was rewritten: %q", after)
+	}
+}
+
+// --- discovery of Hyperclay Local -------------------------------------------
+
+func writeServedRoots(t *testing.T, path string, pid int, roots []wireLocalRoot) {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{
+		"v":         1,
+		"pid":       pid,
+		"updatedAt": "2026-09-23T12:00:00.000Z",
+		"roots":     roots,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// wireQueryLog records the query of every request a fake origin saw, which is
+// what lets a test read how the CLI probed.
+type wireQueryLog struct {
+	mu      sync.Mutex
+	queries []string
+}
+
+func (l *wireQueryLog) add(q string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.queries = append(l.queries, q)
+}
+
+func (l *wireQueryLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.queries...)
+}
+
+// fakeWireOrigin answers like a live wire origin for exactly one file: 200
+// text/event-stream on subscribe, 404 plain text for anything else.
+func fakeWireOrigin(t *testing.T, file string, log *wireQueryLog) int {
+	t.Helper()
+	return fakeOrigin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if log != nil {
+			log.add(r.URL.RawQuery)
+		}
+		if r.URL.Path != "/_/wire/subscribe" || r.URL.Query().Get("file") != file {
+			http.Error(w, "no such file", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}))
+}
+
+// ambiguousWirePair serves one file from both apps: an HTML Clay site whose port
+// is in config.json, and a Hyperclay Local root published in served-roots.json.
+// The returned harness reads both.
+func ambiguousWirePair(t *testing.T) (h *wireHarness, file string, htmlclayPort, localPort int, log *wireQueryLog) {
+	t.Helper()
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	file = filepath.Join(home, "proj", "index.htmlclay")
+	writeTestFile(t, file, "<html><body>both</body></html>")
+	cfgBase := t.TempDir()
+
+	log = &wireQueryLog{}
+	htmlclayPort = fakeWireOrigin(t, file, log)
+	localPort = fakeWireOrigin(t, file, log)
+
+	a := newTestAppWithConfigDir(t, home, cfgBase)
+	a.rt.cfg.RememberSitePort(filepath.Dir(file), htmlclayPort)
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	rootsPath := filepath.Join(t.TempDir(), "served-roots.json")
+	writeServedRoots(t, rootsPath, os.Getpid(), []wireLocalRoot{{Path: filepath.Dir(file), Port: localPort}})
+
+	h = newWireHarness(t, cfgBase)
+	h.env.localRootsPath = rootsPath
+	return h, file, htmlclayPort, localPort, log
+}
+
+// A file a crashed app left behind must not send the CLI to ports that now
+// belong to strangers, so liveness decides whether it is read at all.
+func TestWireLocalRootsIgnoresADeadWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "served-roots.json")
+	roots := []wireLocalRoot{{Path: t.TempDir(), Port: 5432}}
+
+	writeServedRoots(t, path, 0, roots)
+	if got := wireLocalRoots(path); got != nil {
+		t.Fatalf("pid 0 must yield no hint, got %+v", got)
+	}
+
+	child := exec.Command(wireHelperCommand()[0], wireHelperCommand()[1:]...)
+	if err := child.Run(); err != nil {
+		t.Fatalf("the short-lived child did not finish: %v", err)
+	}
+	writeServedRoots(t, path, child.Process.Pid, roots)
+	if got := wireLocalRoots(path); got != nil {
+		t.Fatalf("a finished writer's pid must yield no hint, got %+v", got)
+	}
+}
+
+// Like config.json, this file is never repaired: a wire invocation racing the
+// app that owns it must not rewrite what it cannot parse.
+func TestWireLocalRootsLeavesAMalformedFileAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "served-roots.json")
+	garbage := []byte("{not json at all")
+	if err := os.WriteFile(path, garbage, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := wireLocalRoots(path); got != nil {
+		t.Fatalf("a corrupt file must yield no hint, got %+v", got)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the file was moved or removed: %v", err)
+	}
+	if !bytes.Equal(after, garbage) {
+		t.Fatalf("the file was rewritten: %q", after)
+	}
+}
+
+// Both apps' anchors go into one probe order: every ancestor broadest first,
+// whichever app published it, then every other anchor.
+func TestWireAllCandidatesMergesBothApps(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "home", "u")
+	team := filepath.Join(base, "proj", "team")
+	ports := map[string]int{filepath.Join(base, "proj"): 1001}
+	local := []wireLocalRoot{{Path: team, Port: 5432}}
+
+	got := wireAllCandidates(ports, local, filepath.Join(team, "a.html"))
+	wantPorts := []int{1001, 5432}
+	wantSources := []string{"htmlclay", "hyperclay-local"}
+	if len(got) != len(wantPorts) {
+		t.Fatalf("got %d candidates, want %d: %+v", len(got), len(wantPorts), got)
+	}
+	for i, c := range got {
+		if c.port != wantPorts[i] || c.source != wantSources[i] {
+			t.Fatalf("candidate %d is %+v, want port %d from %s", i, c, wantPorts[i], wantSources[i])
+		}
+	}
+}
+
+// A file nobody opened in HTML Clay can still be served by Hyperclay Local, and
+// the roots that app publishes are how the CLI finds its origin.
+func TestWireWhereFindsAHyperclayLocalOrigin(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	file := filepath.Join(home, "proj", "index.htmlclay")
+	writeTestFile(t, file, "<html><body>local</body></html>")
+
+	port := fakeWireOrigin(t, file, nil)
+	rootsPath := filepath.Join(t.TempDir(), "served-roots.json")
+	writeServedRoots(t, rootsPath, os.Getpid(), []wireLocalRoot{{Path: filepath.Dir(file), Port: port}})
+
+	h := newWireHarness(t, t.TempDir()) // no HTML Clay config at all
+	h.env.localRootsPath = rootsPath
+	if code := h.run("where", file); code != wireExitOK {
+		t.Fatalf("where exited %d; stderr:\n%s", code, h.errs.String())
+	}
+	if want := fmt.Sprintf("http://127.0.0.1:%d", port); !strings.Contains(h.out.String(), want) {
+		t.Fatalf("where printed %q, want %s", h.out.String(), want)
+	}
+}
+
+// Both apps serve the file, and each answers truthfully for its own server, so
+// no amount of probing settles it: the CLI stops and asks which one was meant.
+func TestWireAmbiguousFileAsksForPort(t *testing.T) {
+	h, file, htmlclayPort, localPort, _ := ambiguousWirePair(t)
+
+	if code := h.run("where", file); code != wireExitAmbiguous {
+		t.Fatalf("where exited %d, want %d; stderr:\n%s", code, wireExitAmbiguous, h.errs.String())
+	}
+	for _, want := range []string{strconv.Itoa(htmlclayPort), strconv.Itoa(localPort), "--port"} {
+		if !strings.Contains(h.errs.String(), want) {
+			t.Errorf("stderr %q does not name %q", h.errs.String(), want)
+		}
+	}
+}
+
+func TestWirePortFlagSkipsTheAmbiguityCheck(t *testing.T) {
+	h, file, htmlclayPort, _, _ := ambiguousWirePair(t)
+
+	if code := h.run("where", file, "--port", strconv.Itoa(htmlclayPort)); code != wireExitOK {
+		t.Fatalf("where --port exited %d; stderr:\n%s", code, h.errs.String())
+	}
+	if want := fmt.Sprintf("127.0.0.1:%d", htmlclayPort); !strings.Contains(h.out.String(), want) {
+		t.Fatalf("where printed %q, want the origin it was given (%s)", h.out.String(), want)
+	}
+}
+
+// The ambiguity probe must not take a handler slot. Both servers are asked what
+// they are serving; neither is asked to hand it over.
+func TestWireAmbiguityProbeIsAnObserver(t *testing.T) {
+	h, file, _, _, log := ambiguousWirePair(t)
+
+	if code := h.run("where", file); code != wireExitAmbiguous {
+		t.Fatalf("where exited %d, want %d; stderr:\n%s", code, wireExitAmbiguous, h.errs.String())
+	}
+	queries := log.all()
+	if len(queries) == 0 {
+		t.Fatal("the ambiguity probe sent no requests at all")
+	}
+	for _, q := range queries {
+		values, err := url.ParseQuery(q)
+		if err != nil {
+			t.Fatalf("probe query %q is not parseable: %v", q, err)
+		}
+		if values.Get("role") == "handler" {
+			t.Fatalf("a probe carried role=handler: %q", q)
+		}
 	}
 }
 
