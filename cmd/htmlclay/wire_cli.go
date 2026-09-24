@@ -325,7 +325,9 @@ func wireSitePorts(configPath string) map[string]int {
 	return doc.SitePorts
 }
 
-// wireLocalRootsPath is where Hyperclay Local publishes the folders it serves.
+// wireLocalRootsPath is where Hyperclay Local publishes the folders it serves:
+// Electron's userData folder, named by app.setName('Hyperclay Local'), which
+// gives it a space on every platform.
 // The dev build appends -dev to that folder and is deliberately not read: a dev
 // build is reached with --port instead.
 func wireLocalRootsPath() string {
@@ -333,7 +335,7 @@ func wireLocalRootsPath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(base, "HyperclayLocal", "served-roots.json")
+	return filepath.Join(base, "Hyperclay Local", "served-roots.json")
 }
 
 type wireLocalRoot struct {
@@ -464,22 +466,23 @@ func wireResolveCandidates(env *wireEnv, file string, port int) []wireCandidate 
 	return wireAllCandidates(wireSitePorts(env.configPath), wireLocalRoots(env.localRootsPath), file)
 }
 
-// wireAmbiguity asks the best ancestor of each app, as an observer, whether it
-// serves file. Both answering is the one case the CLI cannot settle by probing,
-// because each app answers truthfully for its own server.
+// wireAmbiguity asks each app's ancestors, in probe order and as an observer,
+// whether one of them serves file, and stops at the first that does. Both apps
+// answering is the one case the CLI cannot settle by probing, because each app
+// answers truthfully for its own server.
+//
+// It walks past a miss rather than trusting the first ancestor, because a
+// remembered ancestor can be stale: a broad folder HTML Clay once opened answers
+// 404 for a file a narrower live origin serves, and reading that miss as "HTML
+// Clay does not serve it" would silently route the file to the other app.
 func wireAmbiguity(ctx context.Context, cands []wireCandidate, file string) error {
-	first := map[string]wireCandidate{}
+	has := map[string]bool{}
 	for _, c := range cands {
-		if !c.ancestor || c.source == "" {
-			continue
-		}
-		if _, seen := first[c.source]; !seen {
-			first[c.source] = c
+		if c.ancestor && c.source != "" {
+			has[c.source] = true
 		}
 	}
-	h, okH := first["htmlclay"]
-	l, okL := first["hyperclay-local"]
-	if !okH || !okL {
+	if !has["htmlclay"] || !has["hyperclay-local"] {
 		return nil
 	}
 	serves := func(c wireCandidate) bool {
@@ -492,7 +495,21 @@ func wireAmbiguity(ctx context.Context, cands []wireCandidate, file string) erro
 		defer resp.Body.Close()
 		return wireClassify(resp, "text/event-stream") == wireHit
 	}
-	if serves(h) && serves(l) {
+	found := map[string]wireCandidate{}
+	for _, c := range cands {
+		if !c.ancestor || c.source == "" {
+			continue
+		}
+		if _, done := found[c.source]; done {
+			continue
+		}
+		if serves(c) {
+			found[c.source] = c
+		}
+	}
+	h, okH := found["htmlclay"]
+	l, okL := found["hyperclay-local"]
+	if okH && okL {
 		return fmt.Errorf("%w: HTML Clay on port %d and Hyperclay Local on port %d; pass --port to choose one", errWireAmbiguous, h.port, l.port)
 	}
 	return nil

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -315,6 +316,14 @@ func TestWireLocalRootsIgnoresADeadWriter(t *testing.T) {
 	}
 }
 
+// Hyperclay Local calls app.setName('Hyperclay Local') before it reads userData,
+// so Electron writes served-roots.json under a folder with a space in it.
+func TestWireLocalRootsPathUsesElectronUserData(t *testing.T) {
+	if got := filepath.Base(filepath.Dir(wireLocalRootsPath())); got != "Hyperclay Local" {
+		t.Fatalf("served-roots.json is looked for under %q, want the Electron userData folder %q", got, "Hyperclay Local")
+	}
+}
+
 // Like config.json, this file is never repaired: a wire invocation racing the
 // app that owns it must not rewrite what it cannot parse.
 func TestWireLocalRootsLeavesAMalformedFileAlone(t *testing.T) {
@@ -352,6 +361,53 @@ func TestWireAllCandidatesMergesBothApps(t *testing.T) {
 	for i, c := range got {
 		if c.port != wantPorts[i] || c.source != wantSources[i] {
 			t.Fatalf("candidate %d is %+v, want port %d from %s", i, c, wantPorts[i], wantSources[i])
+		}
+	}
+}
+
+// A remembered ancestor can be stale: a broad folder HTML Clay once opened answers
+// 404 for a file a narrower live origin serves. Reading that miss as "HTML Clay
+// does not serve it" would route an ambiguous file to one app silently, so the
+// check walks each app's ancestors until one serves the file.
+func TestWireAmbiguityWalksPastStaleAncestor(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	project := filepath.Join(home, "project")
+	file := filepath.Join(project, "index.htmlclay")
+	writeTestFile(t, file, "<html><body>both</body></html>")
+
+	stale := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(stale.Close)
+	u, err := url.Parse(stale.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stalePort, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	htmlclayPort := fakeWireOrigin(t, file, nil)
+	localPort := fakeWireOrigin(t, file, nil)
+
+	cands := wireAllCandidates(
+		map[string]int{home: stalePort, project: htmlclayPort},
+		[]wireLocalRoot{{Path: project, Port: localPort}},
+		file,
+	)
+	if len(cands) != 3 {
+		t.Fatalf("got %d candidates, want 3: %+v", len(cands), cands)
+	}
+	if cands[0].port != stalePort {
+		t.Fatalf("the stale ancestor must be probed first, got %+v", cands)
+	}
+
+	err = wireAmbiguity(context.Background(), cands, file)
+	if !errors.Is(err, errWireAmbiguous) {
+		t.Fatalf("wireAmbiguity returned %v, want an error wrapping errWireAmbiguous", err)
+	}
+	for _, want := range []string{strconv.Itoa(htmlclayPort), strconv.Itoa(localPort)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name port %q", err.Error(), want)
 		}
 	}
 }
