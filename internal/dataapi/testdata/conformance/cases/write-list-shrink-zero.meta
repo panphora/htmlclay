@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: An empty list body is a legal shrink to zero rows, unlike an insert.

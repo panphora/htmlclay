@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A javascript: URL is refused even behind leading spaces and mixed case.

@@ -1,0 +1,11 @@
+{
+  "type": "WriteRejected",
+  "message": "write rejected: 1 unknown key(s), 0 rule(s) with no matching element",
+  "status": 400,
+  "details": {
+    "unknownKeys": [
+      "titel"
+    ],
+    "unmatched": []
+  }
+}

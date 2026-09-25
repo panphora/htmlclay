@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Text is escaped on the way out, so markup in the body stays text.

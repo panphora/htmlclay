@@ -1,0 +1,4 @@
+tier: 1
+face: query
+expect: ok
+note: editor-ui rows are not data, so find() skips them.

@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Scalar list grow clones the last row and appends, preserving CRLF bytes.

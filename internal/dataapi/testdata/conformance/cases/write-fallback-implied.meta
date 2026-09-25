@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Writing the root element forces the whole-document render: spliced is false.

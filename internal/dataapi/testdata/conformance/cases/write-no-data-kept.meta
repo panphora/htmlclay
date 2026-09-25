@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: A no-data subtree is not part of the text write and survives it.

@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: A cms-template row is the clone source for a list that starts with no data rows.

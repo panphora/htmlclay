@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A text write inside script is refused by the content-only policy.

@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: @innerHTML writes HTML, so the rule form itself is refused.

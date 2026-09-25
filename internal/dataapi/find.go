@@ -1,6 +1,8 @@
 package dataapi
 
 import (
+	"strings"
+
 	"golang.org/x/net/html"
 )
 
@@ -48,9 +50,59 @@ func Find(ctx *html.Node, selector string, opts FindOpts) ([]*html.Node, error) 
 		if hasSelfOrAncestorAttr(n, cmsTemplateAttr) {
 			continue
 		}
+		if inNoData(n) {
+			continue
+		}
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+// noDataTokens are the region-capability tokens that hide a subtree from the data API. editor-ui
+// bundles no-data. Mirrors capabilitySelector('data') in hyper-html-api.
+var noDataTokens = []string{"no-data", "editor-ui"}
+
+// isNoData reports whether n itself opts out of the data API, either as a bare attribute or as a
+// token in its clay attribute.
+func isNoData(n *html.Node) bool {
+	if n == nil || n.Type != html.ElementNode {
+		return false
+	}
+	for _, tok := range noDataTokens {
+		if _, ok := attrValue(n, tok); ok {
+			return true
+		}
+	}
+	if clay, ok := attrValue(n, "clay"); ok {
+		for _, f := range strings.Fields(clay) {
+			for _, tok := range noDataTokens {
+				if f == tok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// inNoData is cheerio's closest(noDataSelector).length !== 0: the node itself counts.
+func inNoData(n *html.Node) bool {
+	for cur := n; cur != nil; cur = cur.Parent {
+		if isNoData(cur) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNoDataDescendant reports whether any element below n is no-data.
+func hasNoDataDescendant(n *html.Node) bool {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if isNoData(c) || hasNoDataDescendant(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRulesTag reports whether n is a rules script. It matches ANY script carrying

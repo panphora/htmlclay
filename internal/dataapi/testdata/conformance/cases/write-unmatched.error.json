@@ -1,0 +1,14 @@
+{
+  "type": "WriteRejected",
+  "message": "write rejected: 0 unknown key(s), 1 rule(s) with no matching element",
+  "status": 400,
+  "details": {
+    "unknownKeys": [],
+    "unmatched": [
+      {
+        "path": "sub",
+        "selector": "h2"
+      }
+    ]
+  }
+}

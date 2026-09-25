@@ -1,0 +1,12 @@
+{
+  "type": "ShapeMismatch",
+  "message": "shape mismatch: 1 field(s) failed validation",
+  "status": 400,
+  "details": [
+    {
+      "path": "items",
+      "expected": "array",
+      "got": "string"
+    }
+  ]
+}

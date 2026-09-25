@@ -1,0 +1,4 @@
+tier: 1
+face: query
+expect: ok
+note: text reads project out no-data descendants.

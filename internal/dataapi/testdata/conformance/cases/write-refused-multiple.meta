@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: One refused body reports every violation, not just the first.

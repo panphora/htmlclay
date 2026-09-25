@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A body key the rules do not define is rejected before anything is written.

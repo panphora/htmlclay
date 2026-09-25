@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Attribute write: an absolute https URL passes the scheme check.

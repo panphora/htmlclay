@@ -89,6 +89,9 @@ func escapeAttribute(b *strings.Builder, s string) {
 // renderNode writes one node and its subtree. rawText is set once inside a raw-text element and
 // inherited by its descendants, so nested text is never escaped.
 func renderNode(d *Document, b *strings.Builder, n *html.Node, rawText bool) {
+	if d.renderSkip != nil && n.Type == html.ElementNode && d.renderSkip(n) {
+		return
+	}
 	switch n.Type {
 	case html.TextNode:
 		if rawText {
@@ -185,6 +188,20 @@ func innerHTML(d *Document, n *html.Node) string {
 		renderNode(d, &b, c, raw)
 	}
 	return b.String()
+}
+
+// contentInnerHTML is @innerHTML as the data API reads it: no-data subtrees are left out, and an
+// element that is itself no-data reads as "".
+func contentInnerHTML(d *Document, n *html.Node) string {
+	if isNoData(n) {
+		return ""
+	}
+	if !hasNoDataDescendant(n) {
+		return innerHTML(d, n)
+	}
+	d.renderSkip = isNoData
+	defer func() { d.renderSkip = nil }()
+	return innerHTML(d, n)
 }
 
 func outerHTML(d *Document, n *html.Node) string {

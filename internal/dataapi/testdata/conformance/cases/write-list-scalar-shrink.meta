@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Scalar list shrink removes the leading row and leaves the survivors in place.

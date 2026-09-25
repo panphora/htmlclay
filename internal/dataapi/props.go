@@ -71,9 +71,9 @@ func propValue(d *Document, n *html.Node, name string) (string, bool) {
 	// NOTE the trim asymmetry: these are NOT trimmed, while adapter.text() — which every
 	// selector-shaped rule goes through — is. Trimming uniformly here would be invisible and wrong.
 	case "textContent", "innerText":
-		return textContent(n), true
+		return contentText(n), true
 	case "innerHTML":
-		return innerHTML(d, n), true
+		return contentInnerHTML(d, n), true
 	case "className":
 		return attrOrEmpty(n, "class")
 
@@ -198,6 +198,29 @@ func textContent(n *html.Node) string {
 	return b.String()
 }
 
+// contentText is textContent with no-data subtrees removed: what adapter.text() reads now that
+// the reference honours no-data regions. An element that is itself no-data reads as "".
+func contentText(n *html.Node) string {
+	if isNoData(n) {
+		return ""
+	}
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(cur *html.Node) {
+		for c := cur.FirstChild; c != nil; c = c.NextSibling {
+			if isNoData(c) {
+				continue
+			}
+			if c.Type == html.TextNode {
+				b.WriteString(c.Data)
+			}
+			walk(c)
+		}
+	}
+	walk(n)
+	return b.String()
+}
+
 // jsTrim is String.prototype.trim, which strips the same character class the tokenizer skips.
 // strings.TrimSpace would strip U+0085 and keep U+FEFF, wrong in both directions. See isJSSpace.
 func jsTrim(s string) string {
@@ -205,4 +228,4 @@ func jsTrim(s string) string {
 }
 
 // trimmedText is adapter.text(): the trimmed form every selector-shaped rule returns.
-func trimmedText(n *html.Node) string { return jsTrim(textContent(n)) }
+func trimmedText(n *html.Node) string { return jsTrim(contentText(n)) }

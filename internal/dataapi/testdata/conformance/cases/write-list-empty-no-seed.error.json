@@ -1,0 +1,8 @@
+{
+  "type": "EmptyListInsert",
+  "message": "cannot add items to empty list at \"items\" — no sibling to clone as template. Seed the list with a hidden item first.",
+  "status": 400,
+  "details": [
+    "items"
+  ]
+}

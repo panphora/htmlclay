@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: Inserting into a list with no row to clone is a 400, not a silent no-op.

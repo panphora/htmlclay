@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Three writes at once across a CRLF document: text, an attribute and a list grow.

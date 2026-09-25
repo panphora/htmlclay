@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Scalar text write: the cheapest happy path, pinned as bytes on disk.

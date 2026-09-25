@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A data: URL in a URL attribute is refused.

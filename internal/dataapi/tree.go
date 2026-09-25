@@ -32,6 +32,10 @@ type Document struct {
 	// template's content is already invisible, and its children stay attached so the renderer
 	// reproduces it without a second lookup.
 	templateContent map[*html.Node][]*html.Node
+
+	// renderSkip, when set, drops matching elements (and their subtrees) from renderNode's output.
+	// Only contentInnerHTML sets it, for the duration of one render.
+	renderSkip func(*html.Node) bool
 }
 
 // Parse reads a document, detaches its template content, and undoes the parser's attribute sort.

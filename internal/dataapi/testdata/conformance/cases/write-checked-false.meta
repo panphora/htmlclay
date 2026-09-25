@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Boolean property write clears the checked attribute.

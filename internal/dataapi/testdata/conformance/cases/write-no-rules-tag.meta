@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A document without a rules tag cannot be written at all.

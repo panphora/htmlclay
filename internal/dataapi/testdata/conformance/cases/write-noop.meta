@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Writing the value already on disk changes nothing and still splices.

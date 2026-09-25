@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A write that would delete the data rules tag is refused.

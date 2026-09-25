@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: An on* attribute write is refused because the attribute can run script.

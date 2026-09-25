@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Conformance fixtures are byte-exact (some are CRLF on purpose)
+internal/dataapi/testdata/conformance/cases/** -text

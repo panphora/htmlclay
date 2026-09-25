@@ -221,6 +221,11 @@ func TestConformanceExtraction(t *testing.T) {
 				t.Skip(r)
 			}
 
+			if meta.face == "write" {
+				skipped++
+				t.Skip("write face: covered by the write conformance test")
+			}
+
 			parsedDoc := parseCaseHTML(t, name)
 
 			rules, err := resolveRules(t, name, meta, parsedDoc)

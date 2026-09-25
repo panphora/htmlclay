@@ -1,0 +1,11 @@
+{
+  "type": "WriteRefused",
+  "message": "write refused: 1 write(s) broke the content-only policy",
+  "status": 400,
+  "details": [
+    {
+      "target": "<a#a>",
+      "reason": "\"javascript:\" URLs are not allowed in \"href\""
+    }
+  ]
+}

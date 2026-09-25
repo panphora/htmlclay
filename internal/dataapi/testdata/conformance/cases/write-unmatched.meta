@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A scalar rule whose selector matches nothing is rejected.

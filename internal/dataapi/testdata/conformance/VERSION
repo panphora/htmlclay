@@ -1,8 +1,8 @@
 Copied from hyper-html-api/conformance by `make sync-conformance`. Do not edit here; edit the source and re-sync.
 
 {
-  "engine": "0.6.0",
+  "engine": "0.8.1",
   "cheerio": "1.2.0",
-  "cases": 33,
+  "cases": 64,
   "note": "Versions the expectations were generated against. Parity means parity with THIS pair; regenerate deliberately, never as a side effect of an install."
 }

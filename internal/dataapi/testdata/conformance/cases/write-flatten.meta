@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: A text write into an element with mixed content flattens its children to one text node.

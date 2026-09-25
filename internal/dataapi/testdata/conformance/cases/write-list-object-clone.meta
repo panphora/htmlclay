@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Object list rows clone the last row's shape and fill each item's rules.

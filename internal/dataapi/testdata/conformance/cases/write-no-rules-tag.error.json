@@ -1,0 +1,6 @@
+{
+  "type": "NoRulesTag",
+  "message": "no <script data-rules-name~=\"api\"> rules tag in this document",
+  "status": 400,
+  "details": null
+}
