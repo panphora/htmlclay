@@ -1,0 +1,74 @@
+{
+  "refusedRuleForms": [
+    "innerHTML",
+    "outerHTML"
+  ],
+  "refusedTargets": [
+    "script",
+    "style",
+    "template",
+    "noscript",
+    "iframe",
+    "object",
+    "embed",
+    "xmp",
+    "plaintext",
+    "noembed",
+    "noframes",
+    "meta",
+    "link",
+    "base"
+  ],
+  "refusedAttributes": [
+    "style",
+    "srcdoc",
+    "is",
+    "http-equiv",
+    "sandbox",
+    "allow",
+    "nonce",
+    "integrity",
+    "charset",
+    "htmlclaytoken",
+    "htmlclayid",
+    "data-rules-name",
+    "data-rules-version",
+    "clay",
+    "contenteditable",
+    "no-save",
+    "no-snapshot",
+    "no-trigger-autosave",
+    "no-dirty",
+    "no-watch",
+    "no-undo",
+    "no-data",
+    "freeze",
+    "editor-ui"
+  ],
+  "refusedAttributePrefixes": [
+    "on"
+  ],
+  "urlAttributes": [
+    "href",
+    "src",
+    "srcset",
+    "action",
+    "formaction",
+    "poster",
+    "cite",
+    "data",
+    "ping",
+    "background",
+    "longdesc",
+    "usemap",
+    "xlink:href",
+    "manifest",
+    "codebase",
+    "icon"
+  ],
+  "refusedSchemes": [
+    "javascript",
+    "vbscript",
+    "data"
+  ]
+}

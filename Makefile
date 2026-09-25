@@ -36,6 +36,7 @@ sync-conformance:
 	rm -rf internal/dataapi/testdata/conformance
 	mkdir -p internal/dataapi/testdata
 	cp -R "$(HYPER_HTML_API)/conformance" internal/dataapi/testdata/conformance
+	cp "$(HYPER_HTML_API)/conformance/write-policy.json" internal/dataapi/write-policy.json
 	@printf 'Copied from %s by `make sync-conformance`. Do not edit here; edit the source and re-sync.\n\n' \
 		"hyper-html-api/conformance" > internal/dataapi/testdata/conformance/VERSION
 	@cat internal/dataapi/testdata/conformance/MANIFEST.json >> internal/dataapi/testdata/conformance/VERSION
