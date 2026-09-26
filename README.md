@@ -185,6 +185,7 @@ answers with a fixed recovery page that holds no permissions at all.
 | `GET` | `/_/meta/{token}` | Return file metadata (path, size, modification time) |
 | `GET` | `/{path}?data={…}` | Extract JSON from the file using rules you supply |
 | `GET` | `/_/api/{path}` | Extract JSON using rules the file publishes itself |
+| `POST` | `/_/api/{path}` | Write JSON into the file through those same rules, content only |
 
 Content is served at the top level; actions live under the `/_/` marker, matching the [Hyperclay](https://hyperclay.com) platform convention. The save endpoint takes the document as a plain-text body. That is the one shape the format defines for it, so a JSON body is refused with `415` rather than guessed at, and anything a save needs to say beyond the document travels in a header.
 
@@ -239,6 +240,38 @@ The full ledger, with the measurement behind every row, is in
 `internal/dataapi/testdata/selector-parity.json`: one list of constructs that must match the platform exactly,
 and one of constructs HTML Clay refuses, each recorded with the answer the platform gives so the cost
 of the refusal is written down rather than guessed at.
+
+### Writing a file as JSON
+
+POST JSON to the same `/_/api/` address and HTML Clay writes it into the file through the page's own
+`api` rules tag. The body has the same shape a GET returns:
+
+```bash
+curl -X POST 'http://localhost:PORT/_/api/notes.htmlclay' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Groceries","items":[{"text":"eggs","done":"no"}]}'
+```
+
+- **Content only.** Text is written as text, never parsed as HTML. The write is refused (`400
+  Write refused`, nothing written) when it would set an `on*` handler, `style`, `srcdoc`, a save or
+  region marker, or a `javascript:`, `vbscript:` or `data:` URL, when it targets anything inside
+  `<script>`, `<style>`, `<template>`, `<iframe>` or the head's metadata tags, and for `@innerHTML` and
+  `@outerHTML`.
+- **Strict keys.** A key the rules tag does not define, or a rule whose selector matches nothing,
+  is `400 Write rejected` with the offending names. A key you leave out is left alone, and `null`
+  clears a text value. Lists grow by cloning their first row, or a `cms-template` seed when empty.
+- **Only the changed elements are rewritten.** Every other byte of the file, line endings and
+  quoting included, stays exactly as it was. The splice is proven by reparsing, and when it cannot
+  be proven the whole document is rendered instead.
+- **It lands like a save.** Version history records it, open tabs update live, and a body that
+  changes nothing writes nothing. The answer is the fresh extraction with an `ETag`; the GET faces
+  send the same `ETag`, and sending it back as `If-Match` turns a write over a changed file into a
+  `412`.
+- **Who can write.** A program you run yourself, such as `curl` or an agent, needs nothing extra. A
+  browser page must send the target file's save token in a `Save-Token` header, so a page cannot
+  write a sibling it has not been handed the token for. The file must be one HTML Clay has open, or
+  an HTML Clay file inside a trusted folder; anything else is `403 Not writable`. Bodies are
+  `application/json` (`415` otherwise), at most 1 MB.
 
 ### Package structure
 

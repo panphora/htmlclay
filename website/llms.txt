@@ -329,6 +329,7 @@ platform convention.
 | `POST` | `/_/open-request` | ask to widen reads to a named folder |
 | `POST` | `/_/workspace-request/{token}` | ask to trust the requesting file's own folder |
 | `GET` | `/_/api/{path}` | read the document as JSON, using rules the file publishes |
+| `POST` | `/_/api/{path}` | write JSON into the document through those same rules, content only |
 | `GET` | `/{path}?data={...}` | read the document as JSON, using rules you supply |
 | `GET` | `/_/wire/subscribe` | wire SSE stream |
 | `POST` | `/_/wire/send` | send one wire frame |
@@ -1117,7 +1118,7 @@ checks as an ordinary GET, in the same order, and returns the same refusal. Spec
 - returns `Cache-Control: no-store`
 - sends no CORS headers
 - accepts only `.html` and `.htmlclay` documents
-- is read-only and has no mutating counterpart
+- carries an `ETag` header, the stamp of the stored bytes, for use as `If-Match` on a write
 
 **The absence of CORS headers is deliberate.** Only a program you run yourself, such as `curl`,
 or a page on this same origin can read it. A page served by another local server on your machine
@@ -1146,6 +1147,54 @@ Each row was measured against the platform's own engine rather than assumed.
 
 The full ledger, with the measurement behind every row, is
 `internal/dataapi/testdata/selector-parity.json` in the repository.
+
+## Writing a file as JSON
+
+`POST /_/api/{path}` with a JSON body writes it into the document through the document's own
+`api` rules tag. The body has the shape a GET returns, and the answer is the fresh extraction
+with an `ETag` header.
+
+```bash
+curl -X POST 'http://127.0.0.1:52341/_/api/notes.htmlclay' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Groceries","items":[{"text":"eggs","done":"no"}]}'
+```
+
+What a write does:
+
+- Applies each key through its rule: text rules write text (never parsed as HTML), `@attr` rules
+  write the attribute, `@checked`/`@selected`/`@disabled` toggle presence, lists match rows by
+  content, keep their order, grow by cloning the first row (or a `cms-template` seed when empty)
+  and shrink by removing rows. A key you leave out is left alone; `null` clears a text value.
+- Rewrites only the changed elements. Every other byte, line endings and quoting included, is
+  kept. The splice is verified by reparsing; when it cannot be verified the whole document is
+  rendered instead. A body that changes nothing writes nothing.
+- Commits like a save: a version is recorded, open tabs update over live sync, and the watcher
+  does not report it as an outside edit.
+- Honors `If-Match`: a stale stamp answers `412` with the current `ETag`, and nothing is written.
+
+What a write refuses, always `400` with nothing written:
+
+- `Write refused`, `details` a list of `{target, reason}`: an `on*` handler, `style`, `srcdoc`, a
+  save or region marker (`no-save`, `no-data`, `contenteditable`, `editor-ui` and the rest), a
+  `javascript:`, `vbscript:` or `data:` URL in a URL attribute, any element inside `<script>`,
+  `<style>`, `<template>`, `<iframe>`, `<object>`, `<noscript>` or the head's metadata tags, a text
+  write that would delete the rules tag, and `@innerHTML` or `@outerHTML`.
+- `Write rejected`, `details` `{unknownKeys, unmatched}`: a key the rules tag does not define, or a
+  rule whose selector matches nothing in the document.
+- `Shape mismatch`, `Cannot grow list` (an empty list with no seed to clone), `No api rules tag`,
+  and the rules-tag errors a GET returns.
+
+Who can write:
+
+- A request with no `Origin` and no `Sec-Fetch-Site`, such as `curl`, a script or an agent, is
+  admitted with no token.
+- A browser page on the same origin must send the target file's save token in a `Save-Token`
+  header. A token for a different file is refused. `same-site` and cross-site requests are `403`.
+- The file must be one HTML Clay has open, or an HTML Clay file inside a trusted folder, which
+  is registered on the spot. Anything else is `403 Not writable`, with the same answer whether or
+  not the file exists. A trusted file hosted on another project's port is `409` naming that origin.
+- Bodies must be `application/json` (`415`) and at most 1 MB (`413`).
 
 ## Versions and backups
 

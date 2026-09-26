@@ -3,6 +3,23 @@
 Releases before 1.9.0 are recorded in the ecosystem changelog at
 [changelog.hyperclay.com](https://changelog.hyperclay.com).
 
+## [Unreleased]
+
+### Added
+
+- **`POST /_/api/<file>` writes JSON into a document.** The body is applied through the page's
+  own `api` rules tag, the same map `GET /_/api` reads with, and only content is written: text as
+  text, and attributes that cannot run script. Only the changed elements are rewritten, so every
+  other byte of the file stays as it was. The write is versioned and reaches open tabs like a save.
+  A local program needs nothing extra, and a browser page must send the file's `Save-Token`.
+- **The data API sends an `ETag`**, and a write carrying `If-Match` is refused with `412` when
+  the file changed since it was read.
+
+### Changed
+
+- **`no-data` and `editor-ui` regions are invisible to the data API**, on reads as well as writes,
+  matching hyper-html-api.
+
 ## [1.9.0] - 2026-08-30
 
 This release makes HTML Clay speak the Malleable HTML File protocol: it announces what

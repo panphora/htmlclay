@@ -76,6 +76,7 @@ These protections apply to requests handled by HTML Clay. They are not a sandbox
 - **Reads are judged by the file actually opened.** HTML Clay checks the real path reported for the open handle, so swapping a symlink during a request cannot redirect the read into its own settings or version history.
 - **A refused read reveals no target path.** Out of scope denials use one fixed response and are decided before checking whether the requested file exists.
 - **JSON data routes use the same read checks.** The `?data=` and `/_/api/` routes cannot reach a file an ordinary request could not, never supply a save token, and strip any token that was written to disk.
+- **JSON writes are content only and follow save rules.** `POST /_/api/` writes only to a file HTML Clay could already save: one you opened, or an HTML Clay file in a trusted folder. A browser page must present that file's own save token, so a silent background `fetch()` still cannot write a sibling. The write cannot add script: event handlers, `javascript:`, `vbscript:` and `data:` URLs, HTML through `@innerHTML` or `@outerHTML`, and anything inside `<script>`, `<style>` or `<template>` are refused, and a refused write writes nothing. A local program needs no token, as it could already write the file directly.
 
 ## Trusted folders
 
