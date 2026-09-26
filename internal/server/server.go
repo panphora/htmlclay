@@ -156,6 +156,12 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	mux.HandleFunc("GET /_/api", s.handleDataAPI)
 	mux.HandleFunc("GET /_/api/{path...}", s.handleDataAPI)
 
+	// Writes through the same address. No sameOrigin wrapper: like the wire, this admits local
+	// processes, which attest no browser headers. handleDataAPIWrite runs wireCaller itself and
+	// requires the file's Save-Token from any browser caller.
+	mux.HandleFunc("POST /_/api", s.handleDataAPIWrite)
+	mux.HandleFunc("POST /_/api/{path...}", s.handleDataAPIWrite)
+
 	// The whole wire subtree mounts behind one guard, so a route cannot be added
 	// to it without the guard in front. Its guard is deliberately NOT sameOrigin:
 	// the wire admits local processes, which attest no browser headers at all.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/panphora/htmlclay/internal/dataapi"
 	"github.com/panphora/htmlclay/internal/htmlutil"
+	"github.com/panphora/htmlclay/internal/specwire"
 )
 
 // dataroutes.go is the JSON projection of the serve path. It is deliberately NOT a second read
@@ -204,6 +205,8 @@ func (s *Server) writeExtracted(w http.ResponseWriter, raw []byte, mode dataMode
 		writeDataError(w, http.StatusInternalServerError, extractionFailed())
 		return
 	}
+
+	w.Header().Set("ETag", specwire.Etag(raw))
 
 	dataHeaders(w)
 	w.WriteHeader(http.StatusOK)
