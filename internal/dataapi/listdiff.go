@@ -2,7 +2,6 @@ package dataapi
 
 import (
 	"sort"
-	"strconv"
 
 	"golang.org/x/net/html"
 )
@@ -15,7 +14,7 @@ import (
 // listDiff is the reconciliation itself. ctx is the node the rule was written against, so the rows
 // are its descendants; shape is null for a scalar list, the undefined sentinel for the `["sel"]`
 // form (which the reference walks as a rule-less list), and the rule shape otherwise.
-func (w *writer) listDiff(ctx *html.Node, selector, shape Value, newItems []Value, depth int, path []string) error {
+func (w *writer) listDiff(ctx *html.Node, selector, shape Value, newItems []Value, depth int, path []any) error {
 	oldNodes, err := findListRows(ctx, selector)
 	if err != nil {
 		return err
@@ -163,7 +162,7 @@ func (w *writer) extractItem(node *html.Node, shape Value) (Value, error) {
 
 // writeItems applies the per-item value. A scalar list writes text, so the policy applies; an
 // object list recurses through the same rule walk.
-func (w *writer) writeItems(finalNodes []*html.Node, shape Value, newItems []Value, depth int, path []string) error {
+func (w *writer) writeItems(finalNodes []*html.Node, shape Value, newItems []Value, depth int, path []any) error {
 	for i, node := range finalNodes {
 		if shape == nil {
 			w.setText(node, newItems[i])
@@ -171,7 +170,7 @@ func (w *writer) writeItems(finalNodes []*html.Node, shape Value, newItems []Val
 		}
 		// applyAt may replace the node (@outerHTML on the item itself); capture the return so
 		// finalNodes stays current for later passes.
-		newNode, err := w.applyAt(node, shape, newItems[i], depth+1, appendString(path, strconv.Itoa(i)))
+		newNode, err := w.applyAt(node, shape, newItems[i], depth+1, appendPath(path, i))
 		if err != nil {
 			return err
 		}
@@ -323,15 +322,25 @@ func (w *writer) insertAt(parent, node *html.Node, index int) {
 	parent.AppendChild(node)
 }
 
-// remove is cheerioAdapter.remove: detach the node and mark the parent, whose children changed.
+// remove is cheerioAdapter.remove under the guard: detach the node and mark the parent, whose
+// children changed. Removing a node that is, or contains, the page's rules tag would delete the
+// tag, so the removal is refused and recorded rather than performed.
 func (w *writer) remove(node *html.Node) {
 	if node == nil {
+		return
+	}
+	if w.isOrHoldsRulesTag(node) {
+		w.refuse(node, "removing this would delete the data rules tag")
 		return
 	}
 	if node.Parent != nil {
 		w.dirty[node.Parent] = true
 	}
 	detach(node)
+}
+
+func (w *writer) isOrHoldsRulesTag(n *html.Node) bool {
+	return isRulesTag(n) || w.holdsRulesTag(n)
 }
 
 func detach(n *html.Node) {

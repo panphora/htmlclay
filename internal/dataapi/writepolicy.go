@@ -1,6 +1,7 @@
 package dataapi
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -37,6 +38,11 @@ func loadWritePolicy() *WritePolicy {
 	return &p
 }
 
+// validAttrName is write-policy.js's VALID_ATTR_NAME: everything HTML's attribute-name grammar
+// allows. A rule that names an attribute with a space, a quote, or a control character is refused
+// rather than serialized into a live attribute.
+var validAttrName = regexp.MustCompile(`^[^\t\n\f\r "'>/=\x00-\x1f\x7f]+$`)
+
 var (
 	// urlSchemeEdges is /^[\u0000- ]+|[\u0000- ]+$/g: control characters and spaces around the
 	// value are ignored, which is how "  JaVaScRiPt:" is still refused.
@@ -59,6 +65,9 @@ func urlScheme(value string) string {
 // checkAttribute returns the reason a write of name (with a non-null value) is refused, or "" when
 // it is allowed.
 func checkAttribute(name string, value Value, policy *WritePolicy) string {
+	if !validAttrName.MatchString(name) {
+		return "attribute name " + jsonQuote(name) + " is not valid"
+	}
 	lower := strings.ToLower(name)
 	for _, p := range policy.RefusedAttributePrefixes {
 		if strings.HasPrefix(lower, p) {
@@ -107,6 +116,19 @@ func firstJSToken(s string) string {
 		return s[start:]
 	}
 	return ""
+}
+
+// jsonQuote is JSON.stringify for a string: double-quoted, with JSON's escapes and without the
+// HTML escaping Go's default marshaller adds, so a name containing < or & reads back the way the
+// reference wrote it.
+func jsonQuote(s string) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return fmt.Sprintf("%q", s)
+	}
+	return strings.TrimSuffix(buf.String(), "\n")
 }
 
 func containsString(list []string, want string) bool {

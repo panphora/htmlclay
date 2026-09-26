@@ -17,7 +17,11 @@
     "noframes",
     "meta",
     "link",
-    "base"
+    "base",
+    "animate",
+    "set",
+    "animatemotion",
+    "animatetransform"
   ],
   "refusedAttributes": [
     "style",

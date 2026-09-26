@@ -2,6 +2,7 @@ package dataapi
 
 import (
 	"bytes"
+	"strings"
 
 	"golang.org/x/net/html"
 )
@@ -161,7 +162,7 @@ func (p *pairing) match(n *html.Node) bool {
 		return false
 	}
 	t := p.tokens[p.starts[p.next]]
-	if t.name != n.Data || !sameAttrSet(n, t.attrs) {
+	if !strings.EqualFold(t.name, n.Data) || !sameAttrSet(n, t.attrs) {
 		if impliedElements[n.Data] {
 			return true
 		}
@@ -186,11 +187,23 @@ func sameAttrSet(n *html.Node, want map[string]bool) bool {
 		if a.Namespace != "" {
 			name = a.Namespace + ":" + a.Key
 		}
-		if !want[name] {
+		if !hasAttrFold(want, name) {
 			return false
 		}
 	}
 	return true
+}
+
+// hasAttrFold reports whether want holds name under case-insensitive comparison. The tokenizer
+// lowercases attribute names while the parser restores a foreign element's mixed case, so
+// `viewBox` and `definitionURL` only line up this way.
+func hasAttrFold(want map[string]bool, name string) bool {
+	for k := range want {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // endSpans replays the token stream with a stack of paired elements to find where each one ends.
@@ -220,7 +233,7 @@ func (p *pairing) endSpans(srcLen int) {
 		case html.EndTagToken:
 			at := -1
 			for j := len(stack) - 1; j >= 0; j-- {
-				if stack[j].Data == t.name {
+				if strings.EqualFold(stack[j].Data, t.name) {
 					at = j
 					break
 				}

@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: SVG animation elements can retarget href, so writing their to/values is refused like any other refused target.

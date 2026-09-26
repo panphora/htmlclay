@@ -161,9 +161,9 @@ func typeofX(v Value) string {
 
 // applyAt walks the rule tree against the body, writing as it goes, and returns the context node
 // most rules leave alone.
-func (w *writer) applyAt(ctx *html.Node, rule, value Value, depth int, path []string) (*html.Node, error) {
+func (w *writer) applyAt(ctx *html.Node, rule, value Value, depth int, path []any) (*html.Node, error) {
 	if depth > maxRuleDepth {
-		return nil, &MaxRuleDepthExceeded{Path: path}
+		return nil, &MaxRuleDepthExceeded{Path: pathSegments(path)}
 	}
 	if isUndefined(value) {
 		return ctx, nil
@@ -203,7 +203,7 @@ func (w *writer) applyAt(ctx *html.Node, rule, value Value, depth int, path []st
 					subValue = v
 				}
 			}
-			next, err := w.applyAt(ctx, sub, subValue, depth+1, appendString(path, key))
+			next, err := w.applyAt(ctx, sub, subValue, depth+1, appendPath(path, key))
 			if err != nil {
 				return nil, err
 			}
@@ -215,7 +215,7 @@ func (w *writer) applyAt(ctx *html.Node, rule, value Value, depth int, path []st
 	return ctx, nil
 }
 
-func (w *writer) applyScalar(ctx *html.Node, rule string, value Value, depth int, path []string) (*html.Node, error) {
+func (w *writer) applyScalar(ctx *html.Node, rule string, value Value, depth int, path []any) (*html.Node, error) {
 	if strings.HasSuffix(rule, "[]") {
 		items, ok := value.([]Value)
 		if !ok {
@@ -282,9 +282,18 @@ func (w *writer) setText(n *html.Node, value Value) {
 // emits a mutation record in the reference, so it is skipped here too.
 func (w *writer) writePropOrAttr(n *html.Node, name string, value Value) error {
 	if domPropertiesReadOnly[name] {
+		// A write of the value the read already reports is a no-op, so posting a read-only
+		// extraction back cannot error. A changed value is still refused.
+		if current, ok := propValue(w.d, n, name); sameReadOnlyValue(current, ok, value) {
+			return nil
+		}
 		return &RuleTargetReadOnly{Name: name}
 	}
 	if name == "outerHTML" {
+		next := jsStringOrEmpty(value)
+		if current, ok := propValue(w.d, n, "outerHTML"); ok && current == next {
+			return nil
+		}
 		w.refuse(n, `"@outerHTML" writes HTML, only text is allowed`)
 		return nil
 	}
@@ -329,6 +338,21 @@ func (w *writer) writePropOrAttr(n *html.Node, name string, value Value) error {
 	return nil
 }
 
+// sameReadOnlyValue is apply.js's compare for a read-only property: identical values are equal,
+// and otherwise a non-null current and a non-null incoming value compare by their string spellings.
+func sameReadOnlyValue(current string, ok bool, value Value) bool {
+	if !ok {
+		return value == nil || isUndefined(value)
+	}
+	if s, isString := value.(string); isString && s == current {
+		return true
+	}
+	if value == nil || isUndefined(value) {
+		return false
+	}
+	return jsString(value) == current
+}
+
 // coercePropValue is apply.js's coercion, which exists because a form round-trip delivers a boolean
 // as the STRING "false" and Boolean("false") would check an unchecked box.
 func coercePropValue(name string, value Value) Value {
@@ -356,8 +380,12 @@ func (w *writer) propMatches(n *html.Node, name string, next Value) bool {
 		if !ok {
 			return false
 		}
-		cur, _ := propValue(w.d, n, name)
-		return (cur == "true") == want
+		// The reference compares against the boolean PROPERTY, which cheerio resolves by the exact
+		// name: `readOnly` never matches the parser-lowercased `readonly` attribute, so a readonly
+		// input already reads false and writing false is a no-op. The READ path deliberately folds
+		// the name instead; the write compare stays on the reference's side to keep this a no-op.
+		_, present := getAttr(n, name)
+		return present == want
 	}
 	if name == "className" {
 		cur, ok := attrValue(n, "class")
@@ -488,8 +516,11 @@ func refusedAncestorTag(n *html.Node) string {
 		if cur.Type != html.ElementNode {
 			continue
 		}
-		if containsString(writePolicy.RefusedTargets, cur.Data) {
-			return cur.Data
+		// Lowercased, because the tokenizer lowercases names while foreign content (SVG's
+		// animateTransform, the policy's animatetransform) reaches the tree in mixed case.
+		tag := strings.ToLower(cur.Data)
+		if containsString(writePolicy.RefusedTargets, tag) {
+			return tag
 		}
 	}
 	return ""
@@ -649,9 +680,12 @@ func truthy(v Value) bool {
 	return true
 }
 
-func appendString(path []string, part string) []string {
-	out := make([]string, len(path)+1)
-	copy(out, path)
-	out[len(path)] = part
+// pathSegments renders a write path the way the reference's path.join('.') does, for the one
+// message that spells the path out.
+func pathSegments(path []any) []string {
+	out := make([]string, len(path))
+	for i, part := range path {
+		out[i] = jsString(part)
+	}
 	return out
 }

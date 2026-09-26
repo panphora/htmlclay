@@ -248,17 +248,17 @@ func FuzzSpliceNeverLies(f *testing.F) {
 
 		var targets []*html.Node
 		for _, n := range sourceOrderElements(d) {
-			if _, ok := spans[n]; ok {
-				targets = append(targets, n)
-			}
+			targets = append(targets, n)
 		}
-		if len(targets) == 0 {
-			// Nothing to splice: either the source has no elements, or the tree and its
-			// tokens could not be lined up and every write falls back.
+		if len(targets) == 0 || len(src) == 0 {
+			// No element to mutate. A document with no elements, an empty input, and one the
+			// parser refused all leave nothing to splice.
 			return
 		}
-		// Any element with a span will do. The input's first byte picks which, so one corpus
-		// entry exercises more than one of them over the course of a run.
+		// Any element will do, with or without a span: an element that failed to pair keeps the
+		// splice honest too, because splice falls back to the whole-document render for it. The
+		// input's first byte picks which, so one corpus entry exercises more than one over the
+		// course of a run.
 		target := targets[int(src[0])%len(targets)]
 
 		setAttr(target, "data-x", "1")

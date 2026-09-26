@@ -50,7 +50,12 @@ func Parse(r io.Reader) (*Document, error) {
 }
 
 // ParseBytes is Parse over a byte slice, which is how the server has the file.
+//
+// A leading UTF-8 BOM is stripped first. x/net/html treats U+FEFF as text, so leaving it in drops
+// the DOCTYPE, moves head content into the body, and leaves the tree unable to pair with its
+// tokens; the read path and the write path both want the document the BOM is marking.
 func ParseBytes(b []byte) (*Document, error) {
+	b = trimBOM(b)
 	root, err := html.Parse(bytes.NewReader(b))
 	if err != nil {
 		return nil, err
@@ -59,6 +64,17 @@ func ParseBytes(b []byte) (*Document, error) {
 	d.restoreAttrOrder(b)
 	d.detachTemplates(root)
 	return d, nil
+}
+
+// utf8BOM is the UTF-8 byte order mark. It is not valid inside an HTML document, so a document
+// that starts with one is the same document with it removed.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+func trimBOM(b []byte) []byte {
+	if bytes.HasPrefix(b, utf8BOM) {
+		return b[len(utf8BOM):]
+	}
+	return b
 }
 
 // formattingElements are the tags x/net/html routes through addFormattingElement, taken from the

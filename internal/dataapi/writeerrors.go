@@ -2,7 +2,6 @@ package dataapi
 
 import (
 	"fmt"
-	"strings"
 )
 
 // NoRulesTag means the document publishes no rules tag for the token the request named.
@@ -65,13 +64,14 @@ func (e *ShapeMismatch) Error() string {
 }
 
 // EmptyListInsert means the body adds to a list that has no row to clone and no [cms-template] seed
-// to grow from.
+// to grow from. Path is the write path that reached it, with int list indices and string object
+// keys, so it marshals the way the reference's mixed-type path does.
 type EmptyListInsert struct {
-	Path []string `json:"path"`
+	Path []any `json:"path"`
 }
 
 func (e *EmptyListInsert) Error() string {
-	return "cannot add items to empty list at \"" + strings.Join(e.Path, ".") +
+	return "cannot add items to empty list at \"" + pathString(e.Path) +
 		"\" \u2014 no sibling to clone as template. Seed the list with a hidden item first."
 }
 

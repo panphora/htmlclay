@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: Shrinking a list to zero rows would remove the row that holds the data rules tag, so it is refused.

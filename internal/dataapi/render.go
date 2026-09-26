@@ -17,6 +17,7 @@ import (
 //	" in an attribute     &#34;            &quot;
 //	' in an attribute     &#39;            '        (not escaped)
 //	> in an attribute     &gt;             >        (not escaped)
+//	CR (text + attr)      &#13;            raw byte
 //
 // Everything else matched, including the parts most likely to go wrong in a hand-rolled
 // serializer: raw text inside <script> and <style> left unescaped, entity normalisation, tag-name
@@ -24,7 +25,7 @@ import (
 // only the escaping and void-tag layer and keeps the same tree walk.
 //
 // The tables below are dom-serializer's escapeAttribute and escapeText, which is what cheerio uses
-// with its default decodeEntities:true.
+// with its default decodeEntities:true, plus the CR escape noted above.
 
 // rawTextElements have their children emitted verbatim. This is dom-serializer's
 // unencodedElements; escaping inside them would corrupt the script or stylesheet.
@@ -40,7 +41,12 @@ var voidElements = map[string]bool{
 	"link": true, "meta": true, "param": true, "source": true, "track": true, "wbr": true,
 }
 
-// escapeText escapes &, <, > and U+00A0. Note > IS escaped in text and is NOT in attributes.
+// escapeText escapes &, <, >, U+00A0 and CR. Note > IS escaped in text and is NOT in attributes.
+//
+// CR is the one place this departs from dom-serializer, which emits it raw. A raw CR reparses as
+// LF, so the render of a tree holding one (reachable only through a character reference such as
+// &#13;, since the tokenizer normalises the rest) is not a fixed point; writing that render would
+// silently change the document. Escaping it keeps the serializer's output stable under a reparse.
 func escapeText(b *strings.Builder, s string) {
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
@@ -50,6 +56,8 @@ func escapeText(b *strings.Builder, s string) {
 			b.WriteString("&lt;")
 		case '>':
 			b.WriteString("&gt;")
+		case '\r':
+			b.WriteString("&#13;")
 		case 0xC2:
 			// U+00A0 is C2 A0 in UTF-8. A lone C2 is invalid and passes through unchanged.
 			if i+1 < len(s) && s[i+1] == 0xA0 {
@@ -64,8 +72,9 @@ func escapeText(b *strings.Builder, s string) {
 	}
 }
 
-// escapeAttribute escapes &, " and U+00A0 — and nothing else. Values are always double-quoted, so
-// a bare ' is safe, and > carries no meaning inside a quoted value.
+// escapeAttribute escapes &, ", U+00A0 and CR — and nothing else. Values are always double-quoted,
+// so a bare ' is safe, and > carries no meaning inside a quoted value. CR is escaped for the same
+// reason as in escapeText: a raw CR reparses as LF and the output would not be a fixed point.
 func escapeAttribute(b *strings.Builder, s string) {
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
@@ -73,6 +82,8 @@ func escapeAttribute(b *strings.Builder, s string) {
 			b.WriteString("&amp;")
 		case '"':
 			b.WriteString("&quot;")
+		case '\r':
+			b.WriteString("&#13;")
 		case 0xC2:
 			if i+1 < len(s) && s[i+1] == 0xA0 {
 				b.WriteString("&nbsp;")

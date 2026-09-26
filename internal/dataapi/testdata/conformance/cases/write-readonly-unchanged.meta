@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: Posting a read-only property back unchanged is a no-op, so a GET response round-trips.

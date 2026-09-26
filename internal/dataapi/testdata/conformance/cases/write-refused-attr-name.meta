@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: An attribute name with a space in it is not a valid HTML attribute name, so the write is refused rather than serializing a live attribute.

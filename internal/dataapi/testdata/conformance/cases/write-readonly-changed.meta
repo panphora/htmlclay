@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A read-only property write that would change the value is still refused.

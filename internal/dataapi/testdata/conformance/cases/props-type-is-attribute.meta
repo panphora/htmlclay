@@ -1,0 +1,4 @@
+tier: 1
+face: query
+expect: ok
+note: "@type" reads the type attribute, matching HTML Clay. Elements with no type attribute read as null.

@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: ok
+note: "@outerHTML" is refused only when it would replace HTML; posting the extraction of the same rule back is a no-op like "@innerHTML".

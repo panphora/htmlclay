@@ -3,6 +3,6 @@ Copied from hyper-html-api/conformance by `make sync-conformance`. Do not edit h
 {
   "engine": "0.8.1",
   "cheerio": "1.2.0",
-  "cases": 64,
+  "cases": 71,
   "note": "Versions the expectations were generated against. Parity means parity with THIS pair; regenerate deliberately, never as a side effect of an install."
 }

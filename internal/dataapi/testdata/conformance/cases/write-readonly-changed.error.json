@@ -1,0 +1,6 @@
+{
+  "type": "RuleTargetReadOnly",
+  "message": "cannot write to read-only DOM property \"tagName\"",
+  "status": 500,
+  "details": null
+}

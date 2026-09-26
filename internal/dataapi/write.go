@@ -1,6 +1,10 @@
 package dataapi
 
-import "golang.org/x/net/html"
+import (
+	"bytes"
+
+	"golang.org/x/net/html"
+)
 
 // WriteResult is what a write produced. Changed reports whether the body moved anything; Spliced
 // reports whether the output is the original bytes with the changed spans replaced rather than a
@@ -15,7 +19,17 @@ type WriteResult struct {
 // WriteDocument applies data to src through the document's own rules tag under the content-only
 // policy. It never returns partial output: every error is returned before any bytes are produced.
 func WriteDocument(src []byte, data Value, token string) (*WriteResult, error) {
-	d, err := ParseBytes(src)
+	// The BOM is not part of the document and x/net/html would parse it as text, so the whole write
+	// runs on the bytes after it and the mark is put back on the output. Spans and the splice edit
+	// the same BOM-less body; a no-op write returns the original src, mark included.
+	var bom []byte
+	body := src
+	if bytes.HasPrefix(src, utf8BOM) {
+		bom = src[:len(utf8BOM)]
+		body = src[len(utf8BOM):]
+	}
+
+	d, err := ParseBytes(body)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +61,7 @@ func WriteDocument(src []byte, data Value, token string) (*WriteResult, error) {
 	// a write that clones an element would otherwise find a byte range for the clone, copied from
 	// the source it was cloned from. Nothing above this line touched the tree, and a write the
 	// plan rejected never gets here at all.
-	spans, owner := sourceSpans(d, src)
+	spans, owner := sourceSpans(d, body)
 
 	w := &writer{
 		d:      d,
@@ -66,5 +80,9 @@ func WriteDocument(src []byte, data Value, token string) (*WriteResult, error) {
 	if len(w.dirty) == 0 {
 		return &WriteResult{HTML: src, Changed: false, Spliced: true}, nil
 	}
-	return w.splice(src, []byte(outerHTML(d, d.Root))), nil
+	result := w.splice(body, []byte(outerHTML(d, d.Root)))
+	if len(bom) > 0 {
+		result.HTML = append(append([]byte{}, bom...), result.HTML...)
+	}
+	return result, nil
 }
