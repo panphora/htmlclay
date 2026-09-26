@@ -55,6 +55,12 @@ type writer struct {
 	refusals []Refusal
 	dirty    map[*html.Node]bool
 	cloned   map[*html.Node]bool
+
+	// spans is every source element's byte range, empty when the document could not be paired
+	// with its token stream and every write therefore has to render whole. owner is the side map
+	// that keeps a detached <template> content list pointing at its template.
+	spans map[*html.Node]span
+	owner map[*html.Node]*html.Node
 }
 
 // validateShape checks the body against the rule tree. It walks every branch rather than stopping
