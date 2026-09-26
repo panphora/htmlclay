@@ -3,11 +3,13 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/specwire"
@@ -554,4 +556,106 @@ func TestDataReadFacesCarryTheETag(t *testing.T) {
 	if got := query.Header().Get("ETag"); got != want {
 		t.Errorf("?data= ETag = %q, want %q", got, want)
 	}
+}
+
+// A data write has no browser tab behind it to relay the snapshot to the other editors, so without
+// an announcement an open edit-mode tab learns of it only on its next save, as a 412. It is
+// announced exactly as an external edit is: the content rides the live lane's notification, the
+// disk HTML follows on the saved lane, and the re-anchoring acceptServerReplacement performs before
+// the publish keeps the incarnation's generation from rolling and throwing the tab's replay away.
+func TestDataWriteReachesEditTabsOnTheLiveLane(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+	path := writeHome(t, srv, "test.htmlclay", dataWriteDoc)
+
+	live := newSubscriber(f.AbsPath, laneLive)
+	saved := newSubscriber(f.AbsPath, laneSaved)
+	srv.hub.add(live)
+	srv.hub.add(saved)
+	before := srv.hub.incs[f.AbsPath].generation
+
+	if w := postDataWrite(t, srv, "/_/api/test.htmlclay", `{"title":"World"}`, nil); w.Code != 200 {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	f.Lock()
+	key := f.HistoryKey()
+	f.Unlock()
+	stored := []byte(readDoc(t, path))
+	want := forBrowser(stored, key)
+
+	notice := waitFrame(t, live, time.Second)
+	if notice["type"] != "notification" {
+		t.Fatalf("live lane got %v, want a notification", notice)
+	}
+	data, ok := notice["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("notification carries no data object: %v", notice)
+	}
+	if data["kind"] != "external-change" {
+		t.Errorf("kind = %v, want external-change", data["kind"])
+	}
+	if data["html"] != want {
+		t.Errorf("html = %q, want the browser-facing bytes %q", data["html"], want)
+	}
+	if data["etag"] != specwire.Etag(stored) {
+		t.Errorf("etag = %v, want the stamp of the disk bytes %q", data["etag"], specwire.Etag(stored))
+	}
+
+	content := waitFrame(t, saved, time.Second)
+	if content["html"] != want || content["sender"] != "file-system" {
+		t.Errorf("saved lane payload = %v, want the stored bytes from the file-system", content)
+	}
+
+	if got := srv.hub.incs[f.AbsPath].generation; got != before {
+		t.Errorf("an API write rolled the generation from %d to %d", before, got)
+	}
+}
+
+// An API write's bytes are this host's, but they are not an open tab's. A tab still holding the
+// stamp from before it must be refused, and told nothing about who moved the document, because
+// `another-tab` here would be a confident wrong answer about an agent's write.
+func TestDataWriteConflictIsNotAnotherTab(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+	writeHome(t, srv, "test.htmlclay", dataWriteDoc)
+	stamp := specwire.Etag([]byte(dataWriteDoc))
+
+	if w := postDataWrite(t, srv, "/_/api/test.htmlclay", `{"title":"World"}`, nil); w.Code != 200 {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	w := saveThroughMux(t, srv, f, dataWriteDoc, stamp)
+	if w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("a save holding the pre-write stamp = %d, want 412: %s", w.Code, w.Body.String())
+	}
+	if got, present := decode(t, w)["changedBy"]; present {
+		t.Errorf("changedBy = %v, but the write came through the data API, not another tab", got)
+	}
+}
+
+// The write is announced once. RecordServerWrite keeps the watcher's suppression in step, so its
+// next look at the same bytes confirms a change already delivered rather than publishing a second
+// external change for the tab to apply again.
+func TestDataWriteWatcherStaysQuiet(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+	writeHome(t, srv, "test.htmlclay", dataWriteDoc)
+
+	live := newSubscriber(f.AbsPath, laneLive)
+	srv.hub.add(live)
+
+	if w := postDataWrite(t, srv, "/_/api/test.htmlclay", `{"title":"World"}`, nil); w.Code != 200 {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if notice := waitFrame(t, live, time.Second); notice["type"] != "notification" {
+		t.Fatalf("live lane got %v, want the write's notification", notice)
+	}
+
+	// Hand-driven and hand-aged, as the watcher's own tests do: the first look arms the candidate,
+	// the second is the one that would publish.
+	wt := srv.watcher
+	wt.quiet = 0
+	e := &watchEntry{file: f, refs: 1}
+	wt.check(e)
+	wt.check(e)
+
+	expectNoFrame(t, live, 100*time.Millisecond)
 }

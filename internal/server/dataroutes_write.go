@@ -245,11 +245,15 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 		}
 		f.RecordServerWrite(versions.Hash(written))
 		f.NoteWriteByThisHost()
+		f.NoteWriteFromOutsideTabs()
 		if pErr := s.versions.SetProvisional(key, f.AbsPath, false); pErr != nil {
 			s.logger.Printf("Could not clear provisional flag for %s: %v", f.RelPath, pErr)
 		}
 		s.coord.acceptServerReplacement(f)
-		s.broadcastDiskHTML(f, written, key)
+		// Announced as an external change, not a save: no tab relays this write to the others,
+		// so edit-mode tabs must hear it on the live lane, through the same dirty-region
+		// protection a text editor's write gets.
+		s.coord.publishExternalChange(f, f.Name+" was updated through the data API", forBrowser(written, key), specwire.Etag(written))
 	}
 	f.Unlock()
 

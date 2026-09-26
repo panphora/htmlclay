@@ -203,6 +203,12 @@ func (f *File) RecordServerWrite(hash string) {
 // Caller must hold Lock().
 func (f *File) NoteWriteByThisHost() { f.writtenHere = true }
 
+// NoteWriteFromOutsideTabs marks a write this process made on behalf of something other than an
+// open tab, such as a data API write from an agent. The bytes are this host's, so the watcher stays
+// quiet, but conflict attribution must not tell a tab that "another tab" moved the document.
+// Caller must hold Lock() and call it after RecordServerWrite.
+func (f *File) NoteWriteFromOutsideTabs() { f.externalSinceOwnWrite = true }
+
 // WrittenByThisHost reports whether this process has written this file on the
 // person's behalf during this run. Caller must hold Lock().
 func (f *File) WrittenByThisHost() bool { return f.writtenHere }
