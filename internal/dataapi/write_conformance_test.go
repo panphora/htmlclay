@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -16,9 +15,6 @@ import (
 //
 // The byte contract (.after.html) is phase 2: this step renders the whole document rather than
 // splicing, so only the extraction is compared here.
-//
-// List rules (`"sel[]"` and `["sel", {...}]`) are not ported yet, so any case whose rules tag uses
-// one is skipped rather than failed: step 3 replaces the skip with a comparison.
 func TestConformanceWrite(t *testing.T) {
 	var matched, errored, skipped int
 
@@ -33,11 +29,6 @@ func TestConformanceWrite(t *testing.T) {
 				skipped++
 				t.Skip(r)
 			}
-			if caseHasListRules(t, name, meta.token) {
-				skipped++
-				t.Skip("list rules: go step 3")
-			}
-
 			source, ok := readCaseFile(t, name, ".html")
 			if !ok {
 				t.Fatalf("%s has no .html", name)
@@ -74,42 +65,6 @@ func TestConformanceWrite(t *testing.T) {
 	if matched+errored == 0 {
 		t.Fatal("no write cases ran \u2014 the corpus is not wired up")
 	}
-}
-
-// caseHasListRules resolves the case's rules tag the way writeDocument does and looks for a list
-// form anywhere in the tree.
-func caseHasListRules(t *testing.T, name, token string) bool {
-	t.Helper()
-	source, ok := readCaseFile(t, name, ".html")
-	if !ok {
-		return false
-	}
-	d, err := ParseBytes([]byte(source))
-	if err != nil {
-		return false
-	}
-	found, err := d.FindRulesIn(token)
-	if err != nil || found == nil {
-		return false
-	}
-	return hasListRule(found.Rules)
-}
-
-func hasListRule(rule Value) bool {
-	switch r := rule.(type) {
-	case string:
-		return strings.HasSuffix(r, "[]")
-	case []Value:
-		return true
-	case *Object:
-		for _, key := range r.Keys() {
-			sub, _ := r.Get(key)
-			if hasListRule(sub) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // checkWriteResult compares the written document by extracting it again: the output is reparsed and

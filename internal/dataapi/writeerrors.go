@@ -64,8 +64,8 @@ func (e *ShapeMismatch) Error() string {
 	return fmt.Sprintf("shape mismatch: %d field(s) failed validation", len(e.Mismatches))
 }
 
-// EmptyListInsert means the body adds to a list that has no row to clone. The list form itself is
-// ported in a later step; the type is here because a refill of an existing list reaches it.
+// EmptyListInsert means the body adds to a list that has no row to clone and no [cms-template] seed
+// to grow from.
 type EmptyListInsert struct {
 	Path []string `json:"path"`
 }

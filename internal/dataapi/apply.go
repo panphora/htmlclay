@@ -1,7 +1,9 @@
 package dataapi
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -163,10 +165,26 @@ func (w *writer) applyAt(ctx *html.Node, rule, value Value, depth int, path []st
 
 	switch r := rule.(type) {
 	case string:
-		return w.applyScalar(ctx, r, value)
+		return w.applyScalar(ctx, r, value, depth, path)
 
 	case []Value:
-		return nil, fmt.Errorf("list rules not ported yet")
+		// JS destructures [selector, shape]; a shorter array leaves the shape undefined and any
+		// extra elements are ignored. Undefined and null are both "no shape", but only null is a
+		// scalar list: the reference walks an undefined shape as a rule-less list, which writes
+		// nothing. The missing sentinel keeps the two apart.
+		var selector Value
+		if len(r) > 0 {
+			selector = r[0]
+		}
+		shape := Value(missing)
+		if len(r) > 1 {
+			shape = r[1]
+		}
+		items, ok := value.([]Value)
+		if !ok {
+			return ctx, nil
+		}
+		return ctx, w.listDiff(ctx, selector, shape, items, depth, path)
 
 	case *Object:
 		for _, key := range r.Keys() {
@@ -191,9 +209,13 @@ func (w *writer) applyAt(ctx *html.Node, rule, value Value, depth int, path []st
 	return ctx, nil
 }
 
-func (w *writer) applyScalar(ctx *html.Node, rule string, value Value) (*html.Node, error) {
+func (w *writer) applyScalar(ctx *html.Node, rule string, value Value, depth int, path []string) (*html.Node, error) {
 	if strings.HasSuffix(rule, "[]") {
-		return nil, fmt.Errorf("list rules not ported yet")
+		items, ok := value.([]Value)
+		if !ok {
+			return ctx, nil
+		}
+		return ctx, w.listDiff(ctx, strings.TrimSuffix(rule, "[]"), nil, items, depth, path)
 	}
 
 	if strings.HasPrefix(rule, "@") {
@@ -574,12 +596,33 @@ func jsString(v Value) string {
 	return fmt.Sprint(v)
 }
 
-// jsNumberString is String(n) for ordinary magnitudes: FormatFloat's shortest round-trip form.
-// It parts company below 1e-4, where JS keeps positional notation and Go switches to an exponent,
-// and in the exponent's spelling ("1e-07" here against "1e-7" there). Neither band is reachable
-// from a scalar rule today, and a corpus case that reaches one would pin the fix.
+// jsNumberString is String(n). encoding/json's float formatting is the ES6 Number::toString
+// algorithm: positional notation down to 1e-6, an exponent outside [1e-6, 1e21), and an exponent
+// with no leading zero ("1e-7"). FormatFloat's 'g' agrees with it on ordinary magnitudes but
+// switches to an exponent below 1e-4 and writes the exponent as "1e-07", so a body carrying
+// 0.00001 or 1e-7 was written with different text than the reference's.
+//
+// The two values JSON cannot hold are handled here because json.Marshal errors on them, while
+// String() has a spelling for each: a literal that overflows to Infinity (decodeJSON's ParseFloat
+// range error) and negative zero, which String() writes as "0".
 func jsNumberString(f float64) string {
-	return strconv.FormatFloat(f, 'g', -1, 64)
+	if math.IsNaN(f) {
+		return "NaN"
+	}
+	if math.IsInf(f, 1) {
+		return "Infinity"
+	}
+	if math.IsInf(f, -1) {
+		return "-Infinity"
+	}
+	if f == 0 {
+		return "0"
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		return strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	return string(b)
 }
 
 func truthy(v Value) bool {

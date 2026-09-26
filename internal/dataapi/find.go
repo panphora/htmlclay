@@ -13,13 +13,18 @@ import (
 const cmsTemplateAttr = "cms-template"
 
 // FindOpts is the read-path subset of the JS adapter's find options. The adapter also takes `skip`
-// and `templateAttr`, both of which exist only for the CMS write path; leaving them out keeps the
-// one caller that matters honest rather than carrying dead configuration.
+// and `templateAttr`; `skip` has no caller here, and templateAttr is expressed by the single
+// IncludeCMSTemplates flag the write path's seed lookup needs.
 type FindOpts struct {
 	// IncludeRulesTag keeps script[data-rules-name] elements in the result. Only the rules-tag
 	// lookup sets it, and it MUST: isRulesTag matches any such script, so without the flag the
 	// lookup would filter out the very tag it selects.
 	IncludeRulesTag bool
+
+	// IncludeCMSTemplates keeps [cms-template] seed elements in the result. Only the write
+	// path's grow-from-zero lookup sets it (the JS adapter's templateAttr:null), because it
+	// must see the seed to clone it.
+	IncludeCMSTemplates bool
 }
 
 // Find returns the descendants of ctx matching selector, in document order. Self is never
@@ -47,7 +52,7 @@ func Find(ctx *html.Node, selector string, opts FindOpts) ([]*html.Node, error) 
 		if !opts.IncludeRulesTag && isRulesTag(n) {
 			continue
 		}
-		if hasSelfOrAncestorAttr(n, cmsTemplateAttr) {
+		if !opts.IncludeCMSTemplates && hasSelfOrAncestorAttr(n, cmsTemplateAttr) {
 			continue
 		}
 		if inNoData(n) {
