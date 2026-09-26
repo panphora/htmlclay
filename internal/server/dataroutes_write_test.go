@@ -420,6 +420,123 @@ func TestDataWriteRegistersATrustedFolderFile(t *testing.T) {
 	}
 }
 
+// A page can only write a file it already holds a token for, so the write face never registers on
+// a browser's behalf and never answers differently for a trusted file than for a missing one: the
+// three leaks the review found all needed the resolvable-path answer that only a local process gets.
+func TestDataWriteBrowserCannotRegisterOrProbe(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	ws := filepath.Join(srv.sessions.HomeDir(), "ws")
+	page := writeHome(t, srv, "ws/note.htmlclay", dataWriteDoc)
+
+	routes := 0
+	srv.SetHooks(Hooks{
+		TrustedCovers: func(absPath string) bool { return session.EqualOrUnder(absPath, ws) },
+		Route: func(absPath string) (string, bool) {
+			routes++
+			if _, err := srv.sessions.Register(absPath, session.ViaTrusted); err != nil {
+				return "", false
+			}
+			return fmt.Sprintf("http://127.0.0.1:%d/", srv.port), true
+		},
+	})
+	if err := srv.sessions.InstallTrustedRoot(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	browser := func() map[string]string {
+		return map[string]string{
+			"Sec-Fetch-Site": "same-origin",
+			"Origin":         fmt.Sprintf("http://127.0.0.1:%d", srv.port),
+		}
+	}
+
+	present := postDataWrite(t, srv, "/_/api/ws/note.htmlclay", `{"title":"World"}`, browser())
+	absent := postDataWrite(t, srv, "/_/api/ws/absent.htmlclay", `{"title":"World"}`, browser())
+
+	for name, w := range map[string]*httptest.ResponseRecorder{"present": present, "absent": absent} {
+		if w.Code != 403 {
+			t.Fatalf("%s: status = %d, want 403: %s", name, w.Code, w.Body.String())
+		}
+		if got := decodeWriteError(t, w).Error; got != "Save-Token required" {
+			t.Errorf("%s: error = %q, want %q", name, got, "Save-Token required")
+		}
+	}
+	if present.Body.String() != absent.Body.String() {
+		t.Errorf("the refusals differ:\npresent %s\nabsent  %s", present.Body.String(), absent.Body.String())
+	}
+	if routes != 0 {
+		t.Errorf("Route was called %d time(s) for a browser caller, want 0", routes)
+	}
+	if _, registered := srv.sessions.LookupByPath(page); registered {
+		t.Error("a browser write registered a trusted-folder file")
+	}
+	if got := readDoc(t, page); got != dataWriteDoc {
+		t.Errorf("a refused write changed the file:\n%s", got)
+	}
+}
+
+// The existence-oracle check runs again with the trusted-folder hooks wired, which is the only
+// state in which the old path resolution could have answered a local process differently for a
+// present and an absent file.
+func TestDataWriteUnregisteredOutsideTrustedFoldersIsNotAnExistenceOracle(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	ws := filepath.Join(srv.sessions.HomeDir(), "ws")
+	if err := os.MkdirAll(ws, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeHome(t, srv, "loose.htmlclay", dataWriteDoc)
+
+	srv.SetHooks(Hooks{
+		TrustedCovers: func(absPath string) bool { return session.EqualOrUnder(absPath, ws) },
+		Route: func(absPath string) (string, bool) {
+			if _, err := srv.sessions.Register(absPath, session.ViaTrusted); err != nil {
+				return "", false
+			}
+			return fmt.Sprintf("http://127.0.0.1:%d/", srv.port), true
+		},
+	})
+	if err := srv.sessions.InstallTrustedRoot(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	present := postDataWrite(t, srv, "/_/api/loose.htmlclay", `{"title":"World"}`, nil)
+	absent := postDataWrite(t, srv, "/_/api/absent.htmlclay", `{"title":"World"}`, nil)
+
+	for name, w := range map[string]*httptest.ResponseRecorder{"present": present, "absent": absent} {
+		if w.Code != 403 {
+			t.Fatalf("%s: status = %d, want 403: %s", name, w.Code, w.Body.String())
+		}
+		if got := decodeWriteError(t, w).Error; got != "Not writable" {
+			t.Errorf("%s: error = %q", name, got)
+		}
+	}
+	if present.Body.String() != absent.Body.String() {
+		t.Errorf("the refusals differ:\npresent %s\nabsent  %s", present.Body.String(), absent.Body.String())
+	}
+}
+
+// A rule that names a DOM property the engine refuses to write is the caller's mistake, so the
+// write face answers 400 with the engine's own words rather than the extraction face's 500.
+func TestDataWriteReadOnlyRule(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	writeHome(t, srv, "test.htmlclay", `<!DOCTYPE html>
+<html><head><script type="application/json" data-rules-name="api" data-rules-version="1">{t:"h1",tag:"h1@tagName"}</script></head>
+<body><h1>Hello</h1></body></html>
+`)
+
+	w := postDataWrite(t, srv, "/_/api/test.htmlclay", `{"tag":"H2"}`, nil)
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	body := decodeWriteError(t, w)
+	if body.Error != "Read-only rule" {
+		t.Errorf("error = %q, want %q", body.Error, "Read-only rule")
+	}
+	if body.Message != `cannot write to read-only DOM property "tagName"` {
+		t.Errorf("message = %q", body.Message)
+	}
+}
+
 // Both GET faces answer the stamp of the stored bytes, which is what a client holds to write
 // conditionally.
 func TestDataReadFacesCarryTheETag(t *testing.T) {

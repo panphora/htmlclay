@@ -74,17 +74,35 @@ func (s *Server) handleDataAPIWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	f, status, body := s.writableFile(r, relPath)
-	if f == nil {
-		writeWriteError(w, status, body)
-		return
-	}
-	if isBrowser && subtle.ConstantTimeCompare([]byte(r.Header.Get(helperTokenHeader)), []byte(f.Token)) != 1 {
-		writeWriteError(w, http.StatusForbidden, writeErrorBody{
-			Error:   "Save-Token required",
-			Message: "A page writes through /_/api only with the target file's Save-Token header.",
-		})
-		return
+	var f *session.File
+	if isBrowser {
+		// A page proves the target's token before anything else is resolved or revealed. It can
+		// only hold a token for a registered file, so only registered files are looked up, and
+		// every failure gives one answer, whether or not the file exists.
+		if absPath, ok := s.resolveWriteTarget(relPath); ok {
+			f, _ = s.sessions.LookupByPath(absPath)
+		}
+		if f == nil || subtle.ConstantTimeCompare([]byte(r.Header.Get(helperTokenHeader)), []byte(f.Token)) != 1 {
+			writeWriteError(w, http.StatusForbidden, writeErrorBody{
+				Error:   "Save-Token required",
+				Message: "A page writes through /_/api only with the target file's Save-Token header.",
+			})
+			return
+		}
+		if s.trustedWriteRevoked(f) {
+			writeWriteError(w, http.StatusForbidden, writeErrorBody{
+				Error:   "Not writable",
+				Message: "This document's folder is no longer trusted.",
+			})
+			return
+		}
+	} else {
+		var status int
+		var body writeErrorBody
+		if f, status, body = s.writableFile(r, relPath); f == nil {
+			writeWriteError(w, status, body)
+			return
+		}
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxDataWriteSize)
@@ -110,17 +128,27 @@ func (s *Server) handleDataAPIWrite(w http.ResponseWriter, r *http.Request) {
 	s.writeApplied(w, r, f, data)
 }
 
+// resolveWriteTarget turns the request path into the absolute path a write would touch, or reports
+// that it names nothing writable. It is text work plus symlink resolution, never registration.
+func (s *Server) resolveWriteTarget(relPath string) (string, bool) {
+	absPath, err := ValidatePath(relPath, s.sessions.HomeDir())
+	if err != nil || s.isInternal(absPath) {
+		return "", false
+	}
+	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+		absPath = filepath.Clean(resolved)
+	}
+	return absPath, true
+}
+
 // writableFile resolves the request path to a registered file this route may write, or answers why
 // not. Every refusal for an unregistered path is decided on the path's text and the in-memory
 // trusted-folder list, so it cannot reveal whether a file exists.
 func (s *Server) writableFile(r *http.Request, relPath string) (*session.File, int, writeErrorBody) {
 	notFound := writeErrorBody{Error: "Not Found", Message: "No such document."}
-	absPath, err := ValidatePath(relPath, s.sessions.HomeDir())
-	if err != nil || s.isInternal(absPath) {
+	absPath, ok := s.resolveWriteTarget(relPath)
+	if !ok {
 		return nil, http.StatusNotFound, notFound
-	}
-	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
-		absPath = filepath.Clean(resolved)
 	}
 
 	f, ok := s.sessions.LookupByPath(absPath)
@@ -256,6 +284,10 @@ func mapWriteError(err error) (int, writeErrorBody) {
 	var empty *dataapi.EmptyListInsert
 	if errors.As(err, &empty) {
 		return http.StatusBadRequest, writeErrorBody{Error: "Cannot grow list", Message: err.Error(), Details: empty.Path}
+	}
+	var readOnly *dataapi.RuleTargetReadOnly
+	if errors.As(err, &readOnly) {
+		return http.StatusBadRequest, writeErrorBody{Error: "Read-only rule", Message: err.Error()}
 	}
 	status, body := mapDataError(err, faceAPI)
 	return status, writeErrorBody{Error: body.Error, Message: body.Message}
