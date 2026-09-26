@@ -78,3 +78,11 @@ func DirIdentity(path string) string {
 	}
 	return fmt.Sprintf("%d:%x", uint64(basic.VolumeSerialNumber), id)
 }
+
+// MatchDirIdentity reports whether the directory at path is the one pinned. The
+// volume serial is written into the volume at format time, so unlike macOS's
+// st_dev it does not move across a reboot and there is no old form to accept.
+func MatchDirIdentity(path, pinned, home string) (current string, ok bool) {
+	current = DirIdentity(path)
+	return current, current != "" && current == pinned
+}

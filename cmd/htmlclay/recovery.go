@@ -40,6 +40,10 @@ func (p *parked) close() {
 // already taken is simply skipped: something else owns it now, and the origin
 // will move to a fresh port the next time a file there is opened.
 func (a *app) parkPort(anchor string, port int) {
+	a.parkPortWith(anchor, port, recoveryPage)
+}
+
+func (a *app) parkPortWith(anchor string, port int, page []byte) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		a.rt.logger.Printf("Remembered port %d for %s is taken; not holding it", port, anchor)
@@ -50,7 +54,7 @@ func (a *app) parkPort(anchor string, port int) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
-		w.Write(recoveryPage)
+		w.Write(page)
 	})
 	p.srv = &http.Server{
 		Handler:           server.HostValidationMiddleware(handler, port),
@@ -79,7 +83,7 @@ func (a *app) parkPort(anchor string, port int) {
 // can bind that exact port and the bookmark keeps working. Without this, route
 // would find the port taken by HTML Clay's own placeholder and move the origin,
 // which is the one thing binding at startup exists to prevent.
-func (a *app) unpark(anchor string) {
+func (a *app) unpark(anchor string) int {
 	a.mu.Lock()
 	var found *parked
 	kept := a.parked[:0]
@@ -95,7 +99,9 @@ func (a *app) unpark(anchor string) {
 	if found != nil {
 		found.close()
 		a.rt.logger.Printf("Released remembered port %d for %s", found.port, anchor)
+		return found.port
 	}
+	return 0
 }
 
 var recoveryPage = []byte(`<!doctype html>
@@ -124,6 +130,39 @@ var recoveryPage = []byte(`<!doctype html>
     <li>Open the file again from Finder or your file manager, and this address will work.</li>
     <li>To keep it working for good, add the file's folder under <strong>Trusted Folders</strong>
         in the HTML Clay menu. Files in a trusted folder always open at the same address.</li>
+  </ul>
+</main>
+</body>
+</html>
+`)
+
+var deadFolderPage = []byte(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTML Clay</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         font:15px/1.55 -apple-system,system-ui,Segoe UI,sans-serif; background:#f6f6f7; color:#1c1c1e; }
+  @media (prefers-color-scheme: dark) { body { background:#141416; color:#f2f2f7; } }
+  main { max-width:29rem; padding:2rem; }
+  h1 { font-size:1.15rem; margin:0 0 .75rem; }
+  p { margin:0 0 .75rem; }
+  ul { margin:0; padding-left:1.15rem; }
+  li { margin-bottom:.4rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>This trusted folder needs approving again</h1>
+  <p>HTML Clay can no longer confirm that the folder at this location is the one you trusted.
+     It may have been moved, deleted, or replaced. Nothing is served at this address until you approve it again.</p>
+  <ul>
+    <li>If the folder is still there and you trust it, open the HTML Clay menu, choose
+        <strong>Trusted Folders</strong> &rsaquo; <strong>Trust a Folder…</strong>, and select the same folder.</li>
+    <li>Then reload this page. The address stays the same.</li>
   </ul>
 </main>
 </body>

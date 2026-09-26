@@ -308,10 +308,12 @@ func (p Policy) IsPersonal(dir string) bool {
 
 // IdentityOK reports whether the directory at path is still provably the one
 // that was declared. An empty pin (a platform without fingerprints) leaves the
-// path as the entry's whole identity.
-func IdentityOK(path, pinned string) bool {
+// path as the entry's whole identity. home is needed to vouch for a pin taken
+// in the old dev:inode form (platform.MatchDirIdentity).
+func IdentityOK(path, pinned, home string) bool {
 	if pinned == "" {
 		return true
 	}
-	return platform.DirIdentity(path) == pinned
+	_, ok := platform.MatchDirIdentity(path, pinned, home)
+	return ok
 }

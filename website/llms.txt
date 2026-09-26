@@ -1296,9 +1296,9 @@ lose their save tokens immediately, their live-sync streams close, and a save fr
 was already open is re-checked at write time. Files you had opened yourself survive on a new
 address of their own.
 
-Each trusted folder is pinned to the folder's identity on disk: device and inode on macOS and
-Linux, volume serial and file id on Windows. A folder deleted and replaced stops granting
-anything, its address stops being served, and it shows in the tray as "missing or replaced"
+Each trusted folder is pinned to the folder's identity on disk: volume UUID and inode on macOS,
+device and inode on Linux, volume serial and file id on Windows. A folder deleted and replaced
+stops granting anything, its address stops being served, and it shows in the tray as "missing"
 rather than silently covering the newcomer. Approving the dialog again re-pins it to the folder
 now on disk, which is the one way back.
 

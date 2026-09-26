@@ -125,7 +125,7 @@ func (a *app) trustedAnchor(absPath string) (string, bool) {
 		if !session.EqualOrUnder(absPath, tf.Path) {
 			continue
 		}
-		if !trust.IdentityOK(tf.Path, tf.Identity) {
+		if !trust.IdentityOK(tf.Path, tf.Identity, a.rt.home) {
 			continue
 		}
 		switch {
@@ -430,20 +430,23 @@ func (a *app) routeTrusted(absPath string) (string, bool) {
 //	nested under a broader   a recovery page, because the broader folder owns
 //	trusted folder           the tree and the file lives on its origin now
 //	remembered ad-hoc root   a recovery page. No roots armed, nothing registered
-//	dead trusted folder      nothing at all. The URL stays dead and the tray says
-//	                         why, because serving it would serve whatever now
-//	                         sits at that path
+//	dead trusted folder      the dead-folder recovery page. Never a site: serving
+//	                         would serve whatever now sits at that path, and a
+//	                         parked listener cannot serve anything
 func (a *app) startSites() {
 	settled := map[string]bool{}
+	var dead []string
 	for _, tf := range a.rt.cfg.TrustedFolderList() {
 		if info, err := os.Stat(tf.Path); err != nil || !info.IsDir() {
-			a.rt.logger.Printf("Trusted folder %s is missing; leaving its port unbound", tf.Path)
+			a.rt.logger.Printf("Trusted folder %s is missing; holding its port with a recovery page", tf.Path)
 			settled[tf.Path] = true
+			dead = append(dead, tf.Path)
 			continue
 		}
-		if !trust.IdentityOK(tf.Path, tf.Identity) {
-			a.rt.logger.Printf("Trusted folder %s failed its identity check; leaving its port unbound", tf.Path)
+		if !trust.IdentityOK(tf.Path, tf.Identity, a.rt.home) {
+			a.rt.logger.Printf("Trusted folder %s failed its identity check; holding its port with a recovery page", tf.Path)
 			settled[tf.Path] = true
+			dead = append(dead, tf.Path)
 			continue
 		}
 		// Invariant 4: only the broadest of a nested set gets a site. A shadowed
@@ -466,12 +469,36 @@ func (a *app) startSites() {
 		a.rt.logger.Printf("Trusted folder %s listening on 127.0.0.1:%d", tf.Path, s.port)
 	}
 
+	// Parked only once every live folder has bound, so a dead entry that shares
+	// a remembered port with a live one can never take it first.
+	for _, anchor := range dead {
+		a.parkDead(anchor)
+	}
+
 	for anchor, port := range a.rt.cfg.SitePortList() {
 		if settled[anchor] {
 			continue
 		}
 		a.parkPort(anchor, port)
 	}
+}
+
+// parkDead holds a dead trusted folder's remembered port with the page that says
+// why it is dead. A parked listener is structurally incapable of serving a file,
+// so this grants nothing; it only replaces "refused to connect" with a reason.
+// A dead folder under a live broader one gets the ordinary recovery page, as a
+// shadowed folder does: re-approving it would not bring its origin back, because
+// the broader folder owns the tree.
+func (a *app) parkDead(anchor string) {
+	port := a.rt.cfg.SitePort(anchor)
+	if port == 0 {
+		return
+	}
+	page := deadFolderPage
+	if outer, ok := a.trustedAnchor(anchor); ok && outer != anchor {
+		page = recoveryPage
+	}
+	a.parkPortWith(anchor, port, page)
 }
 
 // shutdown stops every listener and releases every capability handle.

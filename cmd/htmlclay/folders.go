@@ -242,6 +242,11 @@ func (a *app) untrustFolder(dir string) error {
 	// page rather than a connection refusal for the rest of this run. Re-homing
 	// cannot have taken it back: the port was forgotten with the trust, so the
 	// survivors bound fresh ones.
+	if freedPort == 0 {
+		// A dead folder has no site, only the listener saying it needs approving
+		// again, which is no longer true once it is untrusted.
+		freedPort = a.unpark(dir)
+	}
 	if freedPort != 0 {
 		a.parkPort(dir, freedPort)
 	}
@@ -430,7 +435,7 @@ func (a *app) trustedFolderRows() []tray.Row {
 	out := make([]tray.Row, 0, len(list))
 	for _, tf := range list {
 		label := tf.Path
-		if info, err := os.Stat(tf.Path); err != nil || !info.IsDir() || !trust.IdentityOK(tf.Path, tf.Identity) {
+		if info, err := os.Stat(tf.Path); err != nil || !info.IsDir() || !trust.IdentityOK(tf.Path, tf.Identity, a.rt.home) {
 			// The entry stays listed: it is the record of a standing write grant,
 			// and it must surface as dead rather than silently vanish.
 			label += " (missing or replaced)"

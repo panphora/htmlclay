@@ -136,10 +136,12 @@ func TestRememberedAdHocPortServesOnlyTheRecoveryPage(t *testing.T) {
 	}
 }
 
-// A trusted folder whose identity pin no longer matches is left unbound: the
-// path may be anything now, and serving it would hand a page whatever tree has
-// taken that name.
-func TestTrustedFolderWithABrokenPinNeverBinds(t *testing.T) {
+// A trusted folder whose identity pin no longer matches gets no site: the path
+// may be anything now, and serving it would hand a page whatever tree has taken
+// that name. Its port is held by a parked listener instead, which can serve
+// nothing but the page saying why, so a bookmark gets a reason rather than a
+// connection refusal.
+func TestTrustedFolderWithABrokenPinParksWithoutServing(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	proj := filepath.Join(home, "proj")
 	page := filepath.Join(proj, "index.htmlclay")
@@ -150,8 +152,8 @@ func TestTrustedFolderWithABrokenPinNeverBinds(t *testing.T) {
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatalf("trust: %v", err)
 	}
-	s, _ := first.openForTest(t, page)
-	port := s.port
+	s, rel := first.openForTest(t, page)
+	bookmark := fileURL(s.port, rel)
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
@@ -159,8 +161,15 @@ func TestTrustedFolderWithABrokenPinNeverBinds(t *testing.T) {
 		t.Fatal("no trusted entry to break")
 	}
 	second.startSites()
+	t.Cleanup(second.shutdown)
 
-	requirePortFree(t, port)
+	code, body := fetch(t, bookmark)
+	if code != 404 || !strings.Contains(body, "needs approving again") {
+		t.Fatalf("a dead trusted folder's port should answer with the dead-folder page, got %d", code)
+	}
+	if strings.Contains(body, "index") || strings.Contains(body, "savetoken") {
+		t.Fatal("a parked port served the file")
+	}
 	second.mu.Lock()
 	defer second.mu.Unlock()
 	if len(second.sites) != 0 {

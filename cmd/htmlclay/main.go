@@ -309,6 +309,28 @@ func (a *app) startRuntime() {
 	a.rt.logger.Printf("Runtime ready (home=%s)", a.rt.home)
 }
 
+// repinTrustedFolders moves every pin that still matches onto the fingerprint the
+// folder has now. That is a no-op for a current pin, and for one in the old
+// dev:inode form it is the upgrade: macOS renumbers st_dev at boot, so those went
+// stale at the first reboot, and MatchDirIdentity only vouches for them on home's
+// volume. Once re-pinned, the entry no longer depends on that allowance.
+func (a *app) repinTrustedFolders() bool {
+	changed := false
+	for _, tf := range a.rt.cfg.TrustedFolderList() {
+		if tf.Identity == "" {
+			continue
+		}
+		current, ok := platform.MatchDirIdentity(tf.Path, tf.Identity, a.rt.home)
+		if !ok || current == tf.Identity {
+			continue
+		}
+		a.rt.cfg.SetTrustedIdentity(tf.Path, current)
+		a.rt.logger.Printf("Re-pinned trusted folder %s to its current fingerprint", tf.Path)
+		changed = true
+	}
+	return changed
+}
+
 // finishUpgrade runs the one-time work a config from an older version implies.
 // It lives here rather than in config because it touches the filesystem and
 // talks to the user, and because this is already where one-shot upgrade work
@@ -321,7 +343,8 @@ func (a *app) finishUpgrade() {
 	// that trusts nothing new and keeps its port touches none of them. A pin that
 	// never lands is a pin re-taken from whatever directory sits at that path at
 	// the time, which is exactly the swap it exists to catch.
-	if a.loaded.PromotedLegacy || a.loaded.PinnedIdentities {
+	repinned := a.repinTrustedFolders()
+	if a.loaded.PromotedLegacy || a.loaded.PinnedIdentities || repinned {
 		if err := a.rt.cfg.Save(); err != nil {
 			a.rt.logger.Printf("Could not persist the upgraded config: %v", err)
 		}

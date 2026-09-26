@@ -331,10 +331,10 @@ survives a restart. A port that is taken at startup is given up and the new one 
 
 The trusted-folder list keeps the on-disk key `workspaceFolders` from the version that introduced it.
 Renaming the key would make older configs fail to parse, and the corrupt-config path would then reset
-every other setting. `identity` is the folder's fingerprint at the moment you trusted it: device and
-inode on macOS and Linux, volume serial and file id on Windows. A folder replaced since then stops
-granting anything rather than covering the newcomer. An entry recorded before Windows could
-fingerprint a directory has no `identity`; it keeps working and gains one on the next launch.
+every other setting. `identity` is the folder's fingerprint at the moment you trusted it: volume UUID
+and inode on macOS, device and inode on Linux, volume serial and file id on Windows. A folder replaced
+since then stops granting anything rather than covering the newcomer. An entry recorded before Windows
+could fingerprint a directory has no `identity`; it keeps working and gains one on the next launch.
 
 ### System tray
 
