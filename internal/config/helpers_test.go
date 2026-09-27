@@ -55,8 +55,9 @@ func TestHelperRegistryRoundTripAndResolution(t *testing.T) {
 	}
 
 	resolution, ok := cfg.ResolveHelper("/docs/app.htmlclay", "search")
-	if !ok || resolution.Decided || resolution.Allowed || resolution.Program.ID != first.ID {
-		t.Fatalf("undecided resolution = %+v, %v", resolution, ok)
+	if !ok || resolution.Decided || resolution.Allowed || resolution.Program.ID != "" ||
+		len(resolution.Candidates) != 2 || resolution.Candidates[0].ID != first.ID || resolution.Candidates[1].ID != second.ID {
+		t.Fatalf("an undecided name with two registrations must list both and pick neither: %+v, %v", resolution, ok)
 	}
 	if previous, ok := cfg.SetHelperAnyDocument(second.ID, true); !ok || previous {
 		t.Fatalf("SetHelperAnyDocument = %v, %v", previous, ok)
@@ -360,5 +361,96 @@ func TestRestoringADecisionWhoseProgramIsGoneSucceeds(t *testing.T) {
 	malformed := HelperDecision{Document: "/docs/b.htmlclay", Name: "search", Allowed: true, DecidedAt: 2}
 	if got := cfg.RestoreHelperDecisions([]HelperDecision{malformed}); got != 0 {
 		t.Fatalf("restored %d malformed rows, want 0", got)
+	}
+}
+
+func TestResolveHelperNeverPicksBetweenSharedNames(t *testing.T) {
+	cfg := &Config{}
+	only, err := cfg.AddHelperProgram("ocr", "/helpers/ocr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, ok := cfg.ResolveHelper("/docs/a.htmlclay", "ocr")
+	if !ok || resolution.Decided || resolution.Program.ID != only.ID || len(resolution.Candidates) != 1 {
+		t.Fatalf("a single registration is proposed as the program: %+v, %v", resolution, ok)
+	}
+
+	first, _ := cfg.AddHelperProgram("search", "/helpers/first")
+	second, _ := cfg.AddHelperProgram("search", "/helpers/second")
+	cfg.SetHelperAnyDocument(first.ID, true)
+	cfg.SetHelperAnyDocument(second.ID, true)
+	resolution, _ = cfg.ResolveHelper("/docs/a.htmlclay", "search")
+	if resolution.Decided || resolution.Program.ID != "" || len(resolution.Candidates) != 2 {
+		t.Fatalf("two programs allowed for any document must leave the name undecided: %+v", resolution)
+	}
+
+	if resolution, ok := cfg.ResolveHelper("/docs/a.htmlclay", "missing"); ok || resolution.Decided || len(resolution.Candidates) != 0 {
+		t.Fatalf("an unregistered name = %+v, %v", resolution, ok)
+	}
+}
+
+// A refusal stores no program, so the only way the tray can reach it is by
+// name. Forgetting a program's decisions clears the refusals of its name as
+// well as the allows that point at it, and nothing that belongs to another name
+// or another program.
+func TestForgettingDecisionsReachesRefusalsByName(t *testing.T) {
+	cfg := &Config{}
+	search, _ := cfg.AddHelperProgram("search", "/helpers/search")
+	other, _ := cfg.AddHelperProgram("search", "/helpers/other")
+	decisions := []HelperDecision{
+		{Document: "/docs/a.htmlclay", Name: "search", Program: search.ID, Allowed: true, DecidedAt: 1},
+		{Document: "/docs/b.htmlclay", Name: "search", DecidedAt: 2},
+		{Document: "/docs/c.htmlclay", Name: "search", Program: other.ID, Allowed: true, DecidedAt: 3},
+		{Document: "/docs/d.htmlclay", Name: "ocr", DecidedAt: 4},
+	}
+	for _, d := range decisions {
+		if _, _, err := cfg.DecideHelper(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed := cfg.ForgetHelperProgramDecisions(search.ID)
+	if len(removed) != 2 || removed[0] != decisions[0] || removed[1] != decisions[1] {
+		t.Fatalf("forgetting search removed %+v, want its allow and the refusal of its name", removed)
+	}
+	if got := cfg.HelperDecisionList(); len(got) != 2 || got[0] != decisions[2] || got[1] != decisions[3] {
+		t.Fatalf("remaining decisions = %+v", got)
+	}
+
+	if removed := cfg.ForgetHelperProgramDecisions("not-registered"); len(removed) != 0 {
+		t.Fatalf("an unknown id forgot %+v", removed)
+	}
+	removed = cfg.ForgetHelperRefusals("ocr")
+	if len(removed) != 1 || removed[0] != decisions[3] {
+		t.Fatalf("forgetting the refusals of ocr removed %+v", removed)
+	}
+	if resolution, _ := cfg.ResolveHelper("/docs/d.htmlclay", "ocr"); resolution.Decided {
+		t.Fatalf("a forgotten refusal must read as undecided: %+v", resolution)
+	}
+	if got := cfg.ForgetHelperRefusals("search"); len(got) != 0 {
+		t.Fatalf("an allow is not a refusal: %+v", got)
+	}
+}
+
+// 1.9.x wrote a refusal as allowed:false with no program. That exact row must
+// load, read as a refusal, and be reachable by name.
+func TestARefusalWrittenBy19LoadsAndCanBeForgotten(t *testing.T) {
+	base := t.TempDir()
+	if err := os.MkdirAll(DirFrom(base), 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"helperDecisions":[{"document":"/docs/a.htmlclay","name":"ocr","allowed":false,"decidedAt":7}]}`
+	if err := os.WriteFile(filepath.Join(DirFrom(base), "config.json"), []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution, _ := cfg.ResolveHelper("/docs/a.htmlclay", "ocr"); !resolution.Decided || resolution.Allowed {
+		t.Fatalf("the 1.9.x refusal did not load as a refusal: %+v", resolution)
+	}
+	if removed := cfg.ForgetHelperRefusals("ocr"); len(removed) != 1 {
+		t.Fatalf("the 1.9.x refusal was not reachable by name: %+v", removed)
 	}
 }

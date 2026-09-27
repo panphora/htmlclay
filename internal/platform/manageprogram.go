@@ -14,11 +14,13 @@ const (
 )
 
 type ProgramSummary struct {
-	Name        string
-	Path        string
-	AnyDocument bool
-	Decisions   int
-	Missing     bool
+	Name         string
+	Path         string
+	AnyDocument  bool
+	Decisions    int
+	Refusals     int
+	RunsOnForget string
+	Missing      bool
 }
 
 type ManageChoice int
@@ -60,7 +62,11 @@ func manageProgramMessage(p ProgramSummary) string {
 	if p.AnyDocument {
 		scope = "any document"
 	}
-	return fmt.Sprintf("Name: %s\nProgram: %s\nStatus: %s\nAccess: %s\nDocument decisions: %d", p.Name, p.Path, availability, scope, p.Decisions)
+	message := fmt.Sprintf("Name: %s\nProgram: %s\nStatus: %s\nAccess: %s\nDocument decisions: %d\nDocuments that refused %s: %d", p.Name, p.Path, availability, scope, p.Decisions, p.Name, p.Refusals)
+	if p.Refusals > 0 && p.RunsOnForget != "" {
+		message += fmt.Sprintf("\nForgetting lets those documents run %s without asking, because it is allowed for any document.", p.RunsOnForget)
+	}
+	return message
 }
 
 func manageChoiceFromResult(result string, p ProgramSummary) (ManageChoice, bool) {

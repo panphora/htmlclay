@@ -12,33 +12,32 @@ import (
 // spawned from the background tray process appears behind the active window and
 // gets missed. This was verified in the grant-flow spike: plain `display dialog`
 // went unnoticed, `activate me` broke through. `giving up after 120` matches the
-// broker's park ceiling so an ignored dialog self-dismisses to Deny.
+// broker's park ceiling so an ignored dialog closes itself with no answer.
 //
 // Only "Deny" is fixed. The two affirmative labels come from the caller, because
 // the same three-button shape asks two different questions and each one has to
 // name the grant it actually makes.
 func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, error) {
-	dialog := "display dialog " + appleScriptString(message) +
-		" with title " + appleScriptString(title) +
-		` buttons {"Deny", ` + appleScriptString(labels.Allow) + ", " + appleScriptString(labels.Always) +
-		`} default button "Deny" with icon caution giving up after 120`
-	out, err := exec.Command("osascript", "-e", "activate me", "-e", dialog).CombinedOutput()
+	out, err := exec.Command("osascript", "-e", "activate me", "-e", confirmDialogScript(title, message, labels)).CombinedOutput()
 	if err != nil {
-		return ConfirmDeny, err
+		return ConfirmDismissed, err
 	}
-	switch osascriptButton(string(out)) {
-	case "":
-		// Deny is the only label this package fixes, so it needs no comparison:
-		// an empty answer is Deny, a timeout ("gave up:true") carries no button
-		// at all, and anything unrecognized fails closed the same way.
-		return ConfirmDeny, nil
-	case labels.Always:
-		return ConfirmAllowAlways, nil
-	case labels.Allow:
-		return ConfirmAllowOnce, nil
-	default:
-		return ConfirmDeny, nil
+	return choiceFromOSAScript(osascriptButton(string(out)), labels), nil
+}
+
+// confirmDialogScript builds the display dialog. display dialog draws at most
+// three buttons, so a Later button does not fit; asking for one instead leaves
+// the dialog with no default button and no cancel button, which is what makes
+// Return and Escape do nothing. Only a click answers it, or the timeout, which
+// answers nothing. Without Later, Deny is the default button, as it always was.
+func confirmDialogScript(title, message string, labels ConfirmLabels) string {
+	script := "display dialog " + appleScriptString(message) +
+		" with title " + appleScriptString(title) +
+		" buttons {" + appleScriptString(confirmDenyLabel) + ", " + appleScriptString(labels.Allow) + ", " + appleScriptString(labels.Always) + "}"
+	if labels.Later == "" {
+		script += " default button " + appleScriptString(confirmDenyLabel)
 	}
+	return script + " with icon caution giving up after 120"
 }
 
 // osascriptButton returns the exact label the user clicked. `display dialog`

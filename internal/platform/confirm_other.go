@@ -8,7 +8,7 @@ import "errors"
 // not implemented yet. Linux (zenity/kdialog) and Windows (TaskDialogIndirect)
 // land in a later phase; until then a grant can never be approved here.
 func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, error) {
-	return ConfirmDeny, errors.New("native confirm dialog not implemented on this platform")
+	return ConfirmDismissed, errors.New("native confirm dialog not implemented on this platform")
 }
 
 func confirmTwoButtons(title, message, allowLabel string) (bool, error) {

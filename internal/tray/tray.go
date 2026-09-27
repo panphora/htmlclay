@@ -406,7 +406,7 @@ func (t *Tray) buildHelpersMenu() *systray.MenuItem {
 		"Add a Program…",
 		"Choose a program and give it a name",
 	)
-	lm.rowTooltip = "Click to manage this program"
+	lm.rowTooltip = "Click to manage this program or forget its refusals"
 	t.helpersMenu = lm
 	if t.helpers.List != nil {
 		lm.render(t.helpers.List())

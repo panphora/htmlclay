@@ -29,10 +29,14 @@ type helperApprovalDialogs struct {
 	prepare func(path string) (bool, error)
 }
 
+// helperCandidate is one undecided name. program is set when exactly one
+// program is registered under the name; registered lists every registration,
+// so a name with several is shown with all of them and chosen, never guessed.
 type helperCandidate struct {
-	name    string
-	program config.HelperProgram
-	path    string
+	name       string
+	program    config.HelperProgram
+	registered []config.HelperProgram
+	path       string
 }
 
 type helperDecisionUndo struct {
@@ -47,9 +51,13 @@ type helperDecisionUndo struct {
 // narrower one records a decision that stands until the tray changes it, so
 // "Allow Once" would be a lie, and the wider one grants a PROGRAM everywhere
 // rather than trusting a folder.
+//
+// Later is set because this prompt stores a refusal. It keeps Return, Escape,
+// the close box and the timeout off Deny, so only a click on Deny is remembered.
 var helperConfirmLabels = platform.ConfirmLabels{
 	Allow:  "Allow for This Document",
 	Always: "Allow for Any Document",
+	Later:  "Not Now",
 }
 
 func (a *app) systemHelperApprovalDialogs() helperApprovalDialogs {
@@ -107,15 +115,11 @@ func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs h
 
 	undecided := make([]helperCandidate, 0, len(names))
 	for _, name := range names {
-		resolution, registered := a.rt.cfg.ResolveHelper(document, name)
+		resolution, _ := a.rt.cfg.ResolveHelper(document, name)
 		if resolution.Decided {
 			continue
 		}
-		candidate := helperCandidate{name: name}
-		if registered {
-			candidate.program = resolution.Program
-		}
-		undecided = append(undecided, candidate)
+		undecided = append(undecided, helperCandidate{name: name, program: resolution.Program, registered: resolution.Candidates})
 	}
 	if len(undecided) == 0 {
 		return plan
@@ -130,7 +134,12 @@ func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs h
 		a.reportHelperSetupError(document, fmt.Errorf("could not show the helper permission dialog: %w", err))
 		return plan
 	}
-	if choice != platform.ConfirmDeny && choice != platform.ConfirmAllowOnce && choice != platform.ConfirmAllowAlways {
+	switch choice {
+	case platform.ConfirmDismissed:
+		a.rt.logger.Printf("Helper permission dialog for %s closed without an answer; it will ask again", document)
+		return plan
+	case platform.ConfirmDeny, platform.ConfirmAllowOnce, platform.ConfirmAllowAlways:
+	default:
 		a.reportHelperSetupError(document, errors.New("the helper permission dialog returned an invalid choice"))
 		return plan
 	}
@@ -181,21 +190,43 @@ func readDocumentHelperNames(document string) ([]string, error) {
 }
 
 func helperApprovalMessage(document string, candidates []helperCandidate) string {
-	names := make([]string, len(candidates))
+	lines := make([]string, len(candidates))
 	for i, candidate := range candidates {
-		names[i] = candidate.name
-		if candidate.program.ID == "" {
-			names[i] += " (Choose...)"
-		}
+		lines[i] = helperApprovalLine(candidate)
 	}
 	label := "program"
-	if len(names) != 1 {
+	if len(lines) != 1 {
 		label = "programs"
 	}
 	return fmt.Sprintf(
-		"%s wants to use %d %s:\n\n%s\n\nThe selected programs run as you and may read or change any file your account can access.",
-		filepath.Base(document), len(names), label, strings.Join(names, "\n"),
+		"%s wants to use %d %s:\n\n%s\n\nThe selected programs run as you and may read or change any file your account can access. Deny is remembered for this document until you forget it in the Programs menu.",
+		filepath.Base(document), len(lines), label, strings.Join(lines, "\n"),
 	)
+}
+
+// helperApprovalLine says what allowing a name would run: the registered path,
+// every registered path when several share the name, or that none is registered
+// yet. The last two open the file picker after an Allow, so nothing is guessed.
+func helperApprovalLine(candidate helperCandidate) string {
+	switch {
+	case candidate.program.ID != "":
+		line := candidate.name + ": " + candidate.program.Path
+		if helperProgramMissing(candidate.program.Path) {
+			line += " (missing)"
+		}
+		return line
+	case len(candidate.registered) > 1:
+		line := fmt.Sprintf("%s: %d registered programs share this name, and you will choose which one:", candidate.name, len(candidate.registered))
+		for _, program := range candidate.registered {
+			line += "\n    " + program.Path
+			if helperProgramMissing(program.Path) {
+				line += " (missing)"
+			}
+		}
+		return line
+	default:
+		return candidate.name + ": not registered yet, and you will choose the program"
+	}
 }
 
 // A name that is in neither result was never decided: nobody was asked, the
@@ -245,6 +276,10 @@ func (a *app) saveHelperDecisionSet(document string, candidates []helperCandidat
 			if candidates[i].program.ID != "" {
 				continue
 			}
+			if program, ok := registeredAtPath(candidates[i].registered, candidates[i].path); ok {
+				candidates[i].program = program
+				continue
+			}
 			program, err := a.rt.cfg.AddHelperProgram(candidates[i].name, candidates[i].path)
 			if err != nil {
 				rollback()
@@ -292,6 +327,27 @@ func (a *app) saveHelperDecisionSet(document string, candidates []helperCandidat
 		return fmt.Errorf("could not save helper decisions: %w", err)
 	}
 	return nil
+}
+
+// registeredAtPath finds the registration a picked file already belongs to, so
+// choosing between programs that share a name reuses the chosen one instead of
+// registering it a second time.
+func registeredAtPath(programs []config.HelperProgram, path string) (config.HelperProgram, bool) {
+	for _, program := range programs {
+		if program.Path == path {
+			return program, true
+		}
+	}
+	picked, err := os.Stat(path)
+	if err != nil {
+		return config.HelperProgram{}, false
+	}
+	for _, program := range programs {
+		if info, err := os.Stat(program.Path); err == nil && os.SameFile(info, picked) {
+			return program, true
+		}
+	}
+	return config.HelperProgram{}, false
 }
 
 func (a *app) applyHelperPlan(s *site, document string, plan helperOpenPlan) {

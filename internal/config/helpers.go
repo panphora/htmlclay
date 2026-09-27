@@ -36,9 +36,11 @@ type HelperProgram struct {
 }
 
 // HelperDecision is one document's answer about one name, allow or deny.
-// Denials are stored so a refusal sticks until it is changed in the tray.
+// Denials are stored so a refusal sticks until it is forgotten in the tray.
 // Program is the registration ID and is empty on a denial, so permission cannot
-// pass to a later registration that merely reuses the display name.
+// pass to a later registration that merely reuses the display name. A denial is
+// therefore found by its name, which is how the tray reaches one that was made
+// before any program had that name.
 type HelperDecision struct {
 	Document  string `json:"document"`
 	Name      string `json:"name"`
@@ -47,10 +49,15 @@ type HelperDecision struct {
 	DecidedAt int64  `json:"decidedAt"`
 }
 
+// HelperResolution is what one name in one document resolves to. Program is
+// set when the answer names exactly one program: an allow, or an undecided name
+// with a single registration. Candidates lists every registration of an
+// undecided name, so a prompt can show them all rather than pick one.
 type HelperResolution struct {
-	Decided bool
-	Allowed bool
-	Program HelperProgram
+	Decided    bool
+	Allowed    bool
+	Program    HelperProgram
+	Candidates []HelperProgram
 }
 
 // ValidHelperName reports whether s is lowercase ASCII letters, digits, and
@@ -132,7 +139,7 @@ func (c *Config) AddHelperProgram(name, path string) (HelperProgram, error) {
 	if err != nil {
 		return HelperProgram{}, err
 	}
-	// ResolveHelper proposes the earliest registration of a name, and two
+	// ResolveHelper lists the registrations of a name oldest first, and two
 	// registrations inside one clock tick would otherwise be ordered by their
 	// random IDs. Windows advances the wall clock once per interrupt.
 	addedAt := time.Now().UnixNano()
@@ -298,13 +305,43 @@ func (c *Config) ForgetHelperDecision(document, name string) (HelperDecision, bo
 	return HelperDecision{}, false
 }
 
+// ForgetHelperProgramDecisions removes every decision a program's tray row
+// stands for: the allows that point at the program, and the refusals of its
+// name. A refusal names no program, so its name is all that ties it to a row,
+// and every registration that shares the name clears it.
 func (c *Config) ForgetHelperProgramDecisions(id string) []HelperDecision {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	name := ""
+	for _, p := range c.HelperPrograms {
+		if p.ID == id {
+			name = p.Name
+			break
+		}
+	}
+	return c.forgetHelperDecisionsLocked(func(d HelperDecision) bool {
+		if d.Allowed {
+			return d.Program == id
+		}
+		return name != "" && d.Name == name
+	})
+}
+
+// ForgetHelperRefusals removes every refusal of name, including the ones made
+// before any program was registered under it.
+func (c *Config) ForgetHelperRefusals(name string) []HelperDecision {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.forgetHelperDecisionsLocked(func(d HelperDecision) bool {
+		return !d.Allowed && d.Name == name
+	})
+}
+
+func (c *Config) forgetHelperDecisionsLocked(match func(HelperDecision) bool) []HelperDecision {
 	kept := make([]HelperDecision, 0, len(c.HelperDecisions))
 	removed := make([]HelperDecision, 0)
 	for _, d := range c.HelperDecisions {
-		if d.Program == id {
+		if match(d) {
 			removed = append(removed, d)
 		} else {
 			kept = append(kept, d)
@@ -321,7 +358,10 @@ func (c *Config) HelperDecisionList() []HelperDecision {
 }
 
 // ResolveHelper answers in one locked read whether there is a decision, whether
-// it allows execution, and which registered program it selects.
+// it allows execution, and which registered program it selects. It never picks
+// between registrations that share a name: two allowed for any document leave
+// the name undecided, and an undecided name with several registrations carries
+// them all as Candidates and no Program, so the prompt asks which one.
 func (c *Config) ResolveHelper(document, name string) (HelperResolution, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -339,22 +379,27 @@ func (c *Config) ResolveHelper(document, name string) (HelperResolution, bool) {
 		}
 		break
 	}
-	var candidate HelperProgram
+	var candidates, anyDocument []HelperProgram
 	for _, p := range c.HelperPrograms {
 		if p.Name != name {
 			continue
 		}
+		candidates = append(candidates, p)
 		if p.AnyDocument {
-			return HelperResolution{Decided: true, Allowed: true, Program: p}, true
-		}
-		if candidate.ID == "" {
-			candidate = p
+			anyDocument = append(anyDocument, p)
 		}
 	}
-	if candidate.ID != "" {
-		return HelperResolution{Program: candidate}, true
+	if len(anyDocument) == 1 {
+		return HelperResolution{Decided: true, Allowed: true, Program: anyDocument[0]}, true
 	}
-	return HelperResolution{}, false
+	if len(candidates) == 0 {
+		return HelperResolution{}, false
+	}
+	resolution := HelperResolution{Candidates: candidates}
+	if len(candidates) == 1 {
+		resolution.Program = candidates[0]
+	}
+	return resolution, true
 }
 
 func (c *Config) normalizeHelpers() (droppedPrograms, droppedDecisions int) {

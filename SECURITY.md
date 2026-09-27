@@ -20,11 +20,13 @@ The dialog offers two affirmative choices. Neither is a one-time grant:
 - **"Allow for This Document"** allows the selected program for that one document, across reloads and restarts.
 - **"Allow for Any Document"** allows the selected program for every document that declares the same helper name. It is not limited to one folder.
 
-The tray's row for a program turns any-document access back off and forgets the stored document decisions.
+The tray's row for a program turns any-document access back off and forgets the stored document decisions: the documents allowed to use that program and the documents that refused its name.
 
-The prompt lists helper names but not the registered program paths. If more than one registered program has the same name, the current code selects the earliest registration without asking which program to use. The saved decision still identifies one concrete program, but the prompt does not tell you which one. This is also release blocking because a user cannot knowingly approve the program that will run.
+The prompt shows, for each name, the path of the program that would run, and marks a registered path that no longer exists as missing. A name with no registered program says so, and an Allow opens a file picker to choose one. When several registered programs share a name, the prompt lists every path and an Allow opens the file picker to choose which one runs; picking a file already registered under that name reuses its registration. HTML Clay never chooses between them itself: if more than one of them is allowed for any document, the name stays undecided until a direct open asks. The saved decision identifies one concrete program by its local ID.
 
-A refusal is stored and the document does not ask again, including after restart. It is supposed to remain permanent until changed in the tray. In the current build, the tray's "Forget document permissions" action can clear allowed decisions but cannot clear a refusal, because a refusal stores no program ID. A refusal therefore cannot currently be changed in the tray. This is a release blocking limitation.
+Only a click on Deny is stored. Return, Escape, closing the dialog, the 120 second timeout, a missing dialog tool and any dialog error decide nothing: the document opens without those helpers and the next direct open asks again. On macOS the dialog has no default button and no cancel button, so Return and Escape do nothing. On Windows and Linux both land on "Not Now". No keyboard default grants access on any platform.
+
+A stored refusal survives restarts until it is forgotten in the tray's Programs menu. It records the helper name, not a program, because no program was granted. It is counted on the row of every registered program with that name, as in "search (2 documents, 1 refused)", and "Forget document permissions" on that row clears it. A refused name with no registered program, including one refused before any program was chosen, has its own row, "ocr (not registered, 1 refused)". Clicking it lists the documents that refused the name and forgets those refusals after you confirm. Refusals stored by earlier versions appear the same way. Forgetting a refusal removes it. If exactly one program with that name is allowed for any document, the document then uses that program without asking; otherwise the next direct open asks again.
 
 ### What approval gives the program
 
@@ -94,10 +96,10 @@ Each trusted folder is normally pinned to the folder identity reported by the op
 
 1. **A trusted folder trusts everything in it.** A hostile file can read that tree, send data away, overwrite sibling HTML Clay files, and reach a sibling's approved helper after acquiring its token through a visible navigation.
 2. **A page can steer a read permission prompt.** It chooses the requested path. Read the full path before allowing it. Page steered trust refuses your main personal folders and everything inside them. You can still choose a folder deliberately from the tray.
-3. **The Linux and Windows prompts still need native verification.** They are covered by tests and fail closed when a dialog process fails, but they have not been exercised on those operating systems for this release.
+3. **The Windows prompts still need native verification.** They are covered by tests and fail closed when a dialog process fails, but they have not run on Windows for this release. The Linux zenity and kdialog prompts were exercised under Xvfb.
 4. **Mixed capitalization across mounted filesystems is not fully handled.** HTML Clay detects the rule used by the home filesystem. A mounted filesystem with the opposite rule can still be compared incorrectly.
 5. **Unicode equivalent folder names can briefly produce duplicate trusted entries.** Load normalization merges entries that the operating system reports as the same directory, but two equivalent spellings added during one run can coexist until restart. Remove every duplicate row if you see one.
-6. **Some Linux desktops cannot draw every permission choice.** With kdialog and no zenity, the durable third folder permission choice is unavailable and degrades to the narrower choice. Program management still uses a radiolist.
+6. **kdialog shows program and folder choices as a list.** With kdialog and no zenity, the permission prompts are radiolists whose first row decides nothing, because kdialog's Return always picks the highlighted row.
 7. **Hard links are not a boundary against a local attacker.** Someone who can already create hard links inside your home folder can link files into an allowed tree. That attacker already has local file access.
 8. **Inside a folder you allowed or trusted, a page can tell which files exist.** That follows from read access.
 9. **A hostile page can cause repeated prompts for invented folders.** Allowing an invented folder grants nothing. Denying suppresses that branch for the session, but the page can invent other names.

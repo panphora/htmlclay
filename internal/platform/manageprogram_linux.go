@@ -11,6 +11,10 @@ import (
 
 // Both backends use radiolists because the existing confirmation dialog loses
 // its third action on kdialog. The management toggle must remain reachable.
+//
+// kdialog's OK returns the highlighted row even when nothing is checked, and the
+// highlight starts on the first row, so Return picks it. That row is "No
+// change"; otherwise Return widened the program to any document.
 func manageProgram(p ProgramSummary) (ManageChoice, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), manageProgramTimeout)
 	defer cancel()
@@ -46,6 +50,7 @@ func manageProgram(p ProgramSummary) (ManageChoice, error) {
 		out, err := exec.CommandContext(ctx, bin,
 			"--title", "Manage "+p.Name,
 			"--radiolist", manageProgramMessage(p),
+			"cancel", "No change", "off",
 			"toggle", toggle, "off",
 			"forget", forgetDecisionsLabel, "off",
 			"remove", removeProgramLabel, "off",

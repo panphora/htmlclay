@@ -341,7 +341,11 @@ func (b *broker) decide(group []*parkWaiter, lca string, confirm brokerConfirm, 
 		choice = platform.ConfirmDeny
 	}
 
-	if choice == platform.ConfirmDeny {
+	// Only the two grants proceed. A dialog closed with no answer is a refusal
+	// here, because this refusal lasts only as long as the broker, and anything
+	// this code does not recognize must fail closed rather than fall through
+	// into the grant below.
+	if choice != platform.ConfirmAllowOnce && choice != platform.ConfirmAllowAlways {
 		b.suppress(lca)
 		denyAll(group)
 		return

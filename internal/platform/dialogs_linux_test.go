@@ -146,6 +146,9 @@ func TestManageProgramLinuxUsesRadiolistsOnBothBackends(t *testing.T) {
 			if tc.tool == "zenity" && containsArg(args, "--no-markup") {
 				t.Errorf("zenity list dialogs do not accept --no-markup: %q", args)
 			}
+			if tc.tool == "kdialog" && (len(args) < 7 || args[4] != "cancel" || args[5] != "No change") {
+				t.Errorf("kdialog returns the first row on Return, so it must change nothing: %q", args)
+			}
 		})
 	}
 }
@@ -192,5 +195,120 @@ func TestLinuxUnexpectedManagementOutputFailsClosed(t *testing.T) {
 	linuxDialogResult(t, strings.Repeat("x", 3)+"\n", 0)
 	if got, err := ManageProgram(ProgramSummary{Name: "search"}); err == nil || got != ManageCancel {
 		t.Fatalf("unexpected output must fail closed, got (%v, %v)", got, err)
+	}
+}
+
+// Recorded against zenity 4.0.1 under Xvfb: without --default-cancel, Return
+// activates OK, which granted "Allow for This Document". With it, focus starts
+// on the cancel button, and Return, Escape and Space there all exit 1 printing
+// nothing. Deny is an extra button so its click prints "Deny" and is the only
+// exit that reads as a refusal.
+func TestConfirmLinuxZenityPutsReturnOnLaterAndReadsDenyByItsLabel(t *testing.T) {
+	argsPath := installLinuxDialogTool(t, "zenity")
+	labels := ConfirmLabels{Allow: "Allow for This Document", Always: "Allow for Any Document", Later: "Not Now"}
+	for _, tc := range []struct {
+		out  string
+		exit int
+		want ConfirmChoice
+	}{
+		{"Deny\n", 1, ConfirmDeny},
+		{"", 1, ConfirmDismissed},
+		{"", 0, ConfirmAllowOnce},
+		{"Allow for Any Document\n", 1, ConfirmAllowAlways},
+	} {
+		linuxDialogResult(t, tc.out, tc.exit)
+		if got, err := Confirm("Allow document programs?", "message", labels); err != nil || got != tc.want {
+			t.Errorf("Confirm() on (%q, %d) = (%v, %v), want %v", tc.out, tc.exit, got, err, tc.want)
+		}
+	}
+	args := linuxDialogArgs(t, argsPath)
+	want := []string{"--question", "--no-markup", "--title", "Allow document programs?", "--text", "message",
+		"--ok-label", "Allow for This Document", "--extra-button", "Allow for Any Document",
+		"--extra-button", "Deny", "--cancel-label", "Not Now", "--default-cancel"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("zenity args = %q\nwant %q", args, want)
+	}
+
+	labels.Later = ""
+	linuxDialogResult(t, "", 1)
+	if got, _ := Confirm("Allow access?", "message", labels); got != ConfirmDeny {
+		t.Fatalf("without Later the cancel button is Deny, got %v", got)
+	}
+	args = linuxDialogArgs(t, argsPath)
+	if !containsArg(args, "--default-cancel") || containsArg(args, "Not Now") {
+		t.Fatalf("the read prompt must keep Return on Deny and draw no Later button: %q", args)
+	}
+}
+
+// Recorded against kdialog 23.08.5 under Xvfb: Return on --warningyesnocancel
+// is Yes whatever the labels say, so the fallback is a radiolist whose first row,
+// the one Return returns, decides nothing.
+func TestConfirmLinuxKDialogPutsReturnOnTheFirstRow(t *testing.T) {
+	argsPath := installLinuxDialogTool(t, "kdialog")
+	labels := ConfirmLabels{Allow: "Allow for This Document", Always: "Allow for Any Document", Later: "Not Now"}
+	linuxDialogResult(t, "later\n", 0)
+	if got, err := Confirm("Allow document programs?", "message", labels); err != nil || got != ConfirmDismissed {
+		t.Fatalf("the Later row = (%v, %v), want ConfirmDismissed", got, err)
+	}
+	args := linuxDialogArgs(t, argsPath)
+	want := []string{"--title", "Allow document programs?", "--radiolist", "message",
+		"later", "Not Now", "off", "deny", "Deny", "off",
+		"once", "Allow for This Document", "off", "always", "Allow for Any Document", "off"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("kdialog args = %q\nwant %q", args, want)
+	}
+	linuxDialogResult(t, "deny\n", 0)
+	if got, _ := Confirm("Allow document programs?", "message", labels); got != ConfirmDeny {
+		t.Fatalf("the Deny row = %v, want ConfirmDeny", got)
+	}
+	linuxDialogResult(t, "", 1)
+	if got, _ := Confirm("Allow document programs?", "message", labels); got != ConfirmDismissed {
+		t.Fatalf("Escape = %v, want ConfirmDismissed", got)
+	}
+
+	labels.Later = ""
+	linuxDialogResult(t, "deny\n", 0)
+	Confirm("Allow access?", "message", labels)
+	if args := linuxDialogArgs(t, argsPath); len(args) < 5 || args[4] != "deny" {
+		t.Fatalf("without Later, Deny must be the first row: %q", args)
+	}
+}
+
+func TestConfirmLinuxWithNoDialogToolIsNoAnswer(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	got, err := Confirm("Title", "message", ConfirmLabels{Allow: "Allow", Always: "Always", Later: "Not Now"})
+	if err == nil || got != ConfirmDismissed {
+		t.Fatalf("Confirm() with no tool = (%v, %v), want (ConfirmDismissed, error)", got, err)
+	}
+}
+
+// kdialog's Yes holds Return, so the two-button fallback puts Deny there and
+// the affirmative on No; zenity gets --default-cancel for the same reason.
+func TestConfirmWithButtonsLinuxKeepsReturnOnDeny(t *testing.T) {
+	argsPath := installLinuxDialogTool(t, "kdialog")
+	linuxDialogResult(t, "", 0)
+	if ok, err := ConfirmWithButtons("Title", "message", "Trust Folder"); err != nil || ok {
+		t.Fatalf("kdialog Yes (Return) = (%v, %v), want a refusal", ok, err)
+	}
+	args := linuxDialogArgs(t, argsPath)
+	want := []string{"--title", "Title", "--yes-label", "Deny", "--no-label", "Trust Folder",
+		"--cancel-label", "Cancel", "--warningyesnocancel", "message"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("kdialog two-button args = %q\nwant %q", args, want)
+	}
+	linuxDialogResult(t, "", 1)
+	if ok, _ := ConfirmWithButtons("Title", "message", "Trust Folder"); !ok {
+		t.Fatal("kdialog No is the affirmative here")
+	}
+	linuxDialogResult(t, "", 2)
+	if ok, _ := ConfirmWithButtons("Title", "message", "Trust Folder"); ok {
+		t.Fatal("kdialog Escape must not allow")
+	}
+
+	argsPath = installLinuxDialogTool(t, "zenity")
+	linuxDialogResult(t, "", 1)
+	ConfirmWithButtons("Title", "message", "Trust Folder")
+	if !containsArg(linuxDialogArgs(t, argsPath), "--default-cancel") {
+		t.Fatal("zenity two-button dialog must keep Return on Deny")
 	}
 }

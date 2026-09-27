@@ -29,6 +29,9 @@ func writeHelperPage(t *testing.T, dir string, names ...string) string {
 	return path
 }
 
+// A click on Deny is the one answer that is remembered: one dialog, a refusal
+// that survives a restart, and a refusal the tray can still forget, after which
+// the document asks again.
 func TestHelperDenialUsesOneDialogAndPersists(t *testing.T) {
 	home := t.TempDir()
 	cfgBase := t.TempDir()
@@ -81,6 +84,230 @@ func TestHelperDenialUsesOneDialogAndPersists(t *testing.T) {
 	})
 	if len(restartedPlan.allowed) != 0 {
 		t.Fatalf("restarted denied plan allowed helpers: %+v", restartedPlan.allowed)
+	}
+
+	for _, row := range restarted.helperProgramRows() {
+		if !strings.HasSuffix(row.Label, ", 1 refused)") {
+			t.Fatalf("a program row does not show the refusal of its name: %+v", row)
+		}
+		restarted.helperProgramRowClicked(row.Path, helperProgramDialogs{
+			manageProgram: func(platform.ProgramSummary) (platform.ManageChoice, error) {
+				return platform.ManageForgetDecisions, nil
+			},
+		})
+	}
+	if got := restarted.rt.cfg.HelperDecisionList(); len(got) != 0 {
+		t.Fatalf("Forget document permissions left refusals behind: %+v", got)
+	}
+	asked := 0
+	restarted.helpersForOpenWith(document, true, true, helperApprovalDialogs{
+		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+			asked++
+			return platform.ConfirmDismissed, nil
+		},
+	})
+	if asked != 1 {
+		t.Fatalf("a forgotten refusal must ask again, asked %d times", asked)
+	}
+}
+
+// Return, Escape, the close box, the timeout, a missing dialog tool and every
+// error come back as no answer. None of them may be stored: the document opens
+// with the names undecided, and the next direct open asks again, including after
+// a restart.
+func TestHelperPromptClosedWithoutAnAnswerStoresNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"dismissed", nil},
+		{"dialog failed", errors.New("no native dialog tool (zenity or kdialog) found")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfgBase := t.TempDir()
+			a := newTestAppWithConfigDir(t, home, cfgBase)
+			a.rt.notify = func(string, string) error { return nil }
+			document := writeHelperPage(t, home, "search", "ocr")
+			if _, err := a.rt.cfg.AddHelperProgram("search", writeTestProgram(t, t.TempDir(), "search", 0755)); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			dialogs := helperApprovalDialogs{
+				confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+					calls++
+					return platform.ConfirmDismissed, tc.err
+				},
+				choose: func(string) (string, bool, error) {
+					t.Fatal("a dialog closed without an answer opened the file picker")
+					return "", false, nil
+				},
+			}
+			for i := 0; i < 2; i++ {
+				plan := a.helpersForOpenWith(document, true, true, dialogs)
+				if len(plan.allowed) != 0 || len(plan.denied) != 0 {
+					t.Fatalf("no answer produced a decision: allowed %+v, denied %+v", plan.allowed, plan.denied)
+				}
+			}
+			if calls != 2 {
+				t.Fatalf("dialog calls = %d, want a prompt on every open", calls)
+			}
+			if got := a.rt.cfg.HelperDecisionList(); len(got) != 0 {
+				t.Fatalf("no answer was stored: %+v", got)
+			}
+			restarted := newTestAppWithConfigDir(t, home, cfgBase)
+			restarted.helpersForOpenWith(document, true, true, dialogs)
+			if calls != 3 {
+				t.Fatalf("after a restart the document must ask again, calls = %d", calls)
+			}
+		})
+	}
+}
+
+// The prompt says what each name would run: the registered path, every path
+// when several registrations share the name, or that no program is registered.
+func TestHelperApprovalMessageShowsWhatEachNameRuns(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	document := writeHelperPage(t, home, "search", "ocr", "index", "lint")
+	dir := t.TempDir()
+	search := writeTestProgram(t, dir, "search", 0755)
+	first := writeTestProgram(t, dir, "ocr-first", 0755)
+	second := writeTestProgram(t, dir, "ocr-second", 0755)
+	gone := filepath.Join(dir, "gone")
+	for _, p := range []struct{ name, path string }{{"search", search}, {"ocr", first}, {"ocr", second}, {"lint", gone}} {
+		if _, err := a.rt.cfg.AddHelperProgram(p.name, p.path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var message string
+	a.helpersForOpenWith(document, true, true, helperApprovalDialogs{
+		confirm: func(_, text string, _ bool) (platform.ConfirmChoice, error) {
+			message = text
+			return platform.ConfirmDismissed, nil
+		},
+	})
+	for _, want := range []string{
+		"search: " + search + "\n",
+		"ocr: 2 registered programs share this name, and you will choose which one:\n    " + first + "\n    " + second + "\n",
+		"index: not registered yet, and you will choose the program",
+		"lint: " + gone + " (missing)",
+		"Deny is remembered for this document",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("prompt does not contain %q:\n%s", want, message)
+		}
+	}
+}
+
+// A program reached through a different path is the program that was
+// registered. The registry keeps the path as selected, and a package manager
+// often replaces the target behind that path, so picking the real file rather
+// than the link must reuse the registration instead of adding a second one.
+func TestRegisteredAtPathFollowsALinkToTheSameFile(t *testing.T) {
+	dir := t.TempDir()
+	real := writeTestProgram(t, dir, "search", 0755)
+	link := filepath.Join(t.TempDir(), "search")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	program := config.HelperProgram{ID: "abc", Name: "search", Path: real}
+	for _, path := range []string{real, link} {
+		got, ok := registeredAtPath([]config.HelperProgram{program}, path)
+		if !ok || got != program {
+			t.Errorf("registeredAtPath(%q) = (%+v, %v), want the registration", path, got, ok)
+		}
+	}
+	if got, ok := registeredAtPath([]config.HelperProgram{program}, filepath.Join(dir, "other")); ok {
+		t.Errorf("an unrelated path returned %+v", got)
+	}
+}
+
+// A missing path among the registrations of a shared name says so on its own
+// line: the others are still runnable, and the prompt must not read as if the
+// whole name were gone.
+func TestHelperApprovalMarksAMissingPathAmongSharedNames(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	document := writeHelperPage(t, home, "ocr")
+	dir := t.TempDir()
+	present := writeTestProgram(t, dir, "ocr-present", 0755)
+	gone := filepath.Join(dir, "ocr-gone")
+	for _, path := range []string{present, gone} {
+		if _, err := a.rt.cfg.AddHelperProgram("ocr", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var message string
+	a.helpersForOpenWith(document, true, true, helperApprovalDialogs{
+		confirm: func(_, text string, _ bool) (platform.ConfirmChoice, error) {
+			message = text
+			return platform.ConfirmDismissed, nil
+		},
+	})
+	for _, want := range []string{"    " + present + "\n", "    " + gone + " (missing)\n"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("prompt does not contain %q:\n%s", want, message)
+		}
+	}
+}
+
+// Several registrations under one name used to resolve to the earliest one
+// without asking. Now an Allow opens the picker, and a file that is already
+// registered under the name is reused rather than registered again.
+func TestHelperApprovalWithASharedNameAsksWhichProgram(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		pick      int
+		wantAdded bool
+	}{
+		{"picks the second registration", 1, false},
+		{"picks a new file", 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			a := newTestApp(t, home)
+			document := writeHelperPage(t, home, "search")
+			document, err := resolveSymlinks(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			paths := []string{writeTestProgram(t, dir, "first", 0755), writeTestProgram(t, dir, "second", 0755), writeTestProgram(t, dir, "third", 0755)}
+			var registered []config.HelperProgram
+			for _, path := range paths[:2] {
+				program, err := a.rt.cfg.AddHelperProgram("search", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				registered = append(registered, program)
+			}
+			chose := false
+			plan := a.helpersForOpenWith(document, true, true, helperApprovalDialogs{
+				confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+					return platform.ConfirmAllowOnce, nil
+				},
+				choose: func(string) (string, bool, error) {
+					chose = true
+					return paths[tc.pick], true, nil
+				},
+				prepare: func(string) (bool, error) { return true, nil },
+			})
+			if !chose {
+				t.Fatal("an Allow for a shared name did not ask which program")
+			}
+			got, ok := plan.allowed["search"]
+			if !ok || got.Path != paths[tc.pick] {
+				t.Fatalf("allowed = %+v, %v, want %s", got, ok, paths[tc.pick])
+			}
+			programs := a.rt.cfg.HelperProgramList()
+			if tc.wantAdded != (len(programs) == 3) {
+				t.Fatalf("registrations = %d, want a new one: %v", len(programs), tc.wantAdded)
+			}
+			if !tc.wantAdded && got.ID != registered[tc.pick].ID {
+				t.Fatalf("the picked file was registered again instead of reused: %s, want %s", got.ID, registered[tc.pick].ID)
+			}
+		})
 	}
 }
 
@@ -464,5 +691,8 @@ func TestTheDocumentProgramsPromptHasItsOwnSeamAndButtons(t *testing.T) {
 	if strings.Contains(helperConfirmLabels.Allow, "Once") ||
 		strings.Contains(strings.ToLower(helperConfirmLabels.Always), "folder") {
 		t.Fatalf("the document-programs buttons still describe the read prompt's grants: %+v", helperConfirmLabels)
+	}
+	if helperConfirmLabels.Later == "" {
+		t.Fatal("the document-programs prompt stores its refusal, so it must keep Return and Escape off Deny")
 	}
 }

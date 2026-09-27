@@ -17,7 +17,7 @@ func manageProgram(p ProgramSummary) (ManageChoice, error) {
 		"$f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; " +
 		"$f.StartPosition = 'CenterScreen'; $f.TopMost = $true; " +
 		"$f.ClientSize = New-Object System.Drawing.Size(520, 300); " +
-		"$summary = New-Object System.Windows.Forms.Label; $summary.Text = $env:HTMLCLAY_DIALOG_MESSAGE; " +
+		"$summary = New-Object System.Windows.Forms.Label; $summary.Text = $env:HTMLCLAY_DIALOG_MESSAGE; $summary.UseMnemonic = $false; " +
 		"$summary.SetBounds(16, 16, 488, 116); $summary.AutoEllipsis = $true; $f.Controls.Add($summary); " +
 		"$list = New-Object System.Windows.Forms.ListBox; $list.SetBounds(16, 140, 488, 82); " +
 		"[void]$list.Items.Add($env:HTMLCLAY_DIALOG_TOGGLE); " +

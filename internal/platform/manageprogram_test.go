@@ -38,12 +38,31 @@ func TestManageProgramMessageCarriesTheWholeSummary(t *testing.T) {
 		Path:        "/opt/helpers/search",
 		AnyDocument: true,
 		Decisions:   7,
+		Refusals:    3,
 		Missing:     true,
 	}
 	message := manageProgramMessage(p)
-	for _, want := range []string{p.Name, p.Path, "missing", "any document", "7"} {
+	for _, want := range []string{p.Name, p.Path, "missing", "any document", "7", "refused search: 3"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("management summary does not contain %q: %q", want, message)
 		}
+	}
+}
+
+// Forgetting a refusal is harmless unless something that name runs is allowed
+// for any document: then the forget hands that program the document without a
+// prompt. The summary says so, and says nothing when there is no such program.
+func TestManageProgramMessageWarnsWhenForgettingRunsAProgram(t *testing.T) {
+	with := manageProgramMessage(ProgramSummary{Name: "search", Path: "/opt/search", Refusals: 1, RunsOnForget: "/bin/x"})
+	if !strings.Contains(with, "without asking") || !strings.Contains(with, "/bin/x") {
+		t.Errorf("a single any-document program must be named in the warning: %q", with)
+	}
+	noProgram := manageProgramMessage(ProgramSummary{Name: "search", Path: "/opt/search", Refusals: 1})
+	if strings.Contains(noProgram, "without asking") {
+		t.Errorf("no any-document program, no warning: %q", noProgram)
+	}
+	noRefusals := manageProgramMessage(ProgramSummary{Name: "search", Path: "/opt/search", RunsOnForget: "/bin/x"})
+	if strings.Contains(noRefusals, "without asking") {
+		t.Errorf("nothing to forget, no warning: %q", noRefusals)
 	}
 }

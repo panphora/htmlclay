@@ -165,6 +165,33 @@ func TestBrokerSuppressesAfterDeny(t *testing.T) {
 	}
 }
 
+// The read prompt stores no refusal, so a dialog closed with no answer is the
+// same as Deny here. Before ConfirmDismissed existed the broker compared against
+// Deny alone, and every other value fell through to the grant.
+func TestBrokerTreatsANonAnswerAsDeny(t *testing.T) {
+	for _, choice := range []platform.ConfirmChoice{platform.ConfirmDismissed, platform.ConfirmChoice(99)} {
+		mgr, home := brokerManager(t)
+		first := filepath.Join(home, "proj", "vendor", "a.js")
+		second := filepath.Join(home, "proj", "vendor", "b.js")
+		mustWrite(t, first)
+		mustWrite(t, second)
+		var prompts int32
+		b := newBroker(mgr, logging.NewStdout(), countingConfirm(choice, &prompts))
+		if b.await(context.Background(), first) {
+			t.Fatalf("choice %v granted read access", choice)
+		}
+		if _, _, ok := mgr.AssetRoot(first); ok {
+			t.Fatalf("choice %v installed a read root", choice)
+		}
+		if b.await(context.Background(), second) {
+			t.Fatalf("choice %v: a request under the same root was granted", choice)
+		}
+		if got := atomic.LoadInt32(&prompts); got != 1 {
+			t.Errorf("choice %v: prompts = %d, want 1", choice, got)
+		}
+	}
+}
+
 // A request whose only grantable ancestor is the home directory is denied with no
 // prompt at all.
 func TestBrokerNeverPromptsForHome(t *testing.T) {

@@ -2,33 +2,58 @@
 
 package platform
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-// The mapping from the form's printed DialogResult onto a choice. No test can
-// click a native window, so this is the part of the new three-button dialog that
-// can be checked automatically, and it is the part where a wrong answer would
-// silently hand out a durable grant.
-//
-// The gate that matters is that everything unrecognized denies: a truncated line,
-// a localized result name, or a PowerShell that printed something unexpected must
-// never come back as trust.
-func TestChoiceFromDialogResultFailsClosed(t *testing.T) {
+// WinForms makes the focused button the default, so the first TabIndex is what
+// Return clicks. It, Escape and the close box must land on Later when the caller
+// has one, and on Deny when it does not, never on a grant.
+func TestConfirmFormKeepsTheKeyboardOffEveryGrant(t *testing.T) {
 	for _, tc := range []struct {
-		out  string
-		want ConfirmChoice
-		why  string
+		later bool
+		first string
 	}{
-		{"Yes", ConfirmAllowAlways, "the Trust This Folder button"},
-		{"OK", ConfirmAllowOnce, "the Allow Once button"},
-		{"Cancel", ConfirmDeny, "the Deny button, and Escape, and the close box"},
-		{"Yes\r\n", ConfirmAllowAlways, "PowerShell writes CRLF"},
-		{"  OK  \n", ConfirmAllowOnce, "surrounding whitespace is not meaning"},
-		{"", ConfirmDeny, "no output at all"},
-		{"Ja", ConfirmDeny, "a localized or unexpected name is not a grant"},
-		{"YES", ConfirmDeny, "the comparison is exact, and anything else denies"},
+		{true, "$order = @($later, $deny, $allow, $always)"},
+		{false, "$order = @($deny, $allow, $always)"},
 	} {
-		if got := choiceFromDialogResult(tc.out); got != tc.want {
-			t.Errorf("choiceFromDialogResult(%q) = %v, want %v (%s)", tc.out, got, tc.want, tc.why)
+		script := confirmFormScript(tc.later)
+		for _, want := range []string{tc.first, "$order[$i].TabIndex = $i", "$f.CancelButton = $order[0]", "$f.AcceptButton = $order[0]"} {
+			if !strings.Contains(script, want) {
+				t.Errorf("confirmFormScript(%v) is missing %q", tc.later, want)
+			}
 		}
+		if strings.Contains(script, "$f.AcceptButton = $always") || strings.Contains(script, "$f.AcceptButton = $allow") {
+			t.Errorf("confirmFormScript(%v) makes a grant the accept button", tc.later)
+		}
+	}
+	if strings.Contains(confirmFormScript(false), "$later") {
+		t.Error("a prompt without a Later label drew a Later button")
+	}
+}
+
+// A message naming a program path can run past the 640px cap, so the text has
+// to scroll instead of being cut off. A read-only TextBox also draws "&"
+// literally, which a Label with mnemonics would swallow.
+func TestConfirmFormScrollsAMessageThatDoesNotFit(t *testing.T) {
+	for _, later := range []bool{true, false} {
+		script := confirmFormScript(later)
+		for _, want := range []string{"ScrollBars = 'Vertical'", "$l.Multiline = $true", "$l.ReadOnly = $true", "$f.Controls.AddRange(@($p, $row))"} {
+			if !strings.Contains(script, want) {
+				t.Errorf("confirmFormScript(%v) is missing %q", later, want)
+			}
+		}
+	}
+}
+
+func TestConfirmFormHeightGrowsWithTheMessageAndStaysOnScreen(t *testing.T) {
+	short := confirmFormHeight("a.htmlclay wants to use 1 program:\n\nsearch: C:\\bin\\search.exe")
+	long := confirmFormHeight(strings.Repeat("search: C:\\Users\\someone\\AppData\\Local\\Programs\\search\\search.exe\n", 12))
+	if short != 220 {
+		t.Errorf("short message height = %d, want the 220 floor", short)
+	}
+	if long <= short || long > 640 {
+		t.Errorf("long message height = %d, want more than %d and at most 640", long, short)
 	}
 }

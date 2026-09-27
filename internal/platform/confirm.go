@@ -1,12 +1,25 @@
 package platform
 
+import (
+	"errors"
+	"os/exec"
+	"strings"
+)
+
 // ConfirmChoice is the outcome of a native permission dialog.
 type ConfirmChoice int
 
 const (
-	// ConfirmDeny is also the fail-closed default: any error, timeout, or
-	// unsupported platform resolves to Deny so access is never granted by accident.
-	ConfirmDeny ConfirmChoice = iota
+	// ConfirmDismissed is a dialog that closed without an answer: Return or
+	// Escape where they are kept off Deny, the close box, the timeout, a missing
+	// dialog tool, and every error. It grants nothing, and a caller that stores
+	// refusals stores nothing for it, so the next prompt asks again. It is the
+	// zero value, so a choice nobody set can never read as a refusal to remember.
+	ConfirmDismissed ConfirmChoice = iota
+	// ConfirmDeny is a refusal the user made. When the caller supplies a Later
+	// label it comes back only for the Deny button itself; without one, Deny is
+	// also the keyboard default, so a caller that stores refusals must set it.
+	ConfirmDeny
 	// ConfirmAllowOnce is the narrower of the two grants: the second button.
 	ConfirmAllowOnce
 	// ConfirmAllowAlways is the wider, durable grant: the third button. What it
@@ -20,14 +33,19 @@ const (
 
 func (c ConfirmChoice) String() string {
 	switch c {
+	case ConfirmDeny:
+		return "deny"
 	case ConfirmAllowOnce:
 		return "allow-once"
 	case ConfirmAllowAlways:
 		return "allow-always"
 	default:
-		return "deny"
+		return "dismissed"
 	}
 }
+
+// confirmDenyLabel is the one button label this package fixes.
+const confirmDenyLabel = "Deny"
 
 // ConfirmLabels names the two affirmative buttons of the three-button dialog.
 // Every caller supplies its own, because one dialog shape now backs two
@@ -40,12 +58,21 @@ type ConfirmLabels struct {
 	Allow string
 	// Always labels the wider, durable grant and comes back as ConfirmAllowAlways.
 	Always string
+	// Later labels a button that decides nothing and comes back as
+	// ConfirmDismissed. Setting it asks for a dialog where only a click on Deny
+	// refuses: Return and Escape land on Later where the platform can draw it,
+	// and on no button at all where it cannot (macOS allows three buttons, so
+	// there Return and Escape do nothing and Later is not shown). Left empty,
+	// Deny is the keyboard default, which suits only a refusal that is not
+	// stored. Either way no keyboard default ever grants.
+	Later string
 }
 
 // Confirm shows a modal, foreground native dialog for a permission grant and
 // returns the user's choice. It is always a real OS dialog, never page content,
-// so a served page cannot spoof, style, obscure, or auto-confirm it. On any
-// error or unsupported platform it fails closed to ConfirmDeny.
+// so a served page cannot spoof, style, obscure, or auto-confirm it. No keyboard
+// default grants anything. On any error, timeout, or unsupported platform it
+// fails closed to ConfirmDismissed.
 func Confirm(title, message string, labels ConfirmLabels) (ConfirmChoice, error) {
 	return confirmDialog(title, message, labels)
 }
@@ -74,4 +101,95 @@ func ConfirmWithButtons(title, message, allowLabel string) (bool, error) {
 // of the operating system.
 func MissingDialogAdvice() string {
 	return missingDialogAdvice()
+}
+
+// The three functions below map what each platform's dialog reported onto a
+// choice. They live here rather than behind build tags so every platform's
+// mapping is tested on every machine: no test can click a native dialog, and
+// this mapping is where a wrong answer would store a refusal nobody made or
+// grant a program nobody chose.
+
+// choiceFromOSAScript maps the button display dialog reports. A dialog that
+// gave up reports no button, which is checked first because a caller label left
+// empty would otherwise match it.
+func choiceFromOSAScript(button string, labels ConfirmLabels) ConfirmChoice {
+	switch {
+	case button == "":
+		return ConfirmDismissed
+	case button == confirmDenyLabel:
+		return ConfirmDeny
+	case button == labels.Always:
+		return ConfirmAllowAlways
+	case button == labels.Allow:
+		return ConfirmAllowOnce
+	}
+	return ConfirmDismissed
+}
+
+// choiceFromZenity maps one zenity --question run. OK exits 0 printing
+// nothing; an extra button exits 1 printing its own label; the cancel button,
+// Escape and the close box exit 1 printing nothing. With a Later label the
+// cancel button is Later and Deny is an extra button, so a silent exit 1 is no
+// answer. Without one the cancel button is Deny. Any other exit, including the
+// kill at the deadline, decided nothing.
+func choiceFromZenity(out string, exit int, labels ConfirmLabels) ConfirmChoice {
+	answer := strings.TrimSpace(out)
+	switch {
+	case exit == 0 && answer == "":
+		return ConfirmAllowOnce
+	case exit != 1:
+		return ConfirmDismissed
+	case answer == confirmDenyLabel:
+		return ConfirmDeny
+	case answer != "" && answer == labels.Always:
+		return ConfirmAllowAlways
+	case answer == "" && labels.Later == "":
+		return ConfirmDeny
+	}
+	return ConfirmDismissed
+}
+
+// choiceFromKDialog maps the tag a kdialog --radiolist prints on OK. Cancel,
+// Escape and the close box exit 1, and the Later row decided nothing either.
+func choiceFromKDialog(out string, exit int) ConfirmChoice {
+	if exit != 0 {
+		return ConfirmDismissed
+	}
+	switch strings.TrimSpace(out) {
+	case "deny":
+		return ConfirmDeny
+	case "once":
+		return ConfirmAllowOnce
+	case "always":
+		return ConfirmAllowAlways
+	}
+	return ConfirmDismissed
+}
+
+// choiceFromDialogResult maps the DialogResult name the Windows form prints:
+// Yes for the wider grant, OK for the narrower one, No for Deny. Later, the
+// close box and anything unrecognized decided nothing.
+func choiceFromDialogResult(out string) ConfirmChoice {
+	switch strings.TrimSpace(out) {
+	case "Yes":
+		return ConfirmAllowAlways
+	case "OK":
+		return ConfirmAllowOnce
+	case "No":
+		return ConfirmDeny
+	}
+	return ConfirmDismissed
+}
+
+// exitCode is a finished dialog tool's exit status, 0 for a clean exit, and -1
+// for a tool that was killed, timed out, or never started.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
 }
