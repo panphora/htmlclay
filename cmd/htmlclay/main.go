@@ -90,6 +90,11 @@ type app struct {
 	// hold for minutes. Lock order is helperMu, then helperStateMu, then mu.
 	// Never take helperMu while holding either of the others.
 	helperStateMu sync.Mutex
+	// openDenials holds the names refused at a document's last direct open. A
+	// refusal is never stored in config, so every re-resolve during that open
+	// applies it from here; the next direct open clears it and asks again.
+	// Guarded by helperStateMu.
+	openDenials map[string][]string
 	// dialogAdvice is non-empty when this machine cannot raise a permission
 	// dialog at all. It is read once at startup and shown in two places, so it
 	// is held rather than asked for again: platform.MissingDialogAdvice runs

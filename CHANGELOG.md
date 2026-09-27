@@ -17,7 +17,7 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ### Changed
 
-- **The document-programs prompt stores only a click on Deny.** Return, Escape, closing it or letting it time out now asks again next time, and no keyboard default grants access on any platform. The prompt shows the program path behind each name and asks which one when several share a name. Refusals, including ones made before any program was chosen, can be forgotten from the Programs menu.
+- **The document-programs prompt no longer remembers a refusal.** Deny, Return, Escape, closing it or letting it time out applies to that open only, and the next double click asks again. Refusals stored by earlier versions are dropped. If exactly one program with that name is allowed for any document, a document that refused it now uses it without asking. The prompt shows the program path behind each name and asks which one when several share a name.
 - **`no-data` and `editor-ui` regions are invisible to the data API**, on reads as well as writes,
   matching hyper-html-api.
 

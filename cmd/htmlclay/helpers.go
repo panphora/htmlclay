@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,12 +53,12 @@ type helperDecisionUndo struct {
 // "Allow Once" would be a lie, and the wider one grants a PROGRAM everywhere
 // rather than trusting a folder.
 //
-// Later is set because this prompt stores a refusal. It keeps Return, Escape,
-// the close box and the timeout off Deny, so only a click on Deny is remembered.
+// Deny is the keyboard default. It stores nothing: it denies the helpers for
+// this open only, and the next direct open asks again, so a stray Return or
+// Space costs one open and never grants anything.
 var helperConfirmLabels = platform.ConfirmLabels{
 	Allow:  "Allow for This Document",
 	Always: "Allow for Any Document",
-	Later:  "Not Now",
 }
 
 func (a *app) systemHelperApprovalDialogs() helperApprovalDialogs {
@@ -107,6 +108,9 @@ func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs h
 		}
 		return helperOpenPlan{}
 	}
+	if prompt {
+		a.setOpenDenials(document, nil)
+	}
 	plan := helperOpenPlan{names: names}
 	plan.allowed, plan.denied = a.resolvedHelpers(document, names)
 	if !prompt || len(names) == 0 {
@@ -138,34 +142,41 @@ func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs h
 	case platform.ConfirmDismissed:
 		a.rt.logger.Printf("Helper permission dialog for %s closed without an answer; it will ask again", document)
 		return plan
-	case platform.ConfirmDeny, platform.ConfirmAllowOnce, platform.ConfirmAllowAlways:
+	case platform.ConfirmDeny:
+		refused := make([]string, 0, len(undecided))
+		for _, candidate := range undecided {
+			refused = append(refused, candidate.name)
+		}
+		a.setOpenDenials(document, refused)
+		a.rt.logger.Printf("Helpers denied for this open of %s; the next direct open asks again", document)
+		plan.allowed, plan.denied = a.resolvedHelpers(document, names)
+		return plan
+	case platform.ConfirmAllowOnce, platform.ConfirmAllowAlways:
 	default:
 		a.reportHelperSetupError(document, errors.New("the helper permission dialog returned an invalid choice"))
 		return plan
 	}
-	if choice != platform.ConfirmDeny {
-		for i := range undecided {
-			if undecided[i].program.ID != "" {
-				continue
-			}
-			path, ok, err := dialogs.choose("Choose the program for " + undecided[i].name)
-			if err != nil {
-				a.reportHelperSetupError(document, fmt.Errorf("could not choose %s: %w", undecided[i].name, err))
-				return plan
-			}
-			if !ok {
-				return plan
-			}
-			ok, err = dialogs.prepare(path)
-			if err != nil {
-				a.reportHelperSetupError(document, fmt.Errorf("could not prepare %s: %w", undecided[i].name, err))
-				return plan
-			}
-			if !ok {
-				return plan
-			}
-			undecided[i].path = path
+	for i := range undecided {
+		if undecided[i].program.ID != "" {
+			continue
 		}
+		path, ok, err := dialogs.choose("Choose the program for " + undecided[i].name)
+		if err != nil {
+			a.reportHelperSetupError(document, fmt.Errorf("could not choose %s: %w", undecided[i].name, err))
+			return plan
+		}
+		if !ok {
+			return plan
+		}
+		ok, err = dialogs.prepare(path)
+		if err != nil {
+			a.reportHelperSetupError(document, fmt.Errorf("could not prepare %s: %w", undecided[i].name, err))
+			return plan
+		}
+		if !ok {
+			return plan
+		}
+		undecided[i].path = path
 	}
 
 	if err := a.saveHelperDecisionSet(document, undecided, choice); err != nil {
@@ -199,7 +210,7 @@ func helperApprovalMessage(document string, candidates []helperCandidate) string
 		label = "programs"
 	}
 	return fmt.Sprintf(
-		"%s wants to use %d %s:\n\n%s\n\nThe selected programs run as you and may read or change any file your account can access. Deny is remembered for this document until you forget it in the Programs menu.",
+		"%s wants to use %d %s:\n\n%s\n\nThe selected programs run as you and may read or change any file your account can access. Deny applies to this open only.",
 		filepath.Base(document), len(lines), label, strings.Join(lines, "\n"),
 	)
 }
@@ -246,7 +257,28 @@ func (a *app) resolvedHelpers(document string, names []string) (map[string]confi
 			denied = append(denied, name)
 		}
 	}
+	for _, name := range a.openDenials[document] {
+		if _, ok := allowed[name]; ok {
+			delete(allowed, name)
+		}
+		if !slices.Contains(denied, name) {
+			denied = append(denied, name)
+		}
+	}
 	return allowed, denied
+}
+
+func (a *app) setOpenDenials(document string, names []string) {
+	a.helperStateMu.Lock()
+	defer a.helperStateMu.Unlock()
+	if len(names) == 0 {
+		delete(a.openDenials, document)
+		return
+	}
+	if a.openDenials == nil {
+		a.openDenials = make(map[string][]string)
+	}
+	a.openDenials[document] = names
 }
 
 func (a *app) saveHelperDecisionSet(document string, candidates []helperCandidate, choice platform.ConfirmChoice) error {
@@ -271,23 +303,21 @@ func (a *app) saveHelperDecisionSet(document string, candidates []helperCandidat
 		}
 	}
 
-	if choice != platform.ConfirmDeny {
-		for i := range candidates {
-			if candidates[i].program.ID != "" {
-				continue
-			}
-			if program, ok := registeredAtPath(candidates[i].registered, candidates[i].path); ok {
-				candidates[i].program = program
-				continue
-			}
-			program, err := a.rt.cfg.AddHelperProgram(candidates[i].name, candidates[i].path)
-			if err != nil {
-				rollback()
-				return fmt.Errorf("could not register %s: %w", candidates[i].name, err)
-			}
-			candidates[i].program = program
-			added = append(added, program)
+	for i := range candidates {
+		if candidates[i].program.ID != "" {
+			continue
 		}
+		if program, ok := registeredAtPath(candidates[i].registered, candidates[i].path); ok {
+			candidates[i].program = program
+			continue
+		}
+		program, err := a.rt.cfg.AddHelperProgram(candidates[i].name, candidates[i].path)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("could not register %s: %w", candidates[i].name, err)
+		}
+		candidates[i].program = program
+		added = append(added, program)
 	}
 
 	if choice == platform.ConfirmAllowAlways {
@@ -309,11 +339,9 @@ func (a *app) saveHelperDecisionSet(document string, candidates []helperCandidat
 		decision := config.HelperDecision{
 			Document:  document,
 			Name:      candidate.name,
-			Allowed:   choice != platform.ConfirmDeny,
+			Program:   candidate.program.ID,
+			Allowed:   true,
 			DecidedAt: now + int64(i),
-		}
-		if decision.Allowed {
-			decision.Program = candidate.program.ID
 		}
 		previous, had, err := a.rt.cfg.DecideHelper(decision)
 		if err != nil {

@@ -29,10 +29,9 @@ func writeHelperPage(t *testing.T, dir string, names ...string) string {
 	return path
 }
 
-// A click on Deny is the one answer that is remembered: one dialog, a refusal
-// that survives a restart, and a refusal the tray can still forget, after which
-// the document asks again.
-func TestHelperDenialUsesOneDialogAndPersists(t *testing.T) {
+// A click on Deny is not remembered: it denies the helpers for this one open,
+// stores nothing, and the next direct open asks again, including after a restart.
+func TestHelperDenialAppliesToThisOpenOnly(t *testing.T) {
 	home := t.TempDir()
 	cfgBase := t.TempDir()
 	a := newTestAppWithConfigDir(t, home, cfgBase)
@@ -41,6 +40,9 @@ func TestHelperDenialUsesOneDialogAndPersists(t *testing.T) {
 		if _, err := a.rt.cfg.AddHelperProgram(name, writeTestProgram(t, t.TempDir(), name, 0755)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
 	}
 	calls := 0
 	var message string
@@ -57,57 +59,42 @@ func TestHelperDenialUsesOneDialogAndPersists(t *testing.T) {
 			t.Fatal("denial opened a file picker")
 			return "", false, nil
 		},
+		prepare: func(string) (bool, error) {
+			t.Fatal("denial prepared a program")
+			return false, nil
+		},
 	}
 	for i := 0; i < 2; i++ {
 		plan := a.helpersForOpenWith(document, true, true, dialogs)
-		if len(plan.allowed) != 0 {
-			t.Fatalf("denied plan allowed helpers: %+v", plan.allowed)
+		if len(plan.allowed) != 0 || strings.Join(plan.denied, ",") != strings.Join(plan.names, ",") {
+			t.Fatalf("denied plan = allowed %+v, denied %+v, names %+v", plan.allowed, plan.denied, plan.names)
 		}
 	}
-	if calls != 1 {
-		t.Fatalf("dialog calls = %d, want 1 across repeated opens", calls)
+	if calls != 2 {
+		t.Fatalf("dialog calls = %d, want a prompt on every direct open", calls)
 	}
 	if !strings.Contains(message, "search") || !strings.Contains(message, "ocr") {
 		t.Fatalf("dialog did not name the full undecided set: %q", message)
 	}
-	decisions := a.rt.cfg.HelperDecisionList()
-	if len(decisions) != 2 || decisions[0].Allowed || decisions[1].Allowed {
-		t.Fatalf("persisted decisions = %+v", decisions)
+	for _, decision := range a.rt.cfg.HelperDecisionList() {
+		if decision.Document == document {
+			t.Fatalf("a denial was stored: %+v", decision)
+		}
 	}
 
 	restarted := newTestAppWithConfigDir(t, home, cfgBase)
+	asked := 0
 	restartedPlan := restarted.helpersForOpenWith(document, true, true, helperApprovalDialogs{
 		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
-			t.Fatal("restart prompted after a persisted denial")
+			asked++
 			return platform.ConfirmDeny, nil
 		},
 	})
-	if len(restartedPlan.allowed) != 0 {
-		t.Fatalf("restarted denied plan allowed helpers: %+v", restartedPlan.allowed)
-	}
-
-	for _, row := range restarted.helperProgramRows() {
-		if !strings.HasSuffix(row.Label, ", 1 refused)") {
-			t.Fatalf("a program row does not show the refusal of its name: %+v", row)
-		}
-		restarted.helperProgramRowClicked(row.Path, helperProgramDialogs{
-			manageProgram: func(platform.ProgramSummary) (platform.ManageChoice, error) {
-				return platform.ManageForgetDecisions, nil
-			},
-		})
-	}
-	if got := restarted.rt.cfg.HelperDecisionList(); len(got) != 0 {
-		t.Fatalf("Forget document permissions left refusals behind: %+v", got)
-	}
-	asked := 0
-	restarted.helpersForOpenWith(document, true, true, helperApprovalDialogs{
-		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
-			asked++
-			return platform.ConfirmDismissed, nil
-		},
-	})
 	if asked != 1 {
-		t.Fatalf("a forgotten refusal must ask again, asked %d times", asked)
+		t.Fatalf("a direct open after a restart must ask again, asked %d times", asked)
+	}
+	if len(restartedPlan.allowed) != 0 || strings.Join(restartedPlan.denied, ",") != strings.Join(restartedPlan.names, ",") {
+		t.Fatalf("restarted denied plan = allowed %+v, denied %+v", restartedPlan.allowed, restartedPlan.denied)
 	}
 }
 
@@ -192,7 +179,7 @@ func TestHelperApprovalMessageShowsWhatEachNameRuns(t *testing.T) {
 		"ocr: 2 registered programs share this name, and you will choose which one:\n    " + first + "\n    " + second + "\n",
 		"index: not registered yet, and you will choose the program",
 		"lint: " + gone + " (missing)",
-		"Deny is remembered for this document",
+		"Deny applies to this open only.",
 	} {
 		if !strings.Contains(message, want) {
 			t.Errorf("prompt does not contain %q:\n%s", want, message)
@@ -436,7 +423,6 @@ func TestTrustedNavigationRestoresHelpersWithoutDialogs(t *testing.T) {
 		}{
 			{"any document", true, true, true, "ready"},
 			{"document allow", false, true, true, "ready"},
-			{"document deny", true, true, false, "denied"},
 			{"undecided", false, false, false, "unavailable"},
 		} {
 			t.Run(entry+"/"+permission.name, func(t *testing.T) {
@@ -692,7 +678,7 @@ func TestTheDocumentProgramsPromptHasItsOwnSeamAndButtons(t *testing.T) {
 		strings.Contains(strings.ToLower(helperConfirmLabels.Always), "folder") {
 		t.Fatalf("the document-programs buttons still describe the read prompt's grants: %+v", helperConfirmLabels)
 	}
-	if helperConfirmLabels.Later == "" {
-		t.Fatal("the document-programs prompt stores its refusal, so it must keep Return and Escape off Deny")
+	if helperConfirmLabels.Later != "" {
+		t.Fatal("the document-programs prompt stores nothing, so Deny is its keyboard default and it draws no Later button")
 	}
 }

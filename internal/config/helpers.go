@@ -35,12 +35,10 @@ type HelperProgram struct {
 	AddedAt     int64  `json:"addedAt"`
 }
 
-// HelperDecision is one document's answer about one name, allow or deny.
-// Denials are stored so a refusal sticks until it is forgotten in the tray.
-// Program is the registration ID and is empty on a denial, so permission cannot
-// pass to a later registration that merely reuses the display name. A denial is
-// therefore found by its name, which is how the tray reaches one that was made
-// before any program had that name.
+// HelperDecision is one document's allow of one name. Only an allow is stored:
+// a refusal lasts one open and is never written. Program is the registration ID,
+// so permission cannot pass to a later registration that merely reuses the
+// display name.
 type HelperDecision struct {
 	Document  string `json:"document"`
 	Name      string `json:"name"`
@@ -178,11 +176,9 @@ func (c *Config) RestoreHelperProgram(p HelperProgram) bool {
 // decision whose program is gone as undecided, so those documents ask again at
 // next open, and re-registering the same ID restores them.
 //
-// Deleting them here would be the wrong shape twice over. Forgetting decisions
+// Deleting them here would be the wrong shape. Forgetting decisions
 // is its own tray action (ForgetHelperProgramDecisions), so folding it into
-// removal makes one menu item silently do two things; and a refusal is meant to
-// be permanent until the user changes it in the tray, which a removal that
-// clears rows would quietly undo.
+// removal makes one menu item silently do two things.
 func (c *Config) RemoveHelperProgram(id string) (HelperProgram, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -230,21 +226,20 @@ func (c *Config) DecideHelper(d HelperDecision) (previous HelperDecision, had bo
 	if !ValidHelperName(d.Name) {
 		return HelperDecision{}, false, ErrHelperNameInvalid
 	}
+	if !d.Allowed {
+		return HelperDecision{}, false, errors.New("helper refusals are not stored")
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if d.Allowed {
-		found := false
-		for _, p := range c.HelperPrograms {
-			if p.ID == d.Program {
-				found = true
-				break
-			}
+	found := false
+	for _, p := range c.HelperPrograms {
+		if p.ID == d.Program {
+			found = true
+			break
 		}
-		if !found {
-			return HelperDecision{}, false, fmt.Errorf("helper program %q is not registered", d.Program)
-		}
-	} else {
-		d.Program = ""
+	}
+	if !found {
+		return HelperDecision{}, false, fmt.Errorf("helper program %q is not registered", d.Program)
 	}
 	for i, existing := range c.HelperDecisions {
 		if existing.Document == d.Document && existing.Name == d.Name {
@@ -305,35 +300,12 @@ func (c *Config) ForgetHelperDecision(document, name string) (HelperDecision, bo
 	return HelperDecision{}, false
 }
 
-// ForgetHelperProgramDecisions removes every decision a program's tray row
-// stands for: the allows that point at the program, and the refusals of its
-// name. A refusal names no program, so its name is all that ties it to a row,
-// and every registration that shares the name clears it.
+// ForgetHelperProgramDecisions removes the allows that point at the program.
 func (c *Config) ForgetHelperProgramDecisions(id string) []HelperDecision {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	name := ""
-	for _, p := range c.HelperPrograms {
-		if p.ID == id {
-			name = p.Name
-			break
-		}
-	}
 	return c.forgetHelperDecisionsLocked(func(d HelperDecision) bool {
-		if d.Allowed {
-			return d.Program == id
-		}
-		return name != "" && d.Name == name
-	})
-}
-
-// ForgetHelperRefusals removes every refusal of name, including the ones made
-// before any program was registered under it.
-func (c *Config) ForgetHelperRefusals(name string) []HelperDecision {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.forgetHelperDecisionsLocked(func(d HelperDecision) bool {
-		return !d.Allowed && d.Name == name
+		return d.Allowed && d.Program == id
 	})
 }
 
@@ -370,7 +342,7 @@ func (c *Config) ResolveHelper(document, name string) (HelperResolution, bool) {
 			continue
 		}
 		if !d.Allowed {
-			return HelperResolution{Decided: true}, true
+			break
 		}
 		for _, p := range c.HelperPrograms {
 			if p.ID == d.Program {
@@ -433,12 +405,10 @@ func (c *Config) normalizeHelpers() (droppedPrograms, droppedDecisions int) {
 		// rows alone. An allowed decision naming NO program is different: it is
 		// malformed rather than stale, and there is nothing for a later answer to
 		// key off.
-		if !ValidHelperName(d.Name) || (d.Allowed && d.Program == "") {
+		// Refusals from 1.9.x are dropped: a refusal now lasts one open.
+		if !ValidHelperName(d.Name) || !d.Allowed || d.Program == "" {
 			droppedDecisions++
 			continue
-		}
-		if !d.Allowed {
-			d.Program = ""
 		}
 		key := decisionKey{document: d.Document, name: d.Name}
 		if i, duplicate := decisionIndexes[key]; duplicate {

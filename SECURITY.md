@@ -13,20 +13,18 @@ A document declares helpers in `<meta name="htmlclay-helper">` elements near the
 
 The decision happens when HTML Clay receives a direct file open, before that page's script runs. For every name with no stored decision, HTML Clay raises one native dialog. The dispatcher never raises a permission dialog in response to a request. A denied helper call fails immediately.
 
-A linked `.htmlclay` file can auto-register when it is opened inside a trusted folder. The current auto-registration path does not inspect helper declarations, ask for helper permission, or attach a dispatcher. Such a file has no helper access until it is opened directly. This differs from the general plan that authorization happens whenever a document opens.
+A linked `.htmlclay` file opened inside a trusted folder registers without a prompt. It gets the helpers its existing allows already cover, and any name without one stays unavailable until the file is opened directly.
 
 The dialog offers two affirmative choices. Neither is a one-time grant:
 
 - **"Allow for This Document"** allows the selected program for that one document, across reloads and restarts.
 - **"Allow for Any Document"** allows the selected program for every document that declares the same helper name. It is not limited to one folder.
 
-The tray's row for a program turns any-document access back off and forgets the stored document decisions: the documents allowed to use that program and the documents that refused its name.
+The tray's row for a program turns any-document access back off and forgets the documents allowed to use it.
 
 The prompt shows, for each name, the path of the program that would run, and marks a registered path that no longer exists as missing. A name with no registered program says so, and an Allow opens a file picker to choose one. When several registered programs share a name, the prompt lists every path and an Allow opens the file picker to choose which one runs; picking a file already registered under that name reuses its registration. HTML Clay never chooses between them itself: if more than one of them is allowed for any document, the name stays undecided until a direct open asks. The saved decision identifies one concrete program by its local ID.
 
-Only a click on Deny is stored. Return, Escape, closing the dialog, the 120 second timeout, a missing dialog tool and any dialog error decide nothing: the document opens without those helpers and the next direct open asks again. On macOS the dialog has no default button and no cancel button, so Return and Escape do nothing. On Windows and Linux both land on "Not Now". No keyboard default grants access on any platform.
-
-A stored refusal survives restarts until it is forgotten in the tray's Programs menu. It records the helper name, not a program, because no program was granted. It is counted on the row of every registered program with that name, as in "search (2 documents, 1 refused)", and "Forget document permissions" on that row clears it. A refused name with no registered program, including one refused before any program was chosen, has its own row, "ocr (not registered, 1 refused)". Clicking it lists the documents that refused the name and forgets those refusals after you confirm. Refusals stored by earlier versions appear the same way. Forgetting a refusal removes it. If exactly one program with that name is allowed for any document, the document then uses that program without asking; otherwise the next direct open asks again.
+A refusal is never stored. Deny, Return, Escape, closing the dialog, the 120 second timeout, a missing dialog tool and any dialog error all leave the document without those helpers for this open, and the next direct open asks again. A refusal holds for the rest of that open, including across tray changes and navigation. Deny is the keyboard default, so Return and Escape never grant access. Following a link to the document never shows the prompt, so it cannot repeat without you. Refusals stored by 1.9.x are dropped when HTML Clay starts; if exactly one program with that name is allowed for any document, a document that had refused it now uses it.
 
 ### What approval gives the program
 
@@ -99,7 +97,7 @@ Each trusted folder is normally pinned to the folder identity reported by the op
 3. **The Windows prompts still need native verification.** They are covered by tests and fail closed when a dialog process fails, but they have not run on Windows for this release. The Linux zenity and kdialog prompts were exercised under Xvfb.
 4. **Mixed capitalization across mounted filesystems is not fully handled.** HTML Clay detects the rule used by the home filesystem. A mounted filesystem with the opposite rule can still be compared incorrectly.
 5. **Unicode equivalent folder names can briefly produce duplicate trusted entries.** Load normalization merges entries that the operating system reports as the same directory, but two equivalent spellings added during one run can coexist until restart. Remove every duplicate row if you see one.
-6. **kdialog shows program and folder choices as a list.** With kdialog and no zenity, the permission prompts are radiolists whose first row decides nothing, because kdialog's Return always picks the highlighted row.
+6. **kdialog shows program and folder choices as a list.** With kdialog and no zenity, the permission prompts are radiolists whose first row is Deny, and program management's first row is No change, because kdialog's Return always picks the highlighted row.
 7. **Hard links are not a boundary against a local attacker.** Someone who can already create hard links inside your home folder can link files into an allowed tree. That attacker already has local file access.
 8. **Inside a folder you allowed or trusted, a page can tell which files exist.** That follows from read access.
 9. **A hostile page can cause repeated prompts for invented folders.** Allowing an invented folder grants nothing. Denying suppresses that branch for the session, but the page can invent other names.
