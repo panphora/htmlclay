@@ -50,7 +50,10 @@ type Config struct {
 	LegacyTrusted   []string         `json:"trustedFolders,omitempty"`
 	HelperPrograms  []HelperProgram  `json:"helperPrograms,omitempty"`
 	HelperDecisions []HelperDecision `json:"helperDecisions,omitempty"`
-	baseDir         string
+	// AIEdit is the built-in AI editing helper's setting. Nil, or a nil Enabled,
+	// reads as on: AI editing is on unless the person turned it off.
+	AIEdit  *AIEditSettings `json:"aiEdit,omitempty"`
+	baseDir string
 }
 
 // TrustedFolder is one declared folder. Identity is the folder's device+inode
@@ -61,6 +64,15 @@ type Config struct {
 type TrustedFolder struct {
 	Path     string `json:"path"`
 	Identity string `json:"identity,omitempty"`
+}
+
+// AIEditSettings mirrors Hyperclay Local's settings.aiEdit. Default names the engine
+// used when a request names none ("" means claude). Engines are user-defined agents:
+// name -> argv, where an argument containing "{prompt}" receives the prompt.
+type AIEditSettings struct {
+	Enabled *bool               `json:"enabled,omitempty"`
+	Default string              `json:"default,omitempty"`
+	Engines map[string][]string `json:"engines,omitempty"`
 }
 
 // sitePortCap bounds the remembered-port map. Every entry becomes a bound
@@ -343,6 +355,40 @@ func (c *Config) SetStartOnLogin(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.StartOnLogin = v
+}
+
+// AIEditEnabled reports whether AI editing is on, under the lock. A missing setting
+// reads as on; only an explicit false turns it off.
+func (c *Config) AIEditEnabled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.AIEdit == nil || c.AIEdit.Enabled == nil || *c.AIEdit.Enabled
+}
+
+// SetAIEditEnabled records the AI editing switch under the lock, keeping the
+// default engine and user engines.
+func (c *Config) SetAIEditEnabled(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.AIEdit == nil {
+		c.AIEdit = &AIEditSettings{}
+	}
+	c.AIEdit.Enabled = &v
+}
+
+// AIEditEngines returns the default engine name and a copy of the user engines,
+// under the lock. The copy is the caller's to keep.
+func (c *Config) AIEditEngines() (string, map[string][]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.AIEdit == nil {
+		return "", nil
+	}
+	engines := make(map[string][]string, len(c.AIEdit.Engines))
+	for name, argv := range c.AIEdit.Engines {
+		engines[name] = append([]string(nil), argv...)
+	}
+	return c.AIEdit.Default, engines
 }
 
 func defaultConfigDir() (string, error) {

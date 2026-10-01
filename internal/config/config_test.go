@@ -719,3 +719,107 @@ func writeConfigJSON(t *testing.T, baseDir, body string) {
 		t.Fatal(err)
 	}
 }
+
+func TestAIEditDefaultsOn(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.AIEditEnabled() {
+		t.Error("a fresh config should read as AI editing on")
+	}
+
+	baseDir = t.TempDir()
+	writeConfigJSON(t, baseDir, `{"startOnLogin":true}`)
+	cfg, _, err = LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.AIEditEnabled() {
+		t.Error("a config with no aiEdit key should read as AI editing on")
+	}
+}
+
+func TestAIEditOffSurvivesSaveAndLoad(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _, _ := LoadFrom(baseDir, noIdentity)
+	cfg.SetAIEditEnabled(false)
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save error: %v", err)
+	}
+
+	loaded, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if loaded.AIEditEnabled() {
+		t.Error("an explicit off should survive save and load")
+	}
+
+	loaded.SetAIEditEnabled(true)
+	if err := loaded.Save(); err != nil {
+		t.Fatalf("save error: %v", err)
+	}
+	again, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if !again.AIEditEnabled() {
+		t.Error("an explicit on should survive save and load")
+	}
+}
+
+func TestAIEditEnginesLoadAndCopy(t *testing.T) {
+	baseDir := t.TempDir()
+	writeConfigJSON(t, baseDir, `{"aiEdit":{"default":"codex","engines":{"echo":["sh","-c","cat"]}}}`)
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+
+	def, engines := cfg.AIEditEngines()
+	if def != "codex" {
+		t.Errorf("expected the default engine codex, got %q", def)
+	}
+	if len(engines) != 1 {
+		t.Fatalf("expected one user engine, got %v", engines)
+	}
+	echo := engines["echo"]
+	if len(echo) != 3 || echo[0] != "sh" || echo[1] != "-c" || echo[2] != "cat" {
+		t.Errorf("expected echo argv [sh -c cat], got %v", echo)
+	}
+	if !cfg.AIEditEnabled() {
+		t.Error("a config with no enabled key should read as AI editing on")
+	}
+
+	echo[0] = "tampered"
+	engines["added"] = []string{"x"}
+
+	def, again := cfg.AIEditEngines()
+	if def != "codex" {
+		t.Errorf("the default engine changed: %q", def)
+	}
+	if len(again) != 1 || again["echo"][0] != "sh" {
+		t.Errorf("the returned map or slice aliases the config's copy: %v", again)
+	}
+}
+
+func TestAIEditOffKeepsEngines(t *testing.T) {
+	baseDir := t.TempDir()
+	writeConfigJSON(t, baseDir, `{"aiEdit":{"default":"codex","engines":{"echo":["sh","-c","cat"]}}}`)
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+
+	cfg.SetAIEditEnabled(false)
+
+	def, engines := cfg.AIEditEngines()
+	if def != "codex" {
+		t.Errorf("turning AI editing off dropped the default engine: %q", def)
+	}
+	if len(engines) != 1 || engines["echo"][0] != "sh" {
+		t.Errorf("turning AI editing off dropped the user engines: %v", engines)
+	}
+}
