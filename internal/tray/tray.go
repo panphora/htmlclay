@@ -306,7 +306,7 @@ func (t *Tray) onReady() {
 	systray.AddSeparator()
 	addHelperItem := t.buildHelpersMenu()
 	systray.AddSeparator()
-	aiEditItem := systray.AddMenuItemCheckbox("AI Editing", "Select text in an HTML file and press ⌘K to ask an agent on this computer to rewrite it", t.cfg.AIEditEnabled())
+	aiEditItem := systray.AddMenuItemCheckbox("AI Editing", "Select text in an HTML file and press ⌘J to ask an agent on this computer to rewrite it", t.cfg.AIEditEnabled())
 	systray.AddSeparator()
 
 	loginItem := systray.AddMenuItemCheckbox("Start on Login", "", t.cfg.StartOnLoginEnabled())

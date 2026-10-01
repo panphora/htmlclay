@@ -7,7 +7,7 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ### Added
 
-- **AI editing is built in.** Select text in any HTML file that loads ClayJS, press ⌘K, and say
+- **AI editing is built in.** Select text in any HTML file that loads ClayJS, press ⌘J, and say
   what you want: HTML Clay runs Claude Code, Fable or Codex on your computer with no tools, and the
   rewrite appears in place until you keep or revert it. It is on by default, needs no declaration
   or approval prompt, and never takes the document's handler slot. Turn it off with **AI Editing**

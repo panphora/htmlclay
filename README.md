@@ -129,7 +129,7 @@ A `.htmlclay` file can be anything you'd build as a web page that benefits from 
 
 ## Ask an agent to rewrite a selection
 
-Select a sentence in any HTML file that loads ClayJS, press ⌘K (Ctrl+K on Windows and Linux), and type what you want. HTML Clay runs Claude Code on your computer with no tools, the rewrite appears in place, and Keep saves it. Start the request with `@fable` or `@codex` to pick another agent. The agent you use must be installed and signed in. Turn AI editing off with **AI Editing** in the tray menu. [SECURITY.md](SECURITY.md#ai-editing) says exactly what is sent and where.
+Select a sentence in any HTML file that loads ClayJS, press ⌘J (Ctrl+J on Windows and Linux), and type what you want. HTML Clay runs Claude Code on your computer with no tools, the rewrite appears in place, and Keep saves it. Start the request with `@fable` or `@codex` to pick another agent. The agent you use must be installed and signed in. Turn AI editing off with **AI Editing** in the tray menu. [SECURITY.md](SECURITY.md#ai-editing) says exactly what is sent and where.
 
 ## Let a program edit the file you're looking at
 
