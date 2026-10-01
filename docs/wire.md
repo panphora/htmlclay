@@ -338,6 +338,14 @@ else
 fi
 ```
 
+`ai-edit` is built in. For every `.html` and `.htmlclay` document, `/_/meta` lists
+`{ "name": "ai-edit", "state": "ready" }` after the declared helpers, or `"unavailable"` when
+AI Editing is turned off in the tray. HTML Clay answers it itself: it needs no declaration or
+approval, never occupies the handler slot, requires the document's `Save-Token`, and runs one
+request per document at a time. A document that declares a helper named `ai-edit` does not
+replace it. The request and its frames are the ones ClayJS's `ai-edit` plugin sends and reads;
+see [SECURITY.md](../SECURITY.md#ai-editing) for what the agent may do.
+
 ## The CLI
 
 ```

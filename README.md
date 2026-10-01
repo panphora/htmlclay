@@ -127,6 +127,10 @@ A `.htmlclay` file can be anything you'd build as a web page that benefits from 
 - Moving checklist
 - Interactive fiction editor
 
+## Ask an agent to rewrite a selection
+
+Select a sentence in any HTML file that loads ClayJS, press ⌘K (Ctrl+K on Windows and Linux), and type what you want. HTML Clay runs Claude Code on your computer with no tools, the rewrite appears in place, and Keep saves it. Start the request with `@fable` or `@codex` to pick another agent. The agent you use must be installed and signed in. Turn AI editing off with **AI Editing** in the tray menu. [SECURITY.md](SECURITY.md#ai-editing) says exactly what is sent and where.
+
 ## Let a program edit the file you're looking at
 
 A page open in HTML Clay can ask a program on your machine to change the file it is running from, and watch the change arrive. You point at a paragraph and say "make this shorter", and an AI agent, a script, or a formatter running in your own terminal does it.
@@ -329,6 +333,13 @@ Stored at `<os-config-dir>/htmlclay/config.json` (`~/Library/Application Support
 `sitePorts` remembers the port each origin was served on, keyed by its anchor folder, so an address
 survives a restart. A port that is taken at startup is given up and the new one recorded instead.
 
+`aiEdit` holds the AI Editing switch and is absent until you change something. `"enabled": false`
+turns AI editing off. `"default"` names the agent used when a request names none (`claude`, `fable`
+or `codex`, or one of your own). `"engines"` adds your own agents, each a command as an argument
+list, where an argument containing `{prompt}` receives the prompt; without one, the prompt arrives
+on standard input. For example `"aiEdit": { "engines": { "echo": ["sh", "-c", "cat"] } }` makes
+`@echo` send the prompt back unchanged.
+
 The trusted-folder list keeps the on-disk key `workspaceFolders` from the version that introduced it.
 Renaming the key would make older configs fail to parse, and the corrupt-config path would then reset
 every other setting. `identity` is the folder's fingerprint at the moment you trusted it: volume UUID
@@ -342,6 +353,7 @@ The app lives in the system tray with controls for:
 - Trusted Folders: trust one through a folder picker, or click a row to stop trusting it
 - Opening the example file and the backups folder
 - Toggling Start on Login (LaunchAgent on macOS, autostart desktop entry on Linux, registry key on Windows)
+- Turning AI Editing on or off (on by default)
 - A notification when a new version is available (click to open the download page)
 
 ### Building from source

@@ -7,6 +7,13 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ### Added
 
+- **AI editing is built in.** Select text in any HTML file that loads ClayJS, press ⌘K, and say
+  what you want: HTML Clay runs Claude Code, Fable or Codex on your computer with no tools, and the
+  rewrite appears in place until you keep or revert it. It is on by default, needs no declaration
+  or approval prompt, and never takes the document's handler slot. Turn it off with **AI Editing**
+  in the tray. A request needs the document's `Save-Token`, one runs per document at a time, and
+  `@name.ext` context stays inside the document's folder. agy is refused, because it can read files
+  without asking.
 - **`POST /_/api/<file>` writes JSON into a document.** The body is applied through the page's
   own `api` rules tag, the same map `GET /_/api` reads with, and only content is written: text as
   text, and attributes that cannot run script. Only the changed elements are rewritten, so every

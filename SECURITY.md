@@ -61,6 +61,15 @@ Removing or revoking a program does not undo writes, recover data already sent a
 
 Removing a program leaves every document decision that pointed at it in place. Each one reads as undecided while the program is gone, so the next open asks again, and restoring the same program ID makes those decisions grant once more. Registering a new program under the same display name does not inherit them: registration mints a new ID, and the stored decisions name the old one.
 
+## AI editing
+
+AI editing is built in and on by default. A page that loads ClayJS sends the selected element, the selected text and your request. HTML Clay starts an agent CLI on this computer and sends the agent's reply back to the page, which shows it until you click Keep or Revert. It needs no `<meta name="htmlclay-helper">` declaration and no approval prompt, and it never takes the document's handler slot. Turn it off with **AI Editing** in the tray menu. Turning it off cancels any edit that is running.
+
+- **The agent runs with no tools.** Claude Code (the default) and Fable run with `--tools ''`, `--strict-mcp-config` and one turn, in an empty scratch folder. Codex runs in a read-only sandbox with its shell, app, browser, plugin and image features disabled, in an empty scratch folder. agy is refused, because it can read files without asking and has no switch to stop that. An engine you define yourself under `aiEdit.engines` in `config.json` runs exactly the command you wrote, as you, and HTML Clay does not restrict it.
+- **What leaves the machine.** The agent CLI sends its prompt to its model provider: the element's HTML, the selected text, your request, any file you named with `@name.ext`, and with `@page` the whole saved document. A `@name.ext` file must resolve, after symlinks, to a regular file inside the document's folder. At most 8 files, 256 KiB each and 1 MiB in total.
+- **Who can ask.** A request needs the document's `Save-Token`, the same capability that saves the document. One AI edit runs per document at a time, for at most five minutes.
+- **What comes back.** The reply goes to the page and nowhere else. The page refuses a reply that adds a script, an inline event handler, a `javascript:` URL, `srcdoc` or an embedding element, and nothing is saved until you click Keep.
+
 ## What HTML Clay itself protects
 
 These protections apply to requests handled by HTML Clay. They are not a sandbox around registered programs.
