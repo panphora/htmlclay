@@ -47,3 +47,17 @@ func withPath(env []string, path string) []string {
 	}
 	return append(out, "PATH="+path)
 }
+
+// LoginEnv is this process's environment with PATH replaced by the one a login
+// shell reports, resolved once and cached. Programs installed through a shell
+// profile (Homebrew, npm -g, ~/.local/bin) are only on that PATH when HTML Clay
+// was started from the Dock.
+func LoginEnv() []string {
+	return withPath(os.Environ(), loginPath())
+}
+
+// RefreshLoginEnv resolves the login PATH again, for a lookup that failed
+// against the cached one because something was installed since.
+func RefreshLoginEnv() []string {
+	return withPath(os.Environ(), refreshLoginPath())
+}
