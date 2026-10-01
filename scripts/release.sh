@@ -15,7 +15,7 @@ RESET='\033[0m'
 
 # ── Helpers ──
 log()     { echo -e "$@"; }
-hs_mark() { printf '::hs:: %s %s\n' "$1" "$2" >&2 || :; }
+hs_mark() { [ -n "${HYPERSAVE_MARKERS:-}" ] || return 0; printf '::hs:: %s %s\n' "$1" "$2" >&2 || :; }
 info()    { log "${BLUE}→ $1${RESET}"; hs_mark ok "$1"; }
 success() { log "${GREEN}✓ $1${RESET}"; hs_mark ok "$1"; }
 warn()    { log "${YELLOW}⚠ $1${RESET}"; hs_mark warn "$1"; }
