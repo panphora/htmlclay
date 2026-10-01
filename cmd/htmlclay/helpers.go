@@ -414,6 +414,19 @@ func (a *app) refreshHelperDispatchers() {
 	}
 }
 
+// cancelAIEdits stops every running AI edit on every site, after the AI Editing
+// switch is turned off.
+func (a *app) cancelAIEdits() {
+	a.mu.Lock()
+	sites := append([]*site(nil), a.sites...)
+	a.mu.Unlock()
+	for _, s := range sites {
+		if s.srv != nil {
+			s.srv.CancelAIEdits()
+		}
+	}
+}
+
 func (a *app) reportHelperSetupError(document string, err error) {
 	a.rt.logger.Printf("Could not configure helpers for %s: %v", document, err)
 	message := fmt.Sprintf("%s could not configure its programs: %v", filepath.Base(document), err)

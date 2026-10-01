@@ -403,9 +403,10 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 		Add:    a.pickAndTrustFolder,
 		Remove: a.removeTrustedFolder,
 	}, &tray.HelperHooks{
-		List: a.helperProgramRows,
-		Add:  a.pickHelperProgram,
-		Row:  a.manageHelperProgramAndRefresh,
+		List:      a.helperProgramRows,
+		Add:       a.pickHelperProgram,
+		Row:       a.manageHelperProgramAndRefresh,
+		AIEditOff: a.cancelAIEdits,
 	}, a.dialogAdvice)
 	a.rt.logger.Printf("Tray exited")
 }

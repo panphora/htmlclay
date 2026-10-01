@@ -73,6 +73,9 @@ type HelperHooks struct {
 	List func() []Row
 	Add  func() []Row
 	Row  func(id string) []Row
+	// AIEditOff runs after the AI Editing checkbox is turned off, to cancel
+	// running AI edits. May be nil.
+	AIEditOff func()
 }
 
 // slotCount is how many submenu rows exist before any list is rendered. The pool
@@ -303,6 +306,8 @@ func (t *Tray) onReady() {
 	systray.AddSeparator()
 	addHelperItem := t.buildHelpersMenu()
 	systray.AddSeparator()
+	aiEditItem := systray.AddMenuItemCheckbox("AI Editing", "Select text in an HTML file and press ⌘K to ask an agent on this computer to rewrite it", t.cfg.AIEditEnabled())
+	systray.AddSeparator()
 
 	loginItem := systray.AddMenuItemCheckbox("Start on Login", "", t.cfg.StartOnLoginEnabled())
 	systray.AddSeparator()
@@ -318,6 +323,8 @@ func (t *Tray) onReady() {
 				go t.onOpenBackups()
 			case <-loginItem.ClickedCh:
 				t.toggleLoginItem(loginItem)
+			case <-aiEditItem.ClickedCh:
+				t.toggleAIEdit(aiEditItem)
 			case info := <-t.updateCh:
 				t.showUpdate(info)
 			case <-t.updateItem.ClickedCh:
@@ -455,6 +462,24 @@ func (t *Tray) toggleLoginItem(loginItem *systray.MenuItem) {
 		loginItem.Check()
 	} else {
 		loginItem.Uncheck()
+	}
+}
+
+func (t *Tray) toggleAIEdit(item *systray.MenuItem) {
+	newVal := !t.cfg.AIEditEnabled()
+	t.cfg.SetAIEditEnabled(newVal)
+	if err := t.cfg.Save(); err != nil {
+		t.cfg.SetAIEditEnabled(!newVal)
+		fmt.Fprintf(os.Stderr, "[htmlclay] Could not save the AI Editing setting: %v\n", err)
+		return
+	}
+	if newVal {
+		item.Check()
+		return
+	}
+	item.Uncheck()
+	if t.helpers != nil && t.helpers.AIEditOff != nil {
+		go t.helpers.AIEditOff()
 	}
 }
 

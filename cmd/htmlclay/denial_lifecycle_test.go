@@ -28,7 +28,8 @@ func helperDiscoveryState(t *testing.T, s *site, document string) string {
 	if err := json.Unmarshal([]byte(body), &meta); err != nil {
 		t.Fatal(err)
 	}
-	if len(meta.Document.Helpers) != 1 {
+	// The declared helper, then the built-in ai-edit, which is on by default.
+	if len(meta.Document.Helpers) != 2 || meta.Document.Helpers[1].Name != "ai-edit" || meta.Document.Helpers[1].State != "ready" {
 		t.Fatalf("helpers: %+v", meta.Document.Helpers)
 	}
 	return meta.Document.Helpers[0].State

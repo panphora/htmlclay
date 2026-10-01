@@ -224,6 +224,8 @@ func (a *app) buildSite(anchor string, trusted bool) (*site, error) {
 		MayTrustFolder: a.mayTrustFromPrompt,
 		TrustFolder:    a.trustFromPrompt,
 		TrustRequest:   a.trustFromPage,
+		AIEditEnabled:  a.rt.cfg.AIEditEnabled,
+		AIEditEngines:  a.rt.cfg.AIEditEngines,
 	})
 	s.srv = srv
 	return s, nil
