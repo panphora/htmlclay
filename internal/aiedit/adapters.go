@@ -103,8 +103,10 @@ func claudeAdapter(ctx context.Context, e engine, bin, userPrompt string, _ Opti
 	var (
 		result    *claudeEvent
 		modelSeen = e.model
-		reader    = bufio.NewReaderSize(stdout, 64<<10)
-		read      int
+		// One byte past the cap is enough to know the reply is too large, so no
+		// line, however long, ever buffers more than that.
+		reader = bufio.NewReaderSize(io.LimitReader(stdout, maxStdout+1), 64<<10)
+		read   int
 	)
 	for {
 		line, readErr := reader.ReadString('\n')
@@ -190,11 +192,32 @@ func codexAdapter(ctx context.Context, e engine, bin, userPrompt string, _ Optio
 		}
 		return Result{}, &Error{Code: "engine_failed", Message: message}
 	}
-	text, _ := os.ReadFile(outFile)
+	text, err := readCapped(outFile)
+	if err != nil {
+		return Result{}, err
+	}
 	if strings.TrimSpace(string(text)) == "" {
 		return Result{}, &Error{Code: "engine_failed", Message: "codex produced no reply"}
 	}
 	return Result{HTML: stripFences(string(text)), Model: "codex", StopReason: "end_turn"}, nil
+}
+
+// readCapped reads the reply file without ever holding more than the cap plus one
+// byte. A missing file reads as empty, which the caller reports as no reply.
+func readCapped(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil
+	}
+	defer f.Close()
+	text, err := io.ReadAll(io.LimitReader(f, maxStdout+1))
+	if err != nil {
+		return nil, engineFailure(err)
+	}
+	if len(text) > maxStdout {
+		return nil, &Error{Code: "engine_failed", Message: "reply too large"}
+	}
+	return text, nil
 }
 
 func genericAdapter(ctx context.Context, e engine, bin, userPrompt string, o Options, env []string, report func(string)) (Result, error) {

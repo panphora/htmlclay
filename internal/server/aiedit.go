@@ -85,6 +85,10 @@ func (s *Server) startAIEdit(f *session.File, request wireEnvelope) {
 		s.refuseAIEdit(request, "host", "helper_not_granted", aiEditOffText)
 		return
 	}
+	if request.Type == "wire/describe" {
+		s.refuseAIEdit(request, "host", "invalid_type", "ai-edit does not support wire/describe")
+		return
+	}
 	var payload aiedit.Payload
 	if err := json.Unmarshal(request.Payload, &payload); err != nil {
 		s.refuseAIEdit(request, "application", "invalid_request", "malformed ai-edit request")
@@ -101,6 +105,10 @@ func (s *Server) startAIEdit(f *session.File, request wireEnvelope) {
 		cancel()
 		if run.id == request.ID {
 			s.refuseAIEdit(request, "host", "duplicate_request", "a request with this id is already running")
+			// This refusal is about the second request. Left retained, it would win
+			// the id's one remembered outcome and a reconnect would replay it
+			// instead of the running request's real answer.
+			s.wire.forgetTerminal(request.File, request.ID)
 		} else {
 			s.refuseAIEdit(request, "host", "helper_busy", "an AI edit is already running on this document")
 		}
@@ -108,6 +116,8 @@ func (s *Server) startAIEdit(f *session.File, request wireEnvelope) {
 	}
 	s.aiEdit.running[f.AbsPath] = aiEditRun{id: request.ID, cancel: cancel}
 	s.aiEdit.mu.Unlock()
+	// An accepted request starts with no stale outcome under its id.
+	s.wire.forgetTerminal(request.File, request.ID)
 
 	s.publishAIEdit(request, "wire/ack", "", map[string]any{"mode": "jsonl", "budgetMs": aiEditBudget.Milliseconds()})
 	go s.runAIEdit(ctx, cancel, f.AbsPath, request, payload)
@@ -131,11 +141,12 @@ func (s *Server) runAIEdit(ctx context.Context, cancel context.CancelFunc, file 
 		def, engines = s.hooks.AIEditEngines()
 	}
 	opts := aiedit.Options{
-		File:    file,
-		BaseDir: filepath.Dir(file),
-		Default: def,
-		Engines: engines,
-		Mock:    os.Getenv("MOCK_MODEL") == "1",
+		File:     file,
+		BaseDir:  filepath.Dir(file),
+		Default:  def,
+		Engines:  engines,
+		Internal: s.isInternal,
+		Mock:     os.Getenv("MOCK_MODEL") == "1",
 	}
 
 	var progressMu sync.Mutex

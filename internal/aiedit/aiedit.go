@@ -40,12 +40,13 @@ type Payload struct {
 }
 
 type Options struct {
-	File    string              // absolute path of the document
-	BaseDir string              // folder @file references resolve in (the document's folder)
-	Default string              // default engine name; "" means "claude"
-	Engines map[string][]string // user-configured engines: name -> argv; "{prompt}" in an arg substitutes the prompt
-	Env     []string            // environment for the child; nil means helper.LoginEnv()
-	Mock    bool                // deterministic fake reply, for tests and MOCK_MODEL=1
+	File     string                 // absolute path of the document
+	BaseDir  string                 // folder @file references resolve in (the document's folder)
+	Default  string                 // default engine name; "" means "claude"
+	Engines  map[string][]string    // user-configured engines: name -> argv; "{prompt}" in an arg substitutes the prompt
+	Env      []string               // environment for the child; nil means helper.LoginEnv()
+	Internal func(path string) bool // reports a path in the server's own state; nil means none
+	Mock     bool                   // deterministic fake reply, for tests and MOCK_MODEL=1
 }
 
 type Result struct {
@@ -205,7 +206,7 @@ func Run(ctx context.Context, p Payload, o Options, progress func(text string)) 
 		}
 		pageText = string(text)
 	}
-	sections, err := resolveContext(p.ContextRefs, o.BaseDir)
+	sections, err := resolveContext(p.ContextRefs, o.BaseDir, o.Internal)
 	if err != nil {
 		return Result{}, err
 	}

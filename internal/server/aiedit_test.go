@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/panphora/htmlclay/internal/aiedit"
 )
 
 func aiEditSend(t *testing.T, srv *Server, token, body string) *httptest.ResponseRecorder {
@@ -241,5 +244,86 @@ func TestCancelAIEditsStopsRunningEdits(t *testing.T) {
 	srv.CancelAIEdits()
 	if env := aiEditEnvelopeType(t, sub, "e1", 8); env.Type != "wire/error" || helperErrorCode(t, env) != "helper_cancelled" {
 		t.Fatalf("cancel answer = %s %s", env.Type, env.Payload)
+	}
+}
+
+func TestAIEditReleasesSlotBeforeTerminalFrame(t *testing.T) {
+	srv, f := setupLiveSyncTest(t)
+	var on atomic.Bool
+	on.Store(true)
+	srv.SetHooks(aiEditSwitch(&on))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.aiEdit.mu.Lock()
+	srv.aiEdit.running = map[string]aiEditRun{f.AbsPath: {id: "order", cancel: cancel}}
+	srv.aiEdit.mu.Unlock()
+	request := wireEnvelope{Type: "wire/request", ID: "order", File: f.AbsPath, Helper: "ai-edit", Payload: json.RawMessage(`{}`)}
+	// Block the terminal frame's publication. The empty payload fails at once, so
+	// the slot must already be free while the frame waits.
+	srv.wire.mu.Lock()
+	done := make(chan struct{})
+	go func() { defer close(done); srv.runAIEdit(ctx, cancel, f.AbsPath, request, aiedit.Payload{}) }()
+	released := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		srv.aiEdit.mu.Lock()
+		_, busy := srv.aiEdit.running[f.AbsPath]
+		srv.aiEdit.mu.Unlock()
+		if !busy {
+			released = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	srv.wire.mu.Unlock()
+	<-done
+	if !released {
+		t.Fatal("the terminal frame is waiting to publish and the AI edit slot is still held")
+	}
+}
+
+func TestAIEditDuplicateRefusalIsNotRetained(t *testing.T) {
+	t.Setenv("MOCK_MODEL", "1")
+	srv, f := setupLiveSyncTest(t)
+	t.Cleanup(func() { srv.wire.shutdown() })
+	t.Cleanup(srv.CancelAIEdits)
+	var on atomic.Bool
+	on.Store(true)
+	srv.SetHooks(aiEditSwitch(&on))
+	sub := helperObserver(t, srv, f.AbsPath)
+	long := "make it " + strings.Repeat("x", 3000)
+
+	aiEditDelivered(t, aiEditSend(t, srv, f.Token, aiEditBody("e1", long)))
+	receiveHelperType(t, sub, "wire/ack", "e1")
+	aiEditDelivered(t, aiEditSend(t, srv, f.Token, aiEditBody("e1", long)))
+	if env := aiEditEnvelopeType(t, sub, "e1", 8); helperErrorCode(t, env) != "duplicate_request" {
+		t.Fatalf("duplicate error = %s", env.Payload)
+	}
+	aiEditDelivered(t, aiEditSend(t, srv, f.Token, `{"type":"wire/cancel","id":"e1"}`))
+	if env := aiEditEnvelopeType(t, sub, "e1", 8); env.Type != "wire/error" || helperErrorCode(t, env) != "helper_cancelled" {
+		t.Fatalf("cancel answer = %s %s", env.Type, env.Payload)
+	}
+	srv.wire.mu.Lock()
+	retained := string(srv.wire.chans[f.AbsPath].terminal["e1"].frame)
+	srv.wire.mu.Unlock()
+	if !strings.Contains(retained, "helper_cancelled") {
+		t.Fatalf("retained outcome = %s", retained)
+	}
+}
+
+func TestAIEditDescribeIsRefused(t *testing.T) {
+	t.Setenv("MOCK_MODEL", "1")
+	srv, f := setupLiveSyncTest(t)
+	t.Cleanup(srv.CancelAIEdits)
+	t.Cleanup(func() { srv.wire.shutdown() })
+	var on atomic.Bool
+	on.Store(true)
+	srv.SetHooks(aiEditSwitch(&on))
+	sub := helperObserver(t, srv, f.AbsPath)
+	body := strings.Replace(aiEditBody("describe", "rewrite"), "wire/request", "wire/describe", 1)
+	aiEditDelivered(t, aiEditSend(t, srv, f.Token, body))
+	env := aiEditEnvelopeType(t, sub, "describe", 8)
+	if env.Type != "wire/error" || helperErrorCode(t, env) != "invalid_type" {
+		t.Fatalf("describe answer = %s %s", env.Type, env.Payload)
 	}
 }

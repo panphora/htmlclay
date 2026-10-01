@@ -308,6 +308,30 @@ func TestContextReferences(t *testing.T) {
 		}
 	})
 
+	t.Run("hidden", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(baseDir, ".env"), []byte("SECRET=1"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(baseDir, ".git"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(baseDir, ".git", "config"), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(baseDir, ".env"), filepath.Join(baseDir, "env-link.md")); err != nil {
+			t.Fatal(err)
+		}
+		for _, ref := range []string{".env", ".git/config", "env-link.md"} {
+			_, err := run(t, ref)
+			if code := errorCode(t, err); code != "invalid_context" {
+				t.Fatalf("%s: code = %q", ref, code)
+			}
+			if !strings.Contains(err.Error(), "hidden or internal") {
+				t.Fatalf("%s: message = %q", ref, err.Error())
+			}
+		}
+	})
+
 	t.Run("too large", func(t *testing.T) {
 		big := strings.Repeat("x", 300<<10)
 		if err := os.WriteFile(filepath.Join(baseDir, "big.txt"), []byte(big), 0644); err != nil {
@@ -475,5 +499,44 @@ func TestIsDocument(t *testing.T) {
 		if IsDocument(path) {
 			t.Fatalf("%s is not a document", path)
 		}
+	}
+}
+
+func TestCodexReplyOverCapIsRefused(t *testing.T) {
+	requireUnix(t)
+	dir := t.TempDir()
+	writeAgent(t, dir, "codex", `#!/bin/sh
+out=""
+prev=""
+for arg in "$@"; do
+ if [ "$prev" = "-o" ]; then out="$arg"; fi
+ prev="$arg"
+done
+/usr/bin/head -c 5242880 /dev/zero | /usr/bin/tr '\000' x > "$out"
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := Run(ctx, Payload{ElementHTML: "<p>x</p>", Comment: "@codex rewrite"}, Options{File: filepath.Join(dir, "app.html"), BaseDir: dir, Env: testEnv(dir)}, nil)
+	if err == nil || !strings.Contains(err.Error(), "reply too large") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestClaudeLineOverCapIsRefusedWhileReading(t *testing.T) {
+	requireUnix(t)
+	dir := t.TempDir()
+	writeAgent(t, dir, "claude", `#!/bin/sh
+/usr/bin/head -c 5242880 /dev/zero | /usr/bin/tr '\000' x
+/bin/sleep 5
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := Run(ctx, Payload{ElementHTML: "<p>x</p>", Comment: "rewrite"}, Options{File: filepath.Join(dir, "app.html"), BaseDir: dir, Env: testEnv(dir)}, nil)
+	if err == nil || !strings.Contains(err.Error(), "reply too large") {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("refused only after %s: the cap waited for the deadline", elapsed)
 	}
 }
