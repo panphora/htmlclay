@@ -62,6 +62,15 @@ type Hooks struct {
 	// route's token to a registration. openedByUser is false when the file was
 	// reached by a link, and the dialog says so on its first line.
 	TrustRequest func(requestingFile string, openedByUser bool) (url string, ok bool)
+
+	// AIEditEnabled reports the AI Editing switch. Nil means this server offers no
+	// AI editing at all: no discovery entry and no built-in answer, which is what a
+	// standalone server (every server test) wants.
+	AIEditEnabled func() bool
+
+	// AIEditEngines returns the default engine name ("" for claude) and the
+	// user-defined engines. Nil means the built-ins only.
+	AIEditEngines func() (string, map[string][]string)
 }
 
 // SetHooks wires the app behind this server. Call once, before Start.

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/aiedit"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/versions"
 )
@@ -1030,6 +1031,33 @@ func (s *Server) handleWireSend(w http.ResponseWriter, r *http.Request) {
 	if isBrowser {
 		env.From = "page"
 	}
+	// The built-in ai-edit helper is answered here, before any handler sees the
+	// request: it needs no declaration and never takes the file's handler slot.
+	// It always requires the document's token, bound helpers or not.
+	if s.aiEditOffered() && aiedit.IsDocument(f.AbsPath) {
+		builtin := env.Helper == aiedit.HelperName && (env.Type == "wire/request" || env.Type == "wire/describe")
+		if builtin || env.Type == "wire/cancel" {
+			tokenOK := r.Header.Get(helperTokenHeader) == f.Token
+			if builtin {
+				s.helperBindings.mu.RUnlock()
+				if !tokenOK {
+					s.writeError(w, http.StatusForbidden, "invalid token")
+					return
+				}
+				s.startAIEdit(f, env)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{"ok": true, "delivered": 1, "observers": 0})
+				return
+			}
+			if tokenOK && s.cancelAIEdit(f.AbsPath, env.ID) {
+				s.helperBindings.mu.RUnlock()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{"ok": true, "delivered": 1, "observers": 0})
+				return
+			}
+		}
+	}
+
 	if env.Helper != "" && (env.Type == "wire/request" || env.Type == "wire/describe") {
 		if rejected, observers := s.wire.rejectNamedForRawHandler(f.AbsPath, env); rejected {
 			s.helperBindings.mu.RUnlock()

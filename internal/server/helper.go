@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/aiedit"
 	"github.com/panphora/htmlclay/internal/config"
 	"github.com/panphora/htmlclay/internal/helper"
 	"github.com/panphora/htmlclay/internal/htmlutil"
@@ -473,7 +474,17 @@ func encodedHelperEnvelopeSize(env wireEnvelope) int {
 	return len(encodeHelperJSON(env))
 }
 
+// helperDiscovery is the document's declared helpers, then the built-in ai-edit
+// when this server offers it.
 func (s *Server) helperDiscovery(file string) (string, []helperMeta) {
+	mode, meta := s.declaredHelperDiscovery(file)
+	if entry, ok := s.aiEditMeta(file); ok {
+		meta = append(meta, entry)
+	}
+	return mode, meta
+}
+
+func (s *Server) declaredHelperDiscovery(file string) (string, []helperMeta) {
 	s.helperMu.Lock()
 	var names []string
 	var allowed map[string]config.HelperProgram
@@ -499,6 +510,9 @@ func (s *Server) helperDiscovery(file string) (string, []helperMeta) {
 	}
 	meta := make([]helperMeta, 0, len(names))
 	for _, name := range names {
+		if name == aiedit.HelperName && s.aiEditOffered() {
+			continue // the built-in answers this name; a document cannot shadow it
+		}
 		// unavailable is the honest answer for everything that is not a running
 		// program and not a refusal: no dispatcher at all, a name the user was
 		// never asked about, a picker the user backed out of, and a program

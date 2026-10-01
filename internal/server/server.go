@@ -44,6 +44,7 @@ type Server struct {
 	helperMu       sync.Mutex
 	helpers        map[string]*helperDispatcher
 	helperOffline  map[string][]string
+	aiEdit         aiEditRegistry
 
 	// hooks are the app-level decisions this server cannot make itself. A nil
 	// field disables that route; a zero Hooks (tests, standalone servers)
@@ -226,6 +227,7 @@ func (s *Server) Start() error {
 // an injected live-sync runtime leaves it running (the process shuts the shared
 // runtime down once, before the per-site HTTP servers).
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.CancelAIEdits()
 	s.broker.shutdown()
 	s.wire.shutdown()
 	if s.ownsLiveSync {
@@ -235,6 +237,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) Close() error {
+	s.CancelAIEdits()
 	s.broker.shutdown()
 	s.wire.shutdown()
 	if s.ownsLiveSync {
