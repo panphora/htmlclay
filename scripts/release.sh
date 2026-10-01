@@ -15,11 +15,12 @@ RESET='\033[0m'
 
 # ── Helpers ──
 log()     { echo -e "$@"; }
-info()    { log "${BLUE}→ $1${RESET}"; }
-success() { log "${GREEN}✓ $1${RESET}"; }
-warn()    { log "${YELLOW}⚠ $1${RESET}"; }
-error()   { log "${RED}✗ $1${RESET}"; }
-section() { log "\n${CYAN}══════════════════════════════════════════════════${RESET}"; log "${CYAN}  $1${RESET}"; log "${CYAN}══════════════════════════════════════════════════${RESET}\n"; }
+hs_mark() { printf '::hs:: %s %s\n' "$1" "$2" >&2 || :; }
+info()    { log "${BLUE}→ $1${RESET}"; hs_mark ok "$1"; }
+success() { log "${GREEN}✓ $1${RESET}"; hs_mark ok "$1"; }
+warn()    { log "${YELLOW}⚠ $1${RESET}"; hs_mark warn "$1"; }
+error()   { log "${RED}✗ $1${RESET}"; hs_mark fail "$1"; }
+section() { log "\n${CYAN}══════════════════════════════════════════════════${RESET}"; log "${CYAN}  $1${RESET}"; log "${CYAN}══════════════════════════════════════════════════${RESET}\n"; hs_mark step "$1"; }
 
 # Component-wise, because macOS `sort -V` is not dependable. The FIRST argument
 # has matched VERSION_RE; the second is CURRENT_VERSION, read out of main.go and
