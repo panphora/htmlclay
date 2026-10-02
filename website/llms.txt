@@ -10,7 +10,7 @@
 
 This file is the complete reference for an agent working with HTML Clay. The human-readable
 version is the site at https://htmlclay.com (https://htmlclay.com/get-started,
-https://htmlclay.com/features, https://htmlclay.com/agent-editing). The source is at
+https://htmlclay.com/features, https://htmlclay.com/docs). The source is at
 https://github.com/panphora/htmlclay, and the two in-repo documents worth reading in full are
 `README.md` and `docs/wire.md`. The security model, including the risks it accepts on purpose,
 is `SECURITY.md`.
@@ -1503,7 +1503,12 @@ The binding text is `LICENSE` in the repository; the standing commitments are `S
 - Site: https://htmlclay.com
 - Get started: https://htmlclay.com/get-started
 - Features: https://htmlclay.com/features
-- Agent editing: https://htmlclay.com/agent-editing
+- Docs: https://htmlclay.com/docs
+- AI editing: https://htmlclay.com/ai-edit
+- JSON API: https://htmlclay.com/json-api
+- Live updates: https://htmlclay.com/live-updates
+- Programs: https://htmlclay.com/programs
+- Agent editing, a complete example: https://htmlclay.com/agent-editing
 - Downloads and checksums: https://htmlclay.com/#downloads
 - Update feed: https://download.htmlclay.com/htmlclay-release-info.json
 - Source: https://github.com/panphora/htmlclay
