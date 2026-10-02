@@ -4,18 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Read and write your file as JSON | HTML Clay</title>
-  <meta name="description" content="Add a rules tag to read parts of your HTML file as JSON and post changes back from a program on your computer.">
+  <meta name="description" content="Send CSS selector rules with a request to read parts of your HTML file as JSON and post changes back, or save the rules in the file.">
   <link rel="canonical" href="https://htmlclay.com/json-api">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
   <meta property="og:type" content="website">
   <meta property="og:title" content="Read and write your file as JSON">
-  <meta property="og:description" content="Add a rules tag to read parts of your HTML file as JSON and post changes back from a program on your computer.">
+  <meta property="og:description" content="Send CSS selector rules with a request to read parts of your HTML file as JSON and post changes back, or save the rules in the file.">
   <meta property="og:url" content="https://htmlclay.com/json-api">
   <meta property="og:image" content="https://htmlclay.com/og.png">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Read and write your file as JSON">
-  <meta name="twitter:description" content="Add a rules tag to read parts of your HTML file as JSON and post changes back from a program on your computer.">
+  <meta name="twitter:description" content="Send CSS selector rules with a request to read parts of your HTML file as JSON and post changes back, or save the rules in the file.">
 
   <style>
     :root {
@@ -1206,18 +1206,23 @@
     <div class="hero">
       <p class="eyebrow">Docs</p>
       <h1>Read and write your file as JSON</h1>
-      <p class="lede">Add a rules tag to read parts of your HTML file as JSON and post changes back from a program on your computer.</p>
+      <p class="lede">Send CSS selector rules with a request to read parts of your HTML file as JSON and post changes back, or save the rules in the file.</p>
     </div>
 
     <section>
 <p>Let&#39;s say your file is a task list that has a heading and two tasks. A program on your computer can read the heading and tasks as JSON and write new ones back.</p>
-<p>The file holds the data. A rules tag maps CSS selectors to JSON keys. HTML Clay reads the matching parts of the file and returns their values. To write, send JSON with the same keys. HTML Clay writes each value into the part of the file its rule selects and saves a version. Open tabs pick up the change through the ClayJS <code>sync</code> plugin.</p>
+<p>The file holds the data. Rules map CSS selectors to JSON keys. HTML Clay reads the matching parts of the file and returns their values. To write, send JSON with the same keys. HTML Clay writes each value into the part of the file its rule selects and saves a version. Open tabs pick up the change through the ClayJS <code>sync</code> plugin.</p>
+<p>There are two ways to give HTML Clay the rules:</p>
+<ol>
+<li>Send them with each request. The file needs no changes, so this works on any HTML file.</li>
+<li>Save them in the file. Then a program can ask for the file&#39;s JSON without knowing its structure.</li>
+</ol>
 <p>The page shows this list:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Output</span></div><pre tabindex="0"><code>Today
 
 1. Buy milk
 2. Book tickets</code></pre></div></div>
-<p>A request to <code>/_/api/todo.htmlclay</code> returns these values. Responses here are formatted for reading:</p>
+<p>Both ways return these values. Responses here are formatted for reading:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>JSON</span></div><pre tabindex="0"><code class="language-json">{
   &quot;title&quot;: &quot;Today&quot;,
   &quot;items&quot;: [&quot;Buy milk&quot;, &quot;Book tickets&quot;]
@@ -1226,20 +1231,13 @@
     </section>
 
     <section>
-<h2 id="add-the-rules-tag">Add the rules tag</h2>
-<p>Two rules give the file its JSON shape: <code>title</code> reads the heading, and <code>items</code> reads the tasks.</p>
+<h2 id="save-the-example-file">Save the example file</h2>
 <p>Save this as <code>todo.htmlclay</code> in your home folder, then open it with HTML Clay:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;!DOCTYPE html&gt;
 &lt;html lang=&quot;en&quot;&gt;
 &lt;head&gt;
   &lt;meta charset=&quot;utf-8&quot;&gt;
   &lt;title&gt;Tasks&lt;/title&gt;
-  &lt;script type=&quot;application/json&quot; data-rules-name=&quot;api&quot; data-rules-version=&quot;1&quot;&gt;
-  {
-    &quot;title&quot;: &quot;h1&quot;,
-    &quot;items&quot;: &quot;.todo[]&quot;
-  }
-  &lt;/script&gt;
 &lt;/head&gt;
 &lt;body&gt;
   &lt;h1&gt;Today&lt;/h1&gt;
@@ -1250,43 +1248,66 @@
   &lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=sync&quot;&gt;&lt;/script&gt;
 &lt;/body&gt;
 &lt;/html&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
-<p><code>/_/api/</code> reads the tag named <code>api</code>. The <code>[]</code> collects every matching task&#39;s text. The ClayJS script enables live updates.</p>
+<p>The ClayJS script enables live updates. Plain <code>.html</code> files work the same way.</p>
     </section>
 
     <section>
-<h2 id="read-the-file">Read the file</h2>
-<p>The read returns the JSON shown above. Replace <code>PORT</code> with the port in your open tab&#39;s address. Your tab&#39;s address looks like <code>http://127.0.0.1:PORT/todo.htmlclay</code>. Put <code>/_/api/</code> between the port and the file name.</p>
+<h2 id="read-with-rules-in-the-request">Read with rules in the request</h2>
+<p>Replace <code>PORT</code> with the port in your open tab&#39;s address. Your tab&#39;s address looks like <code>http://127.0.0.1:PORT/todo.htmlclay</code>.</p>
 <p>Run this in your terminal:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">base='http://127.0.0.1:PORT'
-api=&quot;$base/_/api/todo.htmlclay&quot;
-curl &quot;$api&quot;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+curl --get &quot;$base/todo.htmlclay&quot; \
+  --data-urlencode 'data={&quot;title&quot;:&quot;h1&quot;,&quot;items&quot;:&quot;.todo[]&quot;}'</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 <p>Keep that terminal open for the following examples.</p>
-<p>To pass the rules in the request instead of using the tag, ask for just the heading:</p>
-<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">curl --get &quot;$base/todo.htmlclay&quot; \
-  --data-urlencode 'data={&quot;title&quot;:&quot;h1&quot;}'</code></pre></div><button class="copybtn" type="button">Copy</button></div>
-<p>The <code>data</code> parameter carries the rules, which curl encodes for the URL. The response contains only <code>title</code>:</p>
+<p>The <code>data</code> parameter carries the rules, which curl encodes for the URL. <code>title</code> reads the heading. The <code>[]</code> in <code>.todo[]</code> collects every matching task&#39;s text. The response is the JSON shown above.</p>
+<p>Ask only for the keys you need. With <code>data={&quot;title&quot;:&quot;h1&quot;}</code>, the response contains only <code>title</code>:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>JSON</span></div><pre tabindex="0"><code class="language-json">{&quot;title&quot;:&quot;Today&quot;}</code></pre></div><button class="copybtn" type="button">Copy</button></div>
     </section>
 
     <section>
-<h2 id="write-changes-back">Write changes back</h2>
+<h2 id="write-with-rules-in-the-request">Write with rules in the request</h2>
 <p>The next request changes the heading to &quot;Tomorrow&quot; and the first task to &quot;Buy bread&quot;.</p>
-<p>A key you leave out is left alone. An array you send becomes the whole list: a task missing from it is removed, and a new task is a copy of the first task&#39;s element, with your text inside it. Keep at least one task in the list because once the list is empty, a write cannot add tasks back. New text replaces what was inside the selected element. Each write that changes the file is saved as a version.</p>
-<p>Send JSON with the same shape as the read:</p>
-<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">curl &quot;$api&quot; \
+<p>Send the rules in the URL and the new values as the body:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">curl &quot;$base/todo.htmlclay&quot; \
+  --url-query 'data={&quot;title&quot;:&quot;h1&quot;,&quot;items&quot;:&quot;.todo[]&quot;}' \
   -H 'Content-Type: application/json' \
   --data '{&quot;title&quot;:&quot;Tomorrow&quot;,&quot;items&quot;:[&quot;Buy bread&quot;,&quot;Book tickets&quot;]}'</code></pre></div><button class="copybtn" type="button">Copy</button></div>
-<p>The <code>--data</code> option makes this a POST. HTML Clay returns the updated values:</p>
+<p>The <code>--data</code> option makes this a POST, and <code>--url-query</code> encodes the rules into the URL. HTML Clay returns the updated values:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>JSON</span></div><pre tabindex="0"><code class="language-json">{
   &quot;title&quot;: &quot;Tomorrow&quot;,
   &quot;items&quot;: [&quot;Buy bread&quot;, &quot;Book tickets&quot;]
 }</code></pre></div><button class="copybtn" type="button">Copy</button></div>
-<p>Open <code>todo.htmlclay</code> in your text editor. The heading now contains <code>Tomorrow</code>, and the first task contains <code>Buy bread</code>. The open tab updates too.</p>
-<p>Writes reach only the elements the rules tag selects, and only their content. They cannot write scripts, styles or event handlers. HTML you send is saved as plain text. A key the rules tag does not define causes a <code>400</code> response. Keep the JSON body under 1 MB.</p>
-<h3 id="write-only-if-the-file-is-unchanged">Write only if the file is unchanged</h3>
+<p>Open <code>todo.htmlclay</code> in your text editor. The heading now contains <code>Tomorrow</code>, and the first task contains <code>Buy bread</code>. The open tab updates too. The rules you sent are not saved into the file.</p>
+<p>A key you leave out is left alone. An array you send becomes the whole list: a task missing from it is removed, and a new task is a copy of the first task&#39;s element, with your text inside it. Keep at least one task in the list because once the list is empty, a write cannot add tasks back. New text replaces what was inside the selected element. Each write that changes the file is saved as a version.</p>
+<p>Writes reach only the elements the rules select, and only their content. They cannot write scripts, styles or event handlers. HTML you send is saved as plain text. A key the rules do not define causes a <code>400</code> response. Keep the JSON body under 1 MB.</p>
+    </section>
+
+    <section>
+<h2 id="save-the-rules-in-the-file">Save the rules in the file</h2>
+<p>When several programs use the same file, put the rules in it once. Add this tag inside the file&#39;s <code>&lt;head&gt;</code>:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;script type=&quot;application/json&quot; data-rules-name=&quot;api&quot; data-rules-version=&quot;1&quot;&gt;
+{
+  &quot;title&quot;: &quot;h1&quot;,
+  &quot;items&quot;: &quot;.todo[]&quot;
+}
+&lt;/script&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>Now ask for the file through <code>/_/api/</code>, with no <code>data</code> parameter. Put <code>/_/api/</code> between the port and the file name:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">api=&quot;$base/_/api/todo.htmlclay&quot;
+curl &quot;$api&quot;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p><code>/_/api/</code> reads the tag named <code>api</code> and returns the same JSON. Writes work the same way, without the rules in the URL:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">curl &quot;$api&quot; \
+  -H 'Content-Type: application/json' \
+  --data '{&quot;title&quot;:&quot;Tomorrow&quot;,&quot;items&quot;:[&quot;Buy bread&quot;,&quot;Book tickets&quot;]}'</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<h3 id="which-rules-apply">Which rules apply</h3>
+<p>Rules sent with a request replace the file&#39;s tag for that request, on either URL. They are never merged with the tag. <code>/_/api/</code> uses the tag only when the request has no <code>data</code> parameter.</p>
+<p>An empty, malformed or repeated <code>data</code> parameter returns <code>400</code>. HTML Clay never falls back to the tag.</p>
+    </section>
+
+    <section>
+<h2 id="write-only-if-the-file-is-unchanged">Write only if the file is unchanged</h2>
 <p>Change the second task only if the file still matches your read. First, read with response headers:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">curl -i &quot;$api&quot;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
-<p>The <code>Etag</code> header identifies the file you read. Its value looks like this:</p>
+<p>The <code>Etag</code> header identifies the file you read. Both URLs return it, for reads and writes. Its value looks like this:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Output</span></div><pre tabindex="0"><code>Etag: 8f02c16e7b4d9a30</code></pre></div></div>
 <p>Replace the sample value below with your exact <code>Etag</code>, then change the second task:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">curl &quot;$api&quot; \
@@ -1303,7 +1324,7 @@ curl &quot;$api&quot;</code></pre></div><button class="copybtn" type="button">Co
 
     <section>
 <h2 id="rules-reference">Rules reference</h2>
-<p>Each rule selects a value from the file. These forms work in the rules tag or <code>data</code> parameter:</p>
+<p>Each rule selects a value from the file. These forms work in the <code>data</code> parameter or the rules tag:</p>
 <table>
 <thead>
 <tr>
@@ -1333,7 +1354,7 @@ curl &quot;$api&quot;</code></pre></div><button class="copybtn" type="button">Co
 <td align="left">One object per match</td>
 </tr>
 </tbody></table>
-<p>To read text and completion together, replace the rules tag&#39;s contents:</p>
+<p>To read text and completion together, use these rules:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>JSON</span></div><pre tabindex="0"><code class="language-json">{
   &quot;title&quot;: &quot;h1&quot;,
   &quot;items&quot;: [&quot;.todo&quot;, {&quot;text&quot;: &quot;.&quot;, &quot;done&quot;: &quot;@data-done&quot;}]
@@ -1358,15 +1379,18 @@ curl &quot;$api&quot;</code></pre></div><button class="copybtn" type="button">Co
     <section>
 <h2 id="who-can-read-and-write">Who can read and write</h2>
 <p>A program on your computer can read and write through this API. If you can open the page in your browser, you can read it through the API.</p>
-<p>A trusted folder is one you have allowed HTML Clay to save files in. Writes require an opened file or a <code>.htmlclay</code> file in a trusted folder.</p>
+<p>A trusted folder is one you have allowed HTML Clay to save files in. Writes require an opened file, or a <code>.htmlclay</code> file in a trusted folder.</p>
 <p>A save token is the identifier HTML Clay gives a page to let it save its file. A browser page sends the target file&#39;s token in a <code>Save-Token</code> header. A program on your computer needs no token.</p>
 <p>Other websites cannot read the API through your browser. HTML Clay sends no CORS permission headers and refuses requests from other websites that try to write. A page HTML Clay serves on the same port can read it.</p>
+<p><a href="https://hyperclaylocal.com">Hyperclay Local</a> serves the same URLs for the files in its folder, for reads and writes.</p>
     </section>
 
     <section>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><code>400</code> for an unknown key: the key is not in the rules tag. Use a key the tag defines.</li>
+<li><code>400</code> for an unknown key: the key is not in the rules you used. Send a key the rules define.</li>
+<li><code>400</code> for the <code>data</code> parameter: it is empty, malformed or sent twice. Send it once, with valid rules.</li>
+<li><code>405</code> on a POST to the file&#39;s own address: add the <code>data</code> parameter, or post to <code>/_/api/</code>.</li>
 <li><code>403</code> on a write: open the file in HTML Clay or put it in a trusted folder. A browser request also needs the file&#39;s save token.</li>
 <li><code>412</code> on a write: read the latest file, then revise your change and retry with its new <code>Etag</code>.</li>
 <li>The file changed but the tab did not: check that the ClayJS script loads the <code>sync</code> plugin.</li>

@@ -188,8 +188,9 @@ answers with a fixed recovery page that holds no permissions at all.
 | `POST` | `/_/save/{token}` | Write updated HTML back to disk (atomic write) |
 | `GET` | `/_/meta/{token}` | Return file metadata (path, size, modification time) |
 | `GET` | `/{path}?data={…}` | Extract JSON from the file using rules you supply |
-| `GET` | `/_/api/{path}` | Extract JSON using rules the file publishes itself |
-| `POST` | `/_/api/{path}` | Write JSON into the file through those same rules, content only |
+| `GET` | `/_/api/{path}` | Extract JSON using caller `data` rules, or the embedded mapping |
+| `POST` | `/_/api/{path}` | Write JSON using caller `data` rules, or the embedded mapping |
+| `POST` | `/{path}?data={…}` | Write JSON using caller rules, content only |
 
 Content is served at the top level; actions live under the `/_/` marker, matching the [Hyperclay](https://hyperclay.com) platform convention. The save endpoint takes the document as a plain-text body. That is the one shape the format defines for it, so a JSON body is refused with `415` rather than guessed at, and anything a save needs to say beyond the document travels in a header.
 
@@ -200,7 +201,8 @@ extraction rules as the [Hyperclay](https://hyperclay.com) platform. Two ways in
 
 ```bash
 # You supply the rules
-curl 'http://localhost:PORT/notes.htmlclay?data={title:"h1",items:".todo[]"}'
+curl --get 'http://localhost:PORT/notes.htmlclay' \
+  --data-urlencode 'data={title:"h1",items:".todo[]"}'
 
 # The file supplies its own, from a tag inside it
 curl 'http://localhost:PORT/_/api/notes.htmlclay'
@@ -236,7 +238,7 @@ Deliberate, and each one measured against the platform's own engine rather than 
 | `@type` on an element | the `type` attribute | `"tag"`, the internal node type |
 | `@readOnly` | the real value | always `false` |
 | `sel@href[]` | refused, naming the array form that works | silently `[]` |
-| A repeated `?data=` parameter | the first one wins | `500` |
+| A repeated `?data=` parameter | `400` | `500` |
 | Caching | none | five minutes |
 | CORS | none | enabled |
 
@@ -246,6 +248,28 @@ and one of constructs HTML Clay refuses, each recorded with the answer the platf
 of the refusal is written down rather than guessed at.
 
 ### Writing a file as JSON
+
+Caller supplied rules work on both URL forms, for GET and POST. No embedded tag is required:
+
+```bash
+curl --get 'http://127.0.0.1:51842/soup.htmlclay' \
+  --data-urlencode 'data={title:h1}'
+
+curl --request POST \
+  'http://127.0.0.1:51842/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
+  --header 'Content-Type: application/json' \
+  --data '{"title":"Lunch"}'
+```
+
+Replace the port with your file's port. The same requests work with
+`/_/api/soup.htmlclay?data=%7Btitle%3Ah1%7D`, and with `.html` files.
+Supplied rules replace the embedded mapping for that request, even if the tag is malformed.
+They are never merged with it or saved into the file. Without `data`, `/_/api/` uses the
+embedded `api` tag as before. An empty, malformed, or repeated `data` parameter returns
+`400`; it never falls back to the tag. POST bodies remain strict JSON, with no rules envelope.
+The response uses the same rules as the request. GET and POST return the source file's
+`ETag`; send it as `If-Match` to refuse a stale write with `412`.
+
 
 POST JSON to the same `/_/api/` address and HTML Clay writes it into the file through the page's own
 `api` rules tag. The body has the same shape a GET returns:
@@ -261,7 +285,7 @@ curl -X POST 'http://localhost:PORT/_/api/notes.htmlclay' \
   region marker, or a `javascript:`, `vbscript:` or `data:` URL, when it targets anything inside
   `<script>`, `<style>`, `<template>`, `<iframe>` or the head's metadata tags, and for `@innerHTML` and
   `@outerHTML`.
-- **Strict keys.** A key the rules tag does not define, or a rule whose selector matches nothing,
+- **Strict keys.** A key the selected rules do not define, or a rule whose selector matches nothing,
   is `400 Write rejected` with the offending names. A key you leave out is left alone, and `null`
   clears a text value. Lists grow by cloning their first row, or a `cms-template` seed when empty.
 - **Only the changed elements are rewritten.** Every other byte of the file, line endings and

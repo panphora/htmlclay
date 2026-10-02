@@ -329,7 +329,8 @@ platform convention.
 | `POST` | `/_/open-request` | ask to widen reads to a named folder |
 | `POST` | `/_/workspace-request/{token}` | ask to trust the requesting file's own folder |
 | `GET` | `/_/api/{path}` | read the document as JSON, using rules the file publishes |
-| `POST` | `/_/api/{path}` | write JSON into the document through those same rules, content only |
+| `POST` | `/_/api/{path}` | write JSON using caller `data` rules or the embedded mapping, content only |
+| `POST` | `/{path}?data={...}` | write JSON using caller rules, content only |
 | `GET` | `/{path}?data={...}` | read the document as JSON, using rules you supply |
 | `GET` | `/_/wire/subscribe` | wire SSE stream |
 | `POST` | `/_/wire/send` | send one wire frame |
@@ -1006,15 +1007,16 @@ Hyper workspace.
 ## Reading a file as JSON
 
 Any `.html` or `.htmlclay` file HTML Clay will serve can also be read as JSON, using the same
-extraction rules as the Hyperclay platform. Two ways in, and each ignores the other's input.
+extraction rules as the Hyperclay platform. Two URL forms, with caller supplied rules taking precedence on both.
 
 You supply the rules, and the document's own rules tag is ignored:
 
 ```bash
-curl 'http://127.0.0.1:52341/notes.htmlclay?data={title:"h1",items:".todo[]"}'
+curl --get 'http://127.0.0.1:52341/notes.htmlclay' \
+  --data-urlencode 'data={title:"h1",items:".todo[]"}'
 ```
 
-The file supplies its own, and any `?data=` on that URL is ignored:
+Without `?data=`, the file supplies its own:
 
 ```bash
 curl 'http://127.0.0.1:52341/_/api/notes.htmlclay'
@@ -1141,7 +1143,7 @@ Each row was measured against the platform's own engine rather than assumed.
 | `@type` on an element | the `type` attribute | `"tag"`, the internal node type |
 | `@readOnly` | the real value | always `false` |
 | `sel@href[]` | refused, naming the array form that works | silently `[]` |
-| A repeated `?data=` parameter | the first one wins | `500` |
+| A repeated `?data=` parameter | `400` | `500` |
 | Caching | none | five minutes |
 | CORS | none | enabled |
 
@@ -1149,6 +1151,28 @@ The full ledger, with the measurement behind every row, is
 `internal/dataapi/testdata/selector-parity.json` in the repository.
 
 ## Writing a file as JSON
+
+Caller supplied rules work on both URL forms, for GET and POST. No embedded tag is required:
+
+```bash
+curl --get 'http://127.0.0.1:51842/soup.htmlclay' \
+  --data-urlencode 'data={title:h1}'
+
+curl --request POST \
+  'http://127.0.0.1:51842/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
+  --header 'Content-Type: application/json' \
+  --data '{"title":"Lunch"}'
+```
+
+Replace the port with your file's port. The same requests work with
+`/_/api/soup.htmlclay?data=%7Btitle%3Ah1%7D`, and with `.html` files.
+Supplied rules replace the embedded mapping for that request, even if the tag is malformed.
+They are never merged with it or saved into the file. Without `data`, `/_/api/` uses the
+embedded `api` tag as before. An empty, malformed, or repeated `data` parameter returns
+`400`; it never falls back to the tag. POST bodies remain strict JSON, with no rules envelope.
+The response uses the same rules as the request. GET and POST return the source file's
+`ETag`; send it as `If-Match` to refuse a stale write with `412`.
+
 
 `POST /_/api/{path}` with a JSON body writes it into the document through the document's own
 `api` rules tag. The body has the shape a GET returns, and the answer is the fresh extraction
@@ -1180,7 +1204,7 @@ What a write refuses, always `400` with nothing written:
   `javascript:`, `vbscript:` or `data:` URL in a URL attribute, any element inside `<script>`,
   `<style>`, `<template>`, `<iframe>`, `<object>`, `<noscript>` or the head's metadata tags, a text
   write that would delete the rules tag, and `@innerHTML` or `@outerHTML`.
-- `Write rejected`, `details` `{unknownKeys, unmatched}`: a key the rules tag does not define, or a
+- `Write rejected`, `details` `{unknownKeys, unmatched}`: a key the selected rules do not define, or a
   rule whose selector matches nothing in the document.
 - `Shape mismatch`, `Cannot grow list` (an empty list with no seed to clone), `No api rules tag`,
   and the rules-tag errors a GET returns.
