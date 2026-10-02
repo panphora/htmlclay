@@ -1,0 +1,1384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Document programs | HTML Clay</title>
+  <meta name="description" content="Connect a document to a program on your computer and show its results on the page.">
+  <link rel="canonical" href="https://htmlclay.com/programs">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Document programs">
+  <meta property="og:description" content="Connect a document to a program on your computer and show its results on the page.">
+  <meta property="og:url" content="https://htmlclay.com/programs">
+  <meta property="og:image" content="https://htmlclay.com/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Document programs">
+  <meta name="twitter:description" content="Connect a document to a program on your computer and show its results on the page.">
+
+  <style>
+    :root {
+      --bg: #faf8f3;
+      --ink: #1b1a17;
+      --muted: #6f6b62;
+      --line: #e7e3d8;
+      --card: #ffffff;
+      --accent: #c2410c;
+      --btn: #161512;
+      --btn-ink: #faf8f3;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      -webkit-text-size-adjust: 100%;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 17px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a {
+      color: var(--accent);
+      text-underline-offset: 2px;
+    }
+
+    a:hover { text-decoration: none; }
+
+    a:focus-visible,
+    button:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 3px solid rgba(194, 65, 12, .24);
+      outline-offset: 3px;
+      border-radius: 4px;
+    }
+
+    h1,
+    h2,
+    .display,
+    .closer p {
+      font-family: ui-rounded, "SF Pro Rounded", system-ui, "Segoe UI", sans-serif;
+      letter-spacing: -.01em;
+      line-height: 1.2;
+    }
+
+    .wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 0 22px;
+    }
+
+    .sitenav {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 22px 0 0;
+      font-size: 14px;
+    }
+
+    .sitenav a {
+      color: var(--muted);
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .sitenav a:hover { color: var(--ink); }
+    .sitenav .brand { color: var(--ink); font-weight: 700; }
+
+    .sitenav .navlinks {
+      display: flex;
+      flex: 1;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: flex-end;
+      min-width: 0;
+      gap: 6px 18px;
+    }
+    .sitenav .github-clay {
+      display: inline-block;
+      position: relative;
+      color: var(--ink);
+      font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .github-clay:hover { color: var(--ink); }
+    .github-clay:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+      border-radius: 3px;
+    }
+    .github-bracket { color: var(--accent); }
+    .github-mascot {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 22px;
+      margin: 0 4px;
+      color: var(--btn-ink);
+      background: var(--btn);
+      border-radius: 52% 48% 43% 57% / 46% 42% 58% 54%;
+      box-shadow: 0 2px 0 var(--line);
+      transform: rotate(-3deg);
+      transform-origin: center bottom;
+      vertical-align: middle;
+    }
+    .github-mascot svg {
+      display: block;
+      width: 15px;
+      height: 15px;
+      fill: currentColor;
+    }
+    .github-word { position: relative; margin-right: 3px; }
+    .github-word::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: -2px;
+      left: 0;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 999px;
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform .28s ease;
+    }
+    .github-clay:hover .github-mascot { animation: knead-clay .55s ease-in-out; }
+    .github-clay:hover .github-word::after,
+    .github-clay:focus-visible .github-word::after { transform: scaleX(1); }
+    .github-clay:hover .github-close { transform: translateX(1px); }
+    .github-close { display: inline-block; transition: transform .2s ease; }
+
+    @keyframes knead-clay {
+      0%, 100% {
+        border-radius: 52% 48% 43% 57% / 46% 42% 58% 54%;
+        transform: rotate(-3deg) scale(1);
+      }
+      38% {
+        border-radius: 42% 58% 55% 45% / 56% 48% 52% 44%;
+        transform: rotate(4deg) scale(1.12, .88);
+      }
+      70% {
+        border-radius: 58% 42% 48% 52% / 43% 55% 45% 57%;
+        transform: rotate(-1deg) scale(.94, 1.08);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .github-clay:hover .github-mascot { animation: none; }
+      .github-word::after, .github-close { transition: none; }
+    }
+    .navlinks a { white-space: nowrap; }
+    .sitenav a[aria-current="page"] { color: var(--accent); }
+
+    .hero {
+      text-align: center;
+      padding: 68px 0 22px;
+    }
+
+    .eyebrow {
+      margin: 0 0 18px;
+      color: var(--accent);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 30px;
+      font-weight: 700;
+    }
+
+    .hero .eyebrow { margin-bottom: 12px; }
+
+    .hero h1 {
+      max-width: 580px;
+      margin: 0 auto 18px;
+      font-size: 46px;
+    }
+
+    .hero .lede {
+      max-width: 32em;
+      margin: 0 auto;
+      color: var(--ink);
+      font-size: 19px;
+    }
+
+    .filechip {
+      display: inline-block;
+      padding: 1px 7px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f1ede2;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .history-card {
+      position: relative;
+      margin: 30px 0 10px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: #f1ede2;
+      box-shadow: 0 24px 54px -42px rgba(27, 26, 23, .75);
+      text-align: left;
+    }
+
+    .history-file {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 12px 11px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .history-file code,
+    code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .history-file code { color: var(--ink); }
+
+    .version-list {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--card);
+    }
+
+    .version-row {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 11px;
+      padding: 11px 13px;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .version-row:first-child { border-top: 0; }
+
+    .version-dot {
+      width: 8px;
+      height: 8px;
+      margin-left: 3px;
+      border: 2px solid var(--accent);
+      border-radius: 50%;
+      background: var(--card);
+    }
+
+    .version-row:first-child .version-dot { background: var(--accent); }
+
+    .version-row b { font-size: 14px; }
+
+    .version-row span:last-child {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .retention {
+      margin: 0;
+      padding: 11px 13px 4px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .naming {
+      margin-top: 26px;
+      padding: 20px 22px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+      text-align: left;
+    }
+
+    .naming p { margin: 0; color: var(--muted); }
+    .naming p + p { margin-top: 10px; }
+    .naming b { color: var(--ink); }
+
+    section { padding: 42px 0; }
+
+    .section-lede {
+      margin: -4px 0 20px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .history-card + .section-lede { margin-top: 14px; }
+
+    .points {
+      display: grid;
+      gap: 16px;
+    }
+
+    .point {
+      padding: 19px 20px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .point h3 {
+      margin: 0 0 5px;
+      font-size: 18px;
+    }
+
+    .point p { margin: 0; color: var(--muted); }
+    .point p + p { margin-top: 9px; }
+    .point b { color: var(--ink); }
+
+    .feature-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .feature-pair .point {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+
+    .point-tag {
+      align-self: flex-start;
+      margin-bottom: 13px;
+      padding: 3px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .mini-list {
+      display: grid;
+      gap: 0;
+      margin-top: 17px;
+    }
+
+    .mini-list div {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .mini-list b { color: var(--ink); }
+
+    .safe {
+      position: relative;
+      overflow: hidden;
+      padding: 22px 22px 22px 27px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .safe::before {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 5px;
+      background: var(--accent);
+      content: "";
+    }
+
+    .safe p { margin: 0; color: var(--muted); }
+    .safe p + p { margin-top: 13px; }
+    .safe b { color: var(--ink); }
+
+    .quiet-list {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .quiet-item {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 12px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .quiet-item:first-child { border-top: 0; }
+
+    .quiet-check {
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .quiet-item p { margin: 0; color: var(--muted); font-size: 15px; }
+    .quiet-item b { color: var(--ink); }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .platform {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .platform h3 {
+      margin: 0;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      background: #f1ede2;
+      font-size: 17px;
+    }
+
+    .platform dl { margin: 0; }
+
+    .platform dt {
+      padding: 10px 15px 0;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .platform dt:first-child { border-top: 0; }
+
+    .platform dd {
+      margin: 0;
+      padding: 1px 15px 10px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .matrix-note {
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .developer-zone {
+      position: relative;
+      margin-top: 34px;
+      padding-top: 68px;
+      border-top: 1px solid var(--line);
+    }
+
+    .developer-zone::before {
+      position: absolute;
+      top: -17px;
+      left: 50%;
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      transform: translateX(-50%);
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--bg);
+      color: var(--accent);
+      content: "</>";
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .developer-intro { text-align: center; }
+
+    .developer-intro .dev-label {
+      display: inline-block;
+      margin-bottom: 15px;
+      padding: 6px 16px;
+      border: 1px solid rgba(194, 65, 12, .28);
+      border-radius: 999px;
+      background: rgba(194, 65, 12, .09);
+      color: var(--accent);
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .developer-intro .display {
+      margin: 0 auto 13px;
+      font-size: 34px;
+      font-weight: 700;
+    }
+
+    .developer-intro p:last-child {
+      max-width: 34em;
+      margin: 0 auto;
+      color: var(--muted);
+    }
+
+    .command {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      overflow-x: auto;
+      margin: 6px 0 19px;
+      padding: 15px 17px;
+      border-radius: 11px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font-size: 14px;
+      line-height: 1.45;
+      white-space: nowrap;
+    }
+
+    .command::before {
+      color: #e69a77;
+      content: "$";
+      font-weight: 700;
+    }
+
+    .wire-flow {
+      display: grid;
+      grid-template-columns: 1fr 34px 1fr 34px 1fr;
+      align-items: stretch;
+      margin: 21px 0 0;
+    }
+
+    .wire-step {
+      min-width: 0;
+      padding: 16px 13px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--card);
+      text-align: center;
+    }
+
+    .wire-step .num {
+      display: grid;
+      place-items: center;
+      width: 25px;
+      height: 25px;
+      margin: 0 auto 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .wire-step b {
+      display: block;
+      font-size: 14px;
+    }
+
+    .wire-step small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .wire-arrow {
+      position: relative;
+      align-self: center;
+      height: 1px;
+      background: var(--line);
+    }
+
+    .wire-arrow::after {
+      position: absolute;
+      top: -4px;
+      right: 0;
+      width: 7px;
+      height: 7px;
+      transform: rotate(45deg);
+      border-top: 1px solid var(--muted);
+      border-right: 1px solid var(--muted);
+      content: "";
+    }
+
+    .fine-print {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .code-window {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+      box-shadow: 0 20px 46px -34px rgba(0, 0, 0, .35);
+    }
+
+    .code-window + .code-window { margin-top: 12px; }
+
+    .code-bar {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 13px;
+      border-bottom: 1px solid var(--line);
+      background: #f1ede2;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .code-dots { display: flex; gap: 5px; }
+
+    .code-dots i {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #d8d2c4;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 0;
+      padding: 18px;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .prompt { color: var(--accent); }
+    .output { color: var(--muted); }
+    .termout { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+    code[class*="language-"] .token.comment,
+    code[class*="language-"] .token.prolog,
+    code[class*="language-"] .token.doctype,
+    code[class*="language-"] .token.cdata { color: #7a7365; font-style: italic; }
+
+    code[class*="language-"] .token.punctuation { color: #7a7365; }
+
+    code[class*="language-"] .token.tag,
+    code[class*="language-"] .token.keyword,
+    code[class*="language-"] .token.selector,
+    code[class*="language-"] .token.important { color: #9d0006; }
+
+    code[class*="language-"] .token.attr-name,
+    code[class*="language-"] .token.function,
+    code[class*="language-"] .token.class-name,
+    code[class*="language-"] .token.property { color: #a3670f; }
+
+    code[class*="language-"] .token.attr-value,
+    code[class*="language-"] .token.string,
+    code[class*="language-"] .token.char,
+    code[class*="language-"] .token.regex { color: #6f6b0d; }
+
+    code[class*="language-"] .token.attr-value > .token.punctuation { color: #6f6b0d; }
+    code[class*="language-"] .token.attr-value > .token.attr-equals { color: #7a7365; }
+
+    code[class*="language-"] .token.variable,
+    code[class*="language-"] .token.constant,
+    code[class*="language-"] .token.environment,
+    code[class*="language-"] .token.parameter { color: #076678; }
+
+    code[class*="language-"] .token.number,
+    code[class*="language-"] .token.boolean,
+    code[class*="language-"] .token.entity,
+    code[class*="language-"] .token.symbol { color: #8f3f71; }
+
+    code[class*="language-"] .token.builtin { color: #3f7554; }
+
+    code[class*="language-"] .token.operator,
+    code[class*="language-"] .token.url { color: #af3a03; }
+
+    code[class*="language-"] .token.shebang { color: #7a7365; font-style: italic; }
+
+    code[class*="language-"] .token.namespace { opacity: .7; }
+
+    .api-note {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 13px;
+    }
+
+    .api-note p {
+      margin: 0;
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .api-note b { color: var(--ink); }
+
+    .closer {
+      padding: 52px 0 12px;
+      text-align: center;
+    }
+
+    .closer p {
+      margin: 0;
+      font-size: 25px;
+      font-weight: 650;
+    }
+
+    .closer .closer-sub {
+      margin-top: 9px;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 400;
+    }
+
+    .btn {
+      display: inline-block;
+      margin-top: 22px;
+      padding: 13px 26px;
+      border-radius: 11px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font-size: 17px;
+      font-weight: 650;
+      text-decoration: none;
+      transition: background .15s ease, transform .06s ease;
+    }
+
+    .btn:hover { background: #000; }
+    .btn:active { transform: translateY(1px); }
+
+    footer {
+      padding: 40px 0 64px;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    footer p { margin: 0 0 8px; }
+    footer[data-hyper-footer] { padding: 0 0 64px; }
+
+    @media (max-width: 620px) {
+      .hero { padding-top: 50px; }
+      .hero h1 { font-size: 38px; }
+      .feature-pair { grid-template-columns: 1fr; }
+      .platform-grid { grid-template-columns: 1fr; }
+
+      .platform h3 {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+      }
+
+      .platform h3::after {
+        color: var(--muted);
+        font-family: system-ui, sans-serif;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+
+      .platform:nth-child(1) h3::after { content: "Universal"; }
+      .platform:nth-child(2) h3::after { content: "64 bit"; }
+      .platform:nth-child(3) h3::after { content: "x86 + ARM"; }
+
+      .platform dl { display: grid; grid-template-columns: 104px 1fr; }
+      .platform dt { padding: 11px 0 11px 15px; }
+      .platform dd { padding: 11px 15px; border-top: 1px solid var(--line); }
+      .platform dt:first-child + dd { border-top: 0; }
+    }
+
+    @media (max-width: 480px) {
+      .wrap { padding: 0 18px; }
+      .hero h1 { font-size: 34px; }
+      .hero .lede { font-size: 18px; }
+      h2 { font-size: 26px; }
+      .history-file { align-items: flex-start; flex-direction: column; gap: 2px; }
+      .version-row { grid-template-columns: 16px 1fr; }
+      .version-row span:last-child { grid-column: 2; }
+      .developer-intro .display { font-size: 27px; }
+
+      .wire-flow {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+
+      .wire-arrow {
+        width: 1px;
+        height: 26px;
+        margin: 0 auto;
+      }
+
+      .wire-arrow::after {
+        top: auto;
+        right: -3px;
+        bottom: 0;
+        transform: rotate(135deg);
+      }
+
+      .api-note { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .btn { transition: none; }
+    }
+    /* --- steps and guide pages --- */
+    .step { padding-top: 30px; }
+    .step h2 {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .stepnum {
+      display: grid;
+      place-items: center;
+      flex: none;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .copywrap { position: relative; }
+    .copybtn {
+      position: absolute;
+      top: 4.5px;
+      right: 10px;
+      padding: 5px 11px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--bg);
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .copybtn:hover { color: var(--ink); border-color: var(--muted); }
+    .copybtn[data-done="1"] { color: var(--accent); border-color: var(--accent); }
+    .callout {
+      margin: 19px 0;
+      padding: 15px 17px;
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 11px 11px 0;
+      background: var(--card);
+      font-size: 15px;
+    }
+    .callout p { margin: 0; }
+    .callout p + p { margin-top: 9px; }
+    .aside {
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .trouble { margin: 16px 0 0; padding: 0; list-style: none; }
+    .trouble li {
+      margin: 0 0 11px;
+      padding-left: 19px;
+      border-left: 2px solid var(--line);
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .trouble b { color: var(--ink); }
+    .seq { margin: 19px 0; padding: 0; list-style: none; counter-reset: seq; }
+    .seq li {
+      position: relative;
+      margin: 0 0 13px;
+      padding-left: 30px;
+      counter-increment: seq;
+    }
+    .seq li::before {
+      content: counter(seq);
+      position: absolute;
+      left: 0;
+      top: 1px;
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--card);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .attrs { width: 100%; margin: 19px 0; border-collapse: collapse; font-size: 15px; }
+    .attrs th, .attrs td {
+      padding: 10px 12px 10px 0;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    .attrs th { color: var(--muted); font-weight: 600; font-size: 13px; }
+    .attrs code { white-space: nowrap; }
+    .flowpic { margin: 24px 0; }
+    .flowpic svg { display: block; width: 100%; height: auto; }
+    .flowcap { margin: 10px 0 0; color: var(--muted); font-size: 14px; text-align: center; }
+    @media (max-width: 480px) {
+      .attrs code { white-space: normal; }
+    }
+
+    /* --- worked demos --- */
+    .demo { margin: 34px 0 4px; }
+    .demo-inline { margin: 26px 0 28px; }
+
+    .demo-doc .code-bar { justify-content: flex-start; }
+
+    .demo-page { padding: 20px 20px 16px; }
+
+    .demo-title {
+      margin: 0 0 12px;
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -.01em;
+    }
+
+    .demo-body { overflow: hidden; }
+
+    .demo-body ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .demo-body li {
+      position: relative;
+      padding: 5px 0 5px 25px;
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .demo-body li::before {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: 12px;
+      width: 11px;
+      height: 11px;
+      border: 1.5px solid #d3ccbc;
+      border-radius: 3px;
+    }
+
+    .demo-groups {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 18px;
+      align-items: start;
+    }
+
+    .demo-group h4 {
+      margin: 0 0 4px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .demo[data-kind="recipe"] .demo-title { margin-bottom: 4px; }
+    .demo[data-kind="recipe"] .demo-body li { padding-left: 18px; }
+
+    .demo[data-kind="recipe"] .demo-body li::before {
+      left: 4px;
+      top: 15px;
+      width: 5px;
+      height: 5px;
+      border: 0;
+      border-radius: 50%;
+      background: #d3ccbc;
+    }
+
+    .demo-serves {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 14.5px;
+    }
+
+    .demo-bake {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 14.5px;
+    }
+
+    .demo-qty {
+      font-weight: 650;
+      border-radius: 4px;
+      transition: background .35s ease, box-shadow .35s ease;
+    }
+
+    .demo-qty.is-lit {
+      background: rgba(194, 65, 12, .14);
+      box-shadow: 0 0 0 3px rgba(194, 65, 12, .14);
+    }
+
+    .demo-ask {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 15px;
+      border-top: 1px solid var(--line);
+    }
+
+    .demo-input {
+      flex: 1;
+      min-width: 0;
+      padding: 10px 13px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--bg);
+      color: var(--ink);
+      font: inherit;
+      font-size: 16px;
+      transition: border-color .2s ease;
+    }
+
+    .demo-input::placeholder { color: #a49d90; }
+    .demo-input.demo-typing { border-color: #d9b39a; }
+
+    .demo-send {
+      flex: none;
+      min-width: 92px;
+      padding: 10px 19px;
+      border: 0;
+      border-radius: 9px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font: inherit;
+      font-size: 15px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: background .15s ease, transform .06s ease, opacity .2s ease;
+    }
+
+    .demo-send:hover { background: #2b2823; }
+    .demo-send:active { transform: translateY(1px); }
+    .demo-send[disabled] { opacity: .45; cursor: default; }
+
+    .demo-status {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 20px;
+      margin: 11px 2px 0;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .demo-dot {
+      flex: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #d3ccbc;
+      transition: background .2s ease;
+    }
+
+    .demo-status[data-state="sent"] .demo-dot,
+    .demo-status[data-state="thinking"] .demo-dot { background: var(--accent); }
+    .demo-status[data-state="thinking"] .demo-dot { animation: demo-pulse 1.15s ease-in-out infinite; }
+    .demo-status[data-state="done"] .demo-dot { background: #7c9a6e; }
+    .demo-status[data-state="done"] .demo-say { color: var(--ink); }
+
+    .demo-saved {
+      margin-left: auto;
+      color: #9c968a;
+      animation: demo-rise .4s ease both;
+    }
+
+
+    .demo-get {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-left: auto;
+      padding: 3px 9px 3px 8px;
+      border: 1px solid #e2dccd;
+      border-radius: 7px;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 12px;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }
+
+    .demo-get svg {
+      width: 13px;
+      height: 13px;
+      opacity: .75;
+    }
+
+    .demo-get:hover {
+      border-color: #cfc6b1;
+      background: #f8f5ee;
+      color: var(--ink);
+    }
+
+    .demo-get:hover svg { opacity: 1; }
+
+    .demo-term { margin-top: 12px; }
+    .demo-term pre { padding: 13px 15px; font-size: 12.5px; }
+
+    .demo-cap {
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 14.5px;
+      line-height: 1.55;
+      text-align: center;
+    }
+
+    .demo-sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .demo-fade { animation: demo-rise .45s ease both; }
+
+    @keyframes demo-rise {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes demo-pulse {
+      50% { opacity: .3; }
+    }
+
+    @media (max-width: 519px) {
+      .demo-groups { grid-template-columns: 1fr; gap: 14px; }
+      .demo-ask { flex-wrap: wrap; }
+      .demo-input { flex: 1 1 100%; }
+      .demo-send { width: 100%; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .demo-fade,
+      .demo-saved,
+      .demo-status .demo-dot { animation: none !important; }
+      .demo-body li,
+      .demo-body,
+      .demo-qty { transition: none !important; }
+    }
+</style>
+  <script src="prism.min.js"></script>
+  <style>.doc-figure{margin:28px 0}.doc-figure img{display:block;width:100%;height:auto;border-radius:12px}.doc-figure figcaption{margin-top:10px;font-size:.92em;color:var(--muted, #6b5f4f)}</style>
+</head>
+<body>
+  <main class="wrap">
+    <nav class="sitenav">
+      <a class="brand" href="/">HTML Clay</a>
+      <div class="navlinks">
+        <a class="github-clay" href="https://github.com/panphora/htmlclay" target="_blank" rel="noopener" aria-label="View HTML Clay source on GitHub"><span class="github-bracket" aria-hidden="true">&lt;</span><span class="github-mascot" aria-hidden="true"><svg viewBox="0 0 16 16" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></span><span class="github-word" aria-hidden="true">source</span><span class="github-bracket github-close" aria-hidden="true">/&gt;</span></a>
+        <a href="/">Home</a>
+        <a href="/get-started">Get started</a>
+        <a href="/features">Features</a>
+        <a href="/docs" aria-current="page">Docs</a>
+      </div>
+    </nav>
+
+    <div class="hero">
+      <p class="eyebrow">Docs</p>
+      <h1>Document programs</h1>
+      <p class="lede">Connect a document to a program on your computer and show its results on the page.</p>
+    </div>
+
+    <section>
+<p>Type <code>milk</code> into a search box and press Search. Ripgrep finds the matching line in <code>todo.htmlclay</code>. The page shows the result below your list.</p>
+<p>The page sends a request through HTML Clay. HTML Clay starts your program and passes the request on standard input. The program searches the file and returns JSON. Your page reads the JSON and displays it. HTML Clay calls this connection the wire.</p>
+<p>There are two ways to attach a program. Use the terminal while trying a script. Let the document name its program when you want it to run without an open terminal. HTML Clay asks you to allow that program when you double click the file.</p>
+    </section>
+
+    <section>
+<h2 id="before-you-start">Before you start</h2>
+<p>You need HTML Clay installed and a file that opens through it. <a href="/get-started">Get started</a> covers that setup. The shell example below is for macOS and Linux. Install ripgrep and jq first. Check them in your login shell, whose PATH HTML Clay uses for document programs:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">$SHELL -lc 'rg --version &amp;&amp; jq --version'</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>The command prints a version line for each tool.</p>
+<p>On Linux, document permission prompts also need <code>zenity</code> or <code>kdialog</code>. On Windows, a document program must be a <code>.exe</code>, <code>.bat</code> or <code>.cmd</code> file.</p>
+<p>Only connect a program you trust with your account. It runs as you and can read or change any file you can access.</p>
+    </section>
+
+    <section>
+<h2 id="attach-from-the-terminal">Attach from the terminal</h2>
+<p>This example searches the saved HTML of a small todo list. Searching does not change the file.</p>
+<p>Save this page as <code>todo.htmlclay</code> in a folder inside your home folder, such as <code>~/Documents/todo</code>:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+  &lt;meta charset=&quot;utf-8&quot;&gt;
+  &lt;title&gt;Todo&lt;/title&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1&gt;Todo&lt;/h1&gt;
+  &lt;ul&gt;
+    &lt;li class=&quot;todo&quot; data-done=&quot;false&quot;&gt;Buy milk&lt;/li&gt;
+    &lt;li class=&quot;todo&quot; data-done=&quot;false&quot;&gt;Book dentist&lt;/li&gt;
+  &lt;/ul&gt;
+  &lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=wire&quot;&gt;&lt;/script&gt;
+  &lt;script&gt;
+    clay.ready.then(() =&gt; {
+      const panel = document.createElement(&quot;section&quot;);
+      panel.setAttribute(&quot;clay&quot;, &quot;no-save no-snapshot no-watch&quot;);
+      panel.innerHTML = `
+        &lt;form&gt;
+          &lt;label&gt;Search the saved HTML &lt;input name=&quot;query&quot; required&gt;&lt;/label&gt;
+          &lt;button&gt;Search&lt;/button&gt;
+        &lt;/form&gt;
+        &lt;pre aria-live=&quot;polite&quot;&gt;&lt;/pre&gt;
+      `;
+      document.body.append(panel);
+      const form = panel.querySelector(&quot;form&quot;);
+      const output = panel.querySelector(&quot;pre&quot;);
+      const button = panel.querySelector(&quot;button&quot;);
+
+      form.addEventListener(&quot;submit&quot;, async (event) =&gt; {
+        event.preventDefault();
+        const query = form.elements.query.value.trim();
+        if (!query || button.disabled) return;
+        button.disabled = true;
+        output.textContent = &quot;Searching&quot;;
+        const request = clay.wire.send({ query }, { document: &quot;none&quot; });
+        const outcome = await request.done;
+        output.textContent = outcome.state === &quot;done&quot;
+          ? outcome.result.matches.join(&quot;\n&quot;) || &quot;No matches&quot;
+          : outcome.error || outcome.state;
+        button.disabled = false;
+      });
+    });
+  &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>The <code>wire</code> plugin supplies <code>clay.wire.send</code>. The script builds the search controls each time the page opens. Their <code>clay</code> attribute keeps the controls and results out of saves. <code>document: &quot;none&quot;</code> skips saving the page before searching, so the search reads the saved file without any unsaved page edits.</p>
+<p>Save these five lines as <code>search.sh</code> beside the document:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">#!/bin/sh
+query=$(jq -er '.payload.query | select(type == &quot;string&quot; and length &gt; 0)') || exit 1
+matches=$(rg --no-heading --no-filename --color never -F -- &quot;$query&quot; &quot;$HTMLCLAY_WIRE_FILE&quot;)
+code=$?; [ &quot;$code&quot; -le 1 ] || exit &quot;$code&quot;
+jq -cn --arg matches &quot;$matches&quot; '{type:&quot;result&quot;,value:{matches:($matches | split(&quot;\n&quot;) | map(select(length &gt; 0)))}}'</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>HTML Clay supplies the document&#39;s path in <code>HTMLCLAY_WIRE_FILE</code>. The program reads <code>payload.query</code> from the request. Ripgrep searches for that literal text and returns matching source lines. Exit code 1 means no matches, so the script returns an empty list. Other ripgrep failures stop the program.</p>
+<p>Double click <code>todo.htmlclay</code> to open it. In your terminal, change to the folder containing both files. On macOS, first make the app&#39;s command available in that terminal:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">alias htmlclay=&quot;/Applications/HTMLClay.app/Contents/MacOS/htmlclay&quot;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>Skip the alias on Linux. Make the script executable, then attach it:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">chmod +x search.sh
+htmlclay wire serve todo.htmlclay --protocol=jsonl -- ./search.sh</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>Leave that terminal running. HTML Clay starts <code>search.sh</code> once per request. <code>--protocol=jsonl</code> tells HTML Clay to read one JSON object per output line. Without that flag, output lines are plain progress text and no JSON result reaches the page.</p>
+<p>Type <code>milk</code> and press Search. With the file exactly as shown, the page displays:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Output</span></div><pre tabindex="0"><code>    &lt;li class=&quot;todo&quot; data-done=&quot;false&quot;&gt;Buy milk&lt;/li&gt;</code></pre></div></div>
+<p>You are seeing a line from the saved file, including its HTML tags. Search for <code>carrots</code> and the page displays <code>No matches</code>.</p>
+    </section>
+
+    <section>
+<h2 id="let-the-document-name-its-program">Let the document name its program</h2>
+<p>The same search can run without an open terminal. The document names a program, and you choose which executable that name refers to.</p>
+<p>Stop <code>wire serve</code> with Ctrl+C. Add this program name near the start of the document&#39;s <code>&lt;head&gt;</code>:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;meta name=&quot;htmlclay-helper&quot; content=&quot;todo-search&quot;&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>Replace the page&#39;s <code>clay.wire.send</code> line with this named request:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>JavaScript</span></div><pre tabindex="0"><code class="language-javascript">const request = clay.wire.send({ query }, { helper: &quot;todo-search&quot; });</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>In code and error text, HTML Clay calls a document program a helper.</p>
+<p>Save the file and open it directly again by double clicking it. HTML Clay asks &quot;Allow document programs?&quot; before the page&#39;s script runs. On macOS and on Linux with zenity, the prompt offers two allow buttons:</p>
+<ol>
+<li>&quot;Allow for This Document&quot; remembers permission for this document, including after a restart.</li>
+<li>&quot;Allow for Any Document&quot; lets every document declaring that name use the selected program.</li>
+</ol>
+<p>On macOS, &quot;Deny&quot; is the default button. Return and Escape also refuse access. A refusal lasts until you close the page and is never stored. Double clicking the file again asks again.</p>
+<p>Choose &quot;Allow for This Document&quot;. With kdialog, choose &quot;Yes&quot;. If <code>todo-search</code> has no registered program, the picker opens with &quot;Choose the program for todo-search&quot;. Select <code>search.sh</code>. The page then opens.</p>
+<p>Search for <code>milk</code> again. HTML Clay starts the selected program and returns the same result.</p>
+<p>The tray&#39;s Programs menu lists your registered programs. Use it to add a program or manage an existing program&#39;s access.</p>
+    </section>
+
+    <section>
+<h2 id="read-the-result-on-the-page">Read the result on the page</h2>
+<p>The result becomes available when <code>request.done</code> resolves. For the search above, the program prints this record:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>JSON</span></div><pre tabindex="0"><code class="language-json">{&quot;type&quot;:&quot;result&quot;,&quot;value&quot;:{&quot;matches&quot;:[&quot;    &lt;li class=\&quot;todo\&quot; data-done=\&quot;false\&quot;&gt;Buy milk&lt;/li&gt;&quot;]}}</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>The record&#39;s <code>value</code> becomes <code>outcome.result</code>. Check <code>outcome.state</code> before reading it. The <code>done</code> promise resolves for errors and cancellations too; it never rejects.</p>
+<p>Named requests use <code>document: &quot;none&quot;</code> by default, so both attachment methods search the saved file.</p>
+<p>A program can also edit the document itself. Use <code>document: &quot;edit&quot;</code> for that request and load the <code>sync</code> plugin alongside <code>wire</code>. ClayJS saves the page before sending the request and holds autosave until the request ends. <a href="/agent-editing">Agent editing</a> has a complete example. <a href="/live-updates">Live updates</a> explains how file changes reach the open page.</p>
+    </section>
+
+    <section>
+<h2 id="access-and-limits">Access and limits</h2>
+<p><code>clay.wire.send</code> sends to the page&#39;s own file. A trusted folder lets HTML Clay open every <code>.htmlclay</code> file in it for editing. Any other file in that folder can reach this file&#39;s approved program.</p>
+<p>Following a link to a file in a trusted folder does not set up its programs. Double click the file to set up its programs.</p>
+<p><code>document: &quot;none&quot;</code> only skips saving the page before the request. It does not stop a program from writing files.</p>
+<p>Each file can have one attached program at a time. Stop a terminal attachment before switching to document programs.</p>
+<p>Programs started with <code>--protocol=jsonl</code> have five minutes to finish, regardless of progress. A result record can contain at most 512 KiB, including its JSON wrapper. Keep answers small or divide them into separate requests.</p>
+    </section>
+
+    <section>
+<h2 id="if-the-search-does-not-run">If the search does not run</h2>
+<ol>
+<li>&quot;open it first&quot; or &quot;has never served this file&#39;s folder&quot; in the terminal: open <code>todo.htmlclay</code> through HTML Clay, then attach again.</li>
+<li>&quot;no agent is attached to this file&quot; on the page: check that <code>wire serve</code> is still running. For a document program, check for a missing or misspelled <code>&lt;meta name=&quot;htmlclay-helper&quot;&gt;</code> tag.</li>
+<li>&quot;was not granted that helper&quot; on the page: check the program declaration. Double click the file to be asked again.</li>
+<li>The page stays on &quot;Searching&quot; and the Search button stays disabled: stop <code>wire serve</code>, add <code>--protocol=jsonl</code>, restart the command and reload the page. Reserve the program&#39;s standard output for JSON records. Send diagnostic text to standard error.</li>
+</ol>
+<p>For request states, cancellation and the complete output format, read the <a href="https://github.com/panphora/htmlclay/blob/main/docs/wire.md">wire protocol reference</a>. To read or change selected document content from a local program without a page request, use the <a href="/json-api">JSON API</a>.</p>
+    </section>
+
+    <footer>
+      <p>Building your own <span class="filechip">.htmlclay</span> files? Check out <a href="https://hyperclay.com">Hyperclay</a></p>
+      <p><a href="https://try.htmlclay.com/">Software you can pass around</a></p>
+      <p>Source code: <a href="https://github.com/panphora/htmlclay">github.com/panphora/htmlclay</a></p>
+      <p>Docs: <a href="/docs">all HTML Clay docs</a></p>
+      <p>For agents: <a href="/llms.txt">llms.txt</a></p>
+    </footer>
+  </main>
+  <script>
+    document.querySelectorAll('.copybtn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var code = btn.parentNode.querySelector('code').textContent;
+        function said(word) {
+          btn.textContent = word;
+          btn.dataset.done = '1';
+          setTimeout(function () { btn.textContent = 'Copy'; delete btn.dataset.done; }, 1600);
+        }
+        // execCommand is the fallback for a browser that refuses the clipboard
+        // API, so the button never looks broken by doing nothing at all.
+        function theOldWay() {
+          var box = document.createElement('textarea');
+          box.value = code;
+          box.style.position = 'fixed';
+          box.style.opacity = '0';
+          document.body.appendChild(box);
+          box.select();
+          var ok = false;
+          try { ok = document.execCommand('copy'); } catch (e) {}
+          document.body.removeChild(box);
+          said(ok ? 'Copied' : 'Press Cmd+C');
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(code).then(function () { said('Copied'); }, theOldWay);
+        } else {
+          theOldWay();
+        }
+      });
+    });
+  </script>
+</body>
+</html>

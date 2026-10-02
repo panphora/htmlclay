@@ -1,0 +1,1331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI editing | HTML Clay</title>
+  <meta name="description" content="Select a phrase, ask your agent to rewrite it, and keep the change in your HTML file.">
+  <link rel="canonical" href="https://htmlclay.com/ai-edit">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="AI editing">
+  <meta property="og:description" content="Select a phrase, ask your agent to rewrite it, and keep the change in your HTML file.">
+  <meta property="og:url" content="https://htmlclay.com/ai-edit">
+  <meta property="og:image" content="https://htmlclay.com/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="AI editing">
+  <meta name="twitter:description" content="Select a phrase, ask your agent to rewrite it, and keep the change in your HTML file.">
+
+  <style>
+    :root {
+      --bg: #faf8f3;
+      --ink: #1b1a17;
+      --muted: #6f6b62;
+      --line: #e7e3d8;
+      --card: #ffffff;
+      --accent: #c2410c;
+      --btn: #161512;
+      --btn-ink: #faf8f3;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      -webkit-text-size-adjust: 100%;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 17px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a {
+      color: var(--accent);
+      text-underline-offset: 2px;
+    }
+
+    a:hover { text-decoration: none; }
+
+    a:focus-visible,
+    button:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 3px solid rgba(194, 65, 12, .24);
+      outline-offset: 3px;
+      border-radius: 4px;
+    }
+
+    h1,
+    h2,
+    .display,
+    .closer p {
+      font-family: ui-rounded, "SF Pro Rounded", system-ui, "Segoe UI", sans-serif;
+      letter-spacing: -.01em;
+      line-height: 1.2;
+    }
+
+    .wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 0 22px;
+    }
+
+    .sitenav {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 22px 0 0;
+      font-size: 14px;
+    }
+
+    .sitenav a {
+      color: var(--muted);
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .sitenav a:hover { color: var(--ink); }
+    .sitenav .brand { color: var(--ink); font-weight: 700; }
+
+    .sitenav .navlinks {
+      display: flex;
+      flex: 1;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: flex-end;
+      min-width: 0;
+      gap: 6px 18px;
+    }
+    .sitenav .github-clay {
+      display: inline-block;
+      position: relative;
+      color: var(--ink);
+      font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .github-clay:hover { color: var(--ink); }
+    .github-clay:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+      border-radius: 3px;
+    }
+    .github-bracket { color: var(--accent); }
+    .github-mascot {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 22px;
+      margin: 0 4px;
+      color: var(--btn-ink);
+      background: var(--btn);
+      border-radius: 52% 48% 43% 57% / 46% 42% 58% 54%;
+      box-shadow: 0 2px 0 var(--line);
+      transform: rotate(-3deg);
+      transform-origin: center bottom;
+      vertical-align: middle;
+    }
+    .github-mascot svg {
+      display: block;
+      width: 15px;
+      height: 15px;
+      fill: currentColor;
+    }
+    .github-word { position: relative; margin-right: 3px; }
+    .github-word::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: -2px;
+      left: 0;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 999px;
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform .28s ease;
+    }
+    .github-clay:hover .github-mascot { animation: knead-clay .55s ease-in-out; }
+    .github-clay:hover .github-word::after,
+    .github-clay:focus-visible .github-word::after { transform: scaleX(1); }
+    .github-clay:hover .github-close { transform: translateX(1px); }
+    .github-close { display: inline-block; transition: transform .2s ease; }
+
+    @keyframes knead-clay {
+      0%, 100% {
+        border-radius: 52% 48% 43% 57% / 46% 42% 58% 54%;
+        transform: rotate(-3deg) scale(1);
+      }
+      38% {
+        border-radius: 42% 58% 55% 45% / 56% 48% 52% 44%;
+        transform: rotate(4deg) scale(1.12, .88);
+      }
+      70% {
+        border-radius: 58% 42% 48% 52% / 43% 55% 45% 57%;
+        transform: rotate(-1deg) scale(.94, 1.08);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .github-clay:hover .github-mascot { animation: none; }
+      .github-word::after, .github-close { transition: none; }
+    }
+    .navlinks a { white-space: nowrap; }
+    .sitenav a[aria-current="page"] { color: var(--accent); }
+
+    .hero {
+      text-align: center;
+      padding: 68px 0 22px;
+    }
+
+    .eyebrow {
+      margin: 0 0 18px;
+      color: var(--accent);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 30px;
+      font-weight: 700;
+    }
+
+    .hero .eyebrow { margin-bottom: 12px; }
+
+    .hero h1 {
+      max-width: 580px;
+      margin: 0 auto 18px;
+      font-size: 46px;
+    }
+
+    .hero .lede {
+      max-width: 32em;
+      margin: 0 auto;
+      color: var(--ink);
+      font-size: 19px;
+    }
+
+    .filechip {
+      display: inline-block;
+      padding: 1px 7px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f1ede2;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .history-card {
+      position: relative;
+      margin: 30px 0 10px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: #f1ede2;
+      box-shadow: 0 24px 54px -42px rgba(27, 26, 23, .75);
+      text-align: left;
+    }
+
+    .history-file {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 12px 11px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .history-file code,
+    code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .history-file code { color: var(--ink); }
+
+    .version-list {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--card);
+    }
+
+    .version-row {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 11px;
+      padding: 11px 13px;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .version-row:first-child { border-top: 0; }
+
+    .version-dot {
+      width: 8px;
+      height: 8px;
+      margin-left: 3px;
+      border: 2px solid var(--accent);
+      border-radius: 50%;
+      background: var(--card);
+    }
+
+    .version-row:first-child .version-dot { background: var(--accent); }
+
+    .version-row b { font-size: 14px; }
+
+    .version-row span:last-child {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .retention {
+      margin: 0;
+      padding: 11px 13px 4px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .naming {
+      margin-top: 26px;
+      padding: 20px 22px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+      text-align: left;
+    }
+
+    .naming p { margin: 0; color: var(--muted); }
+    .naming p + p { margin-top: 10px; }
+    .naming b { color: var(--ink); }
+
+    section { padding: 42px 0; }
+
+    .section-lede {
+      margin: -4px 0 20px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .history-card + .section-lede { margin-top: 14px; }
+
+    .points {
+      display: grid;
+      gap: 16px;
+    }
+
+    .point {
+      padding: 19px 20px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .point h3 {
+      margin: 0 0 5px;
+      font-size: 18px;
+    }
+
+    .point p { margin: 0; color: var(--muted); }
+    .point p + p { margin-top: 9px; }
+    .point b { color: var(--ink); }
+
+    .feature-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .feature-pair .point {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+
+    .point-tag {
+      align-self: flex-start;
+      margin-bottom: 13px;
+      padding: 3px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .mini-list {
+      display: grid;
+      gap: 0;
+      margin-top: 17px;
+    }
+
+    .mini-list div {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .mini-list b { color: var(--ink); }
+
+    .safe {
+      position: relative;
+      overflow: hidden;
+      padding: 22px 22px 22px 27px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .safe::before {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 5px;
+      background: var(--accent);
+      content: "";
+    }
+
+    .safe p { margin: 0; color: var(--muted); }
+    .safe p + p { margin-top: 13px; }
+    .safe b { color: var(--ink); }
+
+    .quiet-list {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .quiet-item {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 12px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .quiet-item:first-child { border-top: 0; }
+
+    .quiet-check {
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .quiet-item p { margin: 0; color: var(--muted); font-size: 15px; }
+    .quiet-item b { color: var(--ink); }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .platform {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+    }
+
+    .platform h3 {
+      margin: 0;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      background: #f1ede2;
+      font-size: 17px;
+    }
+
+    .platform dl { margin: 0; }
+
+    .platform dt {
+      padding: 10px 15px 0;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .platform dt:first-child { border-top: 0; }
+
+    .platform dd {
+      margin: 0;
+      padding: 1px 15px 10px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .matrix-note {
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .developer-zone {
+      position: relative;
+      margin-top: 34px;
+      padding-top: 68px;
+      border-top: 1px solid var(--line);
+    }
+
+    .developer-zone::before {
+      position: absolute;
+      top: -17px;
+      left: 50%;
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      transform: translateX(-50%);
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--bg);
+      color: var(--accent);
+      content: "</>";
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .developer-intro { text-align: center; }
+
+    .developer-intro .dev-label {
+      display: inline-block;
+      margin-bottom: 15px;
+      padding: 6px 16px;
+      border: 1px solid rgba(194, 65, 12, .28);
+      border-radius: 999px;
+      background: rgba(194, 65, 12, .09);
+      color: var(--accent);
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .developer-intro .display {
+      margin: 0 auto 13px;
+      font-size: 34px;
+      font-weight: 700;
+    }
+
+    .developer-intro p:last-child {
+      max-width: 34em;
+      margin: 0 auto;
+      color: var(--muted);
+    }
+
+    .command {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      overflow-x: auto;
+      margin: 6px 0 19px;
+      padding: 15px 17px;
+      border-radius: 11px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font-size: 14px;
+      line-height: 1.45;
+      white-space: nowrap;
+    }
+
+    .command::before {
+      color: #e69a77;
+      content: "$";
+      font-weight: 700;
+    }
+
+    .wire-flow {
+      display: grid;
+      grid-template-columns: 1fr 34px 1fr 34px 1fr;
+      align-items: stretch;
+      margin: 21px 0 0;
+    }
+
+    .wire-step {
+      min-width: 0;
+      padding: 16px 13px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--card);
+      text-align: center;
+    }
+
+    .wire-step .num {
+      display: grid;
+      place-items: center;
+      width: 25px;
+      height: 25px;
+      margin: 0 auto 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .wire-step b {
+      display: block;
+      font-size: 14px;
+    }
+
+    .wire-step small {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .wire-arrow {
+      position: relative;
+      align-self: center;
+      height: 1px;
+      background: var(--line);
+    }
+
+    .wire-arrow::after {
+      position: absolute;
+      top: -4px;
+      right: 0;
+      width: 7px;
+      height: 7px;
+      transform: rotate(45deg);
+      border-top: 1px solid var(--muted);
+      border-right: 1px solid var(--muted);
+      content: "";
+    }
+
+    .fine-print {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .code-window {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card);
+      box-shadow: 0 20px 46px -34px rgba(0, 0, 0, .35);
+    }
+
+    .code-window + .code-window { margin-top: 12px; }
+
+    .code-bar {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 13px;
+      border-bottom: 1px solid var(--line);
+      background: #f1ede2;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .code-dots { display: flex; gap: 5px; }
+
+    .code-dots i {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #d8d2c4;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 0;
+      padding: 18px;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .prompt { color: var(--accent); }
+    .output { color: var(--muted); }
+    .termout { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+    code[class*="language-"] .token.comment,
+    code[class*="language-"] .token.prolog,
+    code[class*="language-"] .token.doctype,
+    code[class*="language-"] .token.cdata { color: #7a7365; font-style: italic; }
+
+    code[class*="language-"] .token.punctuation { color: #7a7365; }
+
+    code[class*="language-"] .token.tag,
+    code[class*="language-"] .token.keyword,
+    code[class*="language-"] .token.selector,
+    code[class*="language-"] .token.important { color: #9d0006; }
+
+    code[class*="language-"] .token.attr-name,
+    code[class*="language-"] .token.function,
+    code[class*="language-"] .token.class-name,
+    code[class*="language-"] .token.property { color: #a3670f; }
+
+    code[class*="language-"] .token.attr-value,
+    code[class*="language-"] .token.string,
+    code[class*="language-"] .token.char,
+    code[class*="language-"] .token.regex { color: #6f6b0d; }
+
+    code[class*="language-"] .token.attr-value > .token.punctuation { color: #6f6b0d; }
+    code[class*="language-"] .token.attr-value > .token.attr-equals { color: #7a7365; }
+
+    code[class*="language-"] .token.variable,
+    code[class*="language-"] .token.constant,
+    code[class*="language-"] .token.environment,
+    code[class*="language-"] .token.parameter { color: #076678; }
+
+    code[class*="language-"] .token.number,
+    code[class*="language-"] .token.boolean,
+    code[class*="language-"] .token.entity,
+    code[class*="language-"] .token.symbol { color: #8f3f71; }
+
+    code[class*="language-"] .token.builtin { color: #3f7554; }
+
+    code[class*="language-"] .token.operator,
+    code[class*="language-"] .token.url { color: #af3a03; }
+
+    code[class*="language-"] .token.shebang { color: #7a7365; font-style: italic; }
+
+    code[class*="language-"] .token.namespace { opacity: .7; }
+
+    .api-note {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 13px;
+    }
+
+    .api-note p {
+      margin: 0;
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .api-note b { color: var(--ink); }
+
+    .closer {
+      padding: 52px 0 12px;
+      text-align: center;
+    }
+
+    .closer p {
+      margin: 0;
+      font-size: 25px;
+      font-weight: 650;
+    }
+
+    .closer .closer-sub {
+      margin-top: 9px;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 400;
+    }
+
+    .btn {
+      display: inline-block;
+      margin-top: 22px;
+      padding: 13px 26px;
+      border-radius: 11px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font-size: 17px;
+      font-weight: 650;
+      text-decoration: none;
+      transition: background .15s ease, transform .06s ease;
+    }
+
+    .btn:hover { background: #000; }
+    .btn:active { transform: translateY(1px); }
+
+    footer {
+      padding: 40px 0 64px;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    footer p { margin: 0 0 8px; }
+    footer[data-hyper-footer] { padding: 0 0 64px; }
+
+    @media (max-width: 620px) {
+      .hero { padding-top: 50px; }
+      .hero h1 { font-size: 38px; }
+      .feature-pair { grid-template-columns: 1fr; }
+      .platform-grid { grid-template-columns: 1fr; }
+
+      .platform h3 {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+      }
+
+      .platform h3::after {
+        color: var(--muted);
+        font-family: system-ui, sans-serif;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+
+      .platform:nth-child(1) h3::after { content: "Universal"; }
+      .platform:nth-child(2) h3::after { content: "64 bit"; }
+      .platform:nth-child(3) h3::after { content: "x86 + ARM"; }
+
+      .platform dl { display: grid; grid-template-columns: 104px 1fr; }
+      .platform dt { padding: 11px 0 11px 15px; }
+      .platform dd { padding: 11px 15px; border-top: 1px solid var(--line); }
+      .platform dt:first-child + dd { border-top: 0; }
+    }
+
+    @media (max-width: 480px) {
+      .wrap { padding: 0 18px; }
+      .hero h1 { font-size: 34px; }
+      .hero .lede { font-size: 18px; }
+      h2 { font-size: 26px; }
+      .history-file { align-items: flex-start; flex-direction: column; gap: 2px; }
+      .version-row { grid-template-columns: 16px 1fr; }
+      .version-row span:last-child { grid-column: 2; }
+      .developer-intro .display { font-size: 27px; }
+
+      .wire-flow {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+
+      .wire-arrow {
+        width: 1px;
+        height: 26px;
+        margin: 0 auto;
+      }
+
+      .wire-arrow::after {
+        top: auto;
+        right: -3px;
+        bottom: 0;
+        transform: rotate(135deg);
+      }
+
+      .api-note { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .btn { transition: none; }
+    }
+    /* --- steps and guide pages --- */
+    .step { padding-top: 30px; }
+    .step h2 {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .stepnum {
+      display: grid;
+      place-items: center;
+      flex: none;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .copywrap { position: relative; }
+    .copybtn {
+      position: absolute;
+      top: 4.5px;
+      right: 10px;
+      padding: 5px 11px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--bg);
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .copybtn:hover { color: var(--ink); border-color: var(--muted); }
+    .copybtn[data-done="1"] { color: var(--accent); border-color: var(--accent); }
+    .callout {
+      margin: 19px 0;
+      padding: 15px 17px;
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 11px 11px 0;
+      background: var(--card);
+      font-size: 15px;
+    }
+    .callout p { margin: 0; }
+    .callout p + p { margin-top: 9px; }
+    .aside {
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .trouble { margin: 16px 0 0; padding: 0; list-style: none; }
+    .trouble li {
+      margin: 0 0 11px;
+      padding-left: 19px;
+      border-left: 2px solid var(--line);
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .trouble b { color: var(--ink); }
+    .seq { margin: 19px 0; padding: 0; list-style: none; counter-reset: seq; }
+    .seq li {
+      position: relative;
+      margin: 0 0 13px;
+      padding-left: 30px;
+      counter-increment: seq;
+    }
+    .seq li::before {
+      content: counter(seq);
+      position: absolute;
+      left: 0;
+      top: 1px;
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--card);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .attrs { width: 100%; margin: 19px 0; border-collapse: collapse; font-size: 15px; }
+    .attrs th, .attrs td {
+      padding: 10px 12px 10px 0;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    .attrs th { color: var(--muted); font-weight: 600; font-size: 13px; }
+    .attrs code { white-space: nowrap; }
+    .flowpic { margin: 24px 0; }
+    .flowpic svg { display: block; width: 100%; height: auto; }
+    .flowcap { margin: 10px 0 0; color: var(--muted); font-size: 14px; text-align: center; }
+    @media (max-width: 480px) {
+      .attrs code { white-space: normal; }
+    }
+
+    /* --- worked demos --- */
+    .demo { margin: 34px 0 4px; }
+    .demo-inline { margin: 26px 0 28px; }
+
+    .demo-doc .code-bar { justify-content: flex-start; }
+
+    .demo-page { padding: 20px 20px 16px; }
+
+    .demo-title {
+      margin: 0 0 12px;
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -.01em;
+    }
+
+    .demo-body { overflow: hidden; }
+
+    .demo-body ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .demo-body li {
+      position: relative;
+      padding: 5px 0 5px 25px;
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .demo-body li::before {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: 12px;
+      width: 11px;
+      height: 11px;
+      border: 1.5px solid #d3ccbc;
+      border-radius: 3px;
+    }
+
+    .demo-groups {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 18px;
+      align-items: start;
+    }
+
+    .demo-group h4 {
+      margin: 0 0 4px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .demo[data-kind="recipe"] .demo-title { margin-bottom: 4px; }
+    .demo[data-kind="recipe"] .demo-body li { padding-left: 18px; }
+
+    .demo[data-kind="recipe"] .demo-body li::before {
+      left: 4px;
+      top: 15px;
+      width: 5px;
+      height: 5px;
+      border: 0;
+      border-radius: 50%;
+      background: #d3ccbc;
+    }
+
+    .demo-serves {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 14.5px;
+    }
+
+    .demo-bake {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 14.5px;
+    }
+
+    .demo-qty {
+      font-weight: 650;
+      border-radius: 4px;
+      transition: background .35s ease, box-shadow .35s ease;
+    }
+
+    .demo-qty.is-lit {
+      background: rgba(194, 65, 12, .14);
+      box-shadow: 0 0 0 3px rgba(194, 65, 12, .14);
+    }
+
+    .demo-ask {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 15px;
+      border-top: 1px solid var(--line);
+    }
+
+    .demo-input {
+      flex: 1;
+      min-width: 0;
+      padding: 10px 13px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--bg);
+      color: var(--ink);
+      font: inherit;
+      font-size: 16px;
+      transition: border-color .2s ease;
+    }
+
+    .demo-input::placeholder { color: #a49d90; }
+    .demo-input.demo-typing { border-color: #d9b39a; }
+
+    .demo-send {
+      flex: none;
+      min-width: 92px;
+      padding: 10px 19px;
+      border: 0;
+      border-radius: 9px;
+      background: var(--btn);
+      color: var(--btn-ink);
+      font: inherit;
+      font-size: 15px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: background .15s ease, transform .06s ease, opacity .2s ease;
+    }
+
+    .demo-send:hover { background: #2b2823; }
+    .demo-send:active { transform: translateY(1px); }
+    .demo-send[disabled] { opacity: .45; cursor: default; }
+
+    .demo-status {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 20px;
+      margin: 11px 2px 0;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .demo-dot {
+      flex: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #d3ccbc;
+      transition: background .2s ease;
+    }
+
+    .demo-status[data-state="sent"] .demo-dot,
+    .demo-status[data-state="thinking"] .demo-dot { background: var(--accent); }
+    .demo-status[data-state="thinking"] .demo-dot { animation: demo-pulse 1.15s ease-in-out infinite; }
+    .demo-status[data-state="done"] .demo-dot { background: #7c9a6e; }
+    .demo-status[data-state="done"] .demo-say { color: var(--ink); }
+
+    .demo-saved {
+      margin-left: auto;
+      color: #9c968a;
+      animation: demo-rise .4s ease both;
+    }
+
+
+    .demo-get {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-left: auto;
+      padding: 3px 9px 3px 8px;
+      border: 1px solid #e2dccd;
+      border-radius: 7px;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 12px;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }
+
+    .demo-get svg {
+      width: 13px;
+      height: 13px;
+      opacity: .75;
+    }
+
+    .demo-get:hover {
+      border-color: #cfc6b1;
+      background: #f8f5ee;
+      color: var(--ink);
+    }
+
+    .demo-get:hover svg { opacity: 1; }
+
+    .demo-term { margin-top: 12px; }
+    .demo-term pre { padding: 13px 15px; font-size: 12.5px; }
+
+    .demo-cap {
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 14.5px;
+      line-height: 1.55;
+      text-align: center;
+    }
+
+    .demo-sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .demo-fade { animation: demo-rise .45s ease both; }
+
+    @keyframes demo-rise {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes demo-pulse {
+      50% { opacity: .3; }
+    }
+
+    @media (max-width: 519px) {
+      .demo-groups { grid-template-columns: 1fr; gap: 14px; }
+      .demo-ask { flex-wrap: wrap; }
+      .demo-input { flex: 1 1 100%; }
+      .demo-send { width: 100%; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .demo-fade,
+      .demo-saved,
+      .demo-status .demo-dot { animation: none !important; }
+      .demo-body li,
+      .demo-body,
+      .demo-qty { transition: none !important; }
+    }
+</style>
+  <script src="prism.min.js"></script>
+  <style>.doc-figure{margin:28px 0}.doc-figure img{display:block;width:100%;height:auto;border-radius:12px}.doc-figure figcaption{margin-top:10px;font-size:.92em;color:var(--muted, #6b5f4f)}</style>
+</head>
+<body>
+  <main class="wrap">
+    <nav class="sitenav">
+      <a class="brand" href="/">HTML Clay</a>
+      <div class="navlinks">
+        <a class="github-clay" href="https://github.com/panphora/htmlclay" target="_blank" rel="noopener" aria-label="View HTML Clay source on GitHub"><span class="github-bracket" aria-hidden="true">&lt;</span><span class="github-mascot" aria-hidden="true"><svg viewBox="0 0 16 16" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></span><span class="github-word" aria-hidden="true">source</span><span class="github-bracket github-close" aria-hidden="true">/&gt;</span></a>
+        <a href="/">Home</a>
+        <a href="/get-started">Get started</a>
+        <a href="/features">Features</a>
+        <a href="/docs" aria-current="page">Docs</a>
+      </div>
+    </nav>
+
+    <div class="hero">
+      <p class="eyebrow">Docs</p>
+      <h1>AI editing</h1>
+      <p class="lede">Select a phrase, ask your agent to rewrite it, and keep the change in your HTML file.</p>
+    </div>
+
+    <section>
+<p>Select the sentence &quot;Visitors arriving late will not be admitted&quot; and ask your agent to make it friendlier. The paragraph might now read &quot;Please arrive on time, as we&#39;re unable to admit late arrivals&quot;. The rewrite stays unsaved until you click Keep.</p>
+<figure class="doc-figure"><img src="/images/ai-edit-gesture.png" alt="Select the sentence, describe the change, and review the rewrite in place before clicking Keep." width="1600" height="900" loading="lazy"><figcaption>Select the sentence, describe the change, and review the rewrite in place before clicking Keep.</figcaption></figure>
+
+<p>ClayJS sends the paragraph around your selection and your request to your agent through HTML Clay or Hyperclay Local. The agent returns revised HTML. ClayJS shows the rewrite on the page. Keep saves the rewrite into the file.</p>
+    </section>
+
+    <section>
+<h2 id="before-you-start">Before you start</h2>
+<p>AI editing is on by default. You need HTML Clay or Hyperclay Local, a file that loads ClayJS, and Claude Code installed and signed in on your computer.</p>
+<p>Open the file through the app. <a href="/get-started">Get started</a> covers HTML Clay&#39;s setup and the ClayJS script tag. The app does not add that tag for you. The text needs no special markup or ids.</p>
+<p>The request holds your words, the element containing your selection and any files you attach. Adding <code>@page</code> includes the whole saved page. Your agent sends all of it to its model provider. The app sends this content nowhere else.</p>
+    </section>
+
+    <section>
+<h2 id="rewrite-a-paragraph">Rewrite a paragraph</h2>
+<p>The rewrite replaces the original paragraph on the page. You can read it before deciding whether to save it.</p>
+<ol>
+<li>Select the sentence you want changed, such as &quot;Visitors arriving late will not be admitted&quot;. Keep the selection inside one paragraph.</li>
+<li>Press ⌘J on macOS or Ctrl+J on Windows and Linux. You can also click the small AI chip at the end of the selection. The selected words stay highlighted. A panel opens under them with one box and a Send button. Escape closes the panel.</li>
+<li>In the &quot;Describe the change&quot; box, type &quot;Make this friendlier. Keep the rule that late arrivals cannot enter&quot;. Shift+Enter adds a line to your request.</li>
+<li>Press Enter or click Send. Send becomes Stop. A status line below the box shows progress, such as &quot;Writing, 1.2 KB&quot;. Stop or Escape cancels the request and restores the original paragraph. When the reply arrives, the rewrite replaces the paragraph. Revert and Keep appear, and the status line names the model that answered.</li>
+<li>Check that the rewrite still says what you mean. Revert restores the original paragraph. Escape also discards the rewrite. Click Keep to save the rewrite into the file. Check the status line for a save confirmation or an error.</li>
+</ol>
+<p>Every save waits while you review the rewrite, including autosave and ⌘S. Revert runs any waiting save with the original paragraph back. Keep saves the rewrite instead.</p>
+<p>After Keep, open the file in your text editor. If you kept the example rewrite, the paragraph now contains:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;p&gt;Please arrive on time, as we're unable to admit late arrivals.&lt;/p&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>The earlier version is in Backups in HTML Clay&#39;s tray menu. Hyperclay Local keeps earlier versions in <code>.hyperclay/versions/</code> inside the served folder.</p>
+    </section>
+
+    <section>
+<h2 id="choose-an-agent">Choose an agent</h2>
+<p>Claude Code handles requests by default. To use Fable through Claude Code, start your request with <code>@fable</code>:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Output</span></div><pre tabindex="0"><code>@fable Make this friendlier. Keep the rule that late arrivals cannot enter.</code></pre></div></div>
+<p>Use <code>@codex</code> instead for Codex. The Codex CLI must be installed and signed in on your computer. Its status line stays on &quot;sending…&quot; until the reply arrives, then reads <code>done (codex)</code>.</p>
+    </section>
+
+    <section>
+<h2 id="what-the-agent-sees">What the agent sees</h2>
+<p>The agent receives the paragraph&#39;s HTML, your selected words and your request. Selecting inside a heading sends the heading. On plain pages, selecting inside a list item or table cell sends that item or cell. Inside a section marked with <code>data-edit-id</code>, a list item or table cell sends the whole section instead.</p>
+<p>A selection across two paragraphs sends their surrounding element. The agent can rewrite everything inside that element. If only the page&#39;s body contains both paragraphs, the agent receives the whole body, with your selected words quoted.</p>
+<p>When the whole body is sent, leave the rest of the page alone until you click Keep or Revert. Edits made elsewhere in the body meanwhile are lost however the request ends.</p>
+<p>For a paragraph request, adding <code>@page</code> saves the file first, then sends the whole saved page as context. When the whole body is already sent, <code>@page</code> saves nothing and adds nothing.</p>
+<p>Adding <code>@name.ext</code> attaches that file from the document&#39;s folder as context. In Hyperclay Local, attachments come from the served folder. Hidden files and folders, such as <code>.env</code> or <code>.git</code>, cannot be attached. Symlinks cannot bypass that rule or reach outside the folder. You can attach up to 8 files, at most 256 KB each and 1 MB total.</p>
+<figure class="doc-figure"><img src="/images/ai-edit-flow.png" alt="The app passes the paragraph and your request to your agent, and your agent sends the paragraph to its model." width="1600" height="900" loading="lazy"><figcaption>The app passes the paragraph and your request to your agent, and your agent sends the paragraph to its model.</figcaption></figure>
+
+<p>Claude Code, Fable and Codex run with no tools. They answer in one reply. They can only return text. An agent command you add yourself runs as you wrote it, in the file&#39;s folder. ClayJS checks the reply before showing it. A reply that adds an executable script, an event handler or a <code>javascript:</code> link is refused.</p>
+    </section>
+
+    <section>
+<h2 id="turn-off-ai-editing">Turn off AI editing</h2>
+<p>Uncheck &quot;AI Editing&quot; in HTML Clay&#39;s tray menu to turn it off. In Hyperclay Local, the same setting is in Options.</p>
+<p>To turn it off for one file, add <code>exclude=ai-edit</code> to the ClayJS script URL. The tag from <a href="/get-started">Get started</a> becomes:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=indicator&amp;exclude=ai-edit&quot;&gt;&lt;/script&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>If the URL already has <code>exclude=</code>, add <code>ai-edit</code> to that list: <code>exclude=source,ai-edit</code>. A second <code>exclude=</code> parameter is ignored. With no options on the URL, use <code>?exclude=ai-edit</code>. Save the file and reload the page.</p>
+    </section>
+
+    <section>
+<h2 id="when-it-does-not-work">When it does not work</h2>
+<ol>
+<li>If the status line says an agent was not found or is not signed in, install or sign in to the agent you asked for (Claude Code unless you typed <code>@fable</code> or <code>@codex</code>). Then send again.</li>
+<li>Unknown <code>@name</code>: the panel lists the agents it knows. Remove the name to use Claude Code, or use <code>@fable</code> or <code>@codex</code>.</li>
+<li>AI editing is turned off, with no Send button: enable &quot;AI Editing&quot; in the app&#39;s menu.</li>
+<li>The shortcut does something else or nothing: select some text first. If the browser keeps the shortcut, click the AI chip. If no chip appears, check that the file is open through the app and AI editing is on.</li>
+<li>Another request is running: wait for it to finish. Each file handles one request at a time.</li>
+<li>Reply refused for adding code: the original stays in place. Ask again without the code, or add code by editing the file.</li>
+<li>&quot;reply is not a single&quot; element or &quot;the model declined this request&quot;: revise the request and send again.</li>
+<li>The selected element is too large: select text inside a smaller element. Selecting fewer words inside the same element does not help. If that single element is too large, edit it in the file.</li>
+<li>A request runs for five minutes: it stops and restores the original paragraph. For a whole body request, the recovery rule above applies to the whole body.</li>
+<li>Attachment refused: check the status line against the attachment limits above. A missing or hidden file stops the whole request. So does a file outside the folder or over a limit.</li>
+<li>Keep reports a save error: try saving the page again. Copy the rewrite before reloading or closing the page. The rewrite being visible does not confirm a save.</li>
+</ol>
+    </section>
+
+    <section>
+<h2 id="where-next">Where next</h2>
+<p>For an agent restructuring a whole page by editing the file directly, see <a href="/live-updates">live updates</a>. <a href="/programs">Programs</a> covers connecting a page to a program on your computer. The <a href="/json-api">JSON API</a> lets programs read and change parts of the document as JSON. Find the other guides in <a href="/docs">the docs</a>.</p>
+    </section>
+
+    <footer>
+      <p>Building your own <span class="filechip">.htmlclay</span> files? Check out <a href="https://hyperclay.com">Hyperclay</a></p>
+      <p><a href="https://try.htmlclay.com/">Software you can pass around</a></p>
+      <p>Source code: <a href="https://github.com/panphora/htmlclay">github.com/panphora/htmlclay</a></p>
+      <p>Docs: <a href="/docs">all HTML Clay docs</a></p>
+      <p>For agents: <a href="/llms.txt">llms.txt</a></p>
+    </footer>
+  </main>
+  <script>
+    document.querySelectorAll('.copybtn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var code = btn.parentNode.querySelector('code').textContent;
+        function said(word) {
+          btn.textContent = word;
+          btn.dataset.done = '1';
+          setTimeout(function () { btn.textContent = 'Copy'; delete btn.dataset.done; }, 1600);
+        }
+        // execCommand is the fallback for a browser that refuses the clipboard
+        // API, so the button never looks broken by doing nothing at all.
+        function theOldWay() {
+          var box = document.createElement('textarea');
+          box.value = code;
+          box.style.position = 'fixed';
+          box.style.opacity = '0';
+          document.body.appendChild(box);
+          box.select();
+          var ok = false;
+          try { ok = document.execCommand('copy'); } catch (e) {}
+          document.body.removeChild(box);
+          said(ok ? 'Copied' : 'Press Cmd+C');
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(code).then(function () { said('Copied'); }, theOldWay);
+        } else {
+          theOldWay();
+        }
+      });
+    });
+  </script>
+</body>
+</html>
