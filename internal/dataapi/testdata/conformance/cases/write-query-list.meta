@@ -1,0 +1,6 @@
+tier: 1
+face: write-query
+expect: ok
+note: Caller-supplied rules grow a list, cloning the existing row shape. The row selector is
+note: quoted: unquoted, the `[` lookahead reads the whole iterate form as one attribute
+note: selector (see rules-iterate-lookahead-unquoted).

@@ -221,7 +221,7 @@ func TestConformanceExtraction(t *testing.T) {
 				t.Skip(r)
 			}
 
-			if meta.face == "write" {
+			if meta.face == "write" || meta.face == "write-query" {
 				skipped++
 				t.Skip("write face: covered by the write conformance test")
 			}

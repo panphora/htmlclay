@@ -12,17 +12,18 @@ import (
 	"golang.org/x/net/html"
 )
 
-// TestConformanceWrite is the write face of the corpus: every case whose meta says `face: write` is
-// a JSON body posted through the document's own rules tag. It compares the same things the
-// reference's writeDocument promises — the exact bytes written, whether they were spliced into the
-// source or rendered whole, a fresh extraction of them, and, for a refusal, the type, message and
-// structured details.
+// TestConformanceWrite is the write face of the corpus. A `face: write` case is a JSON body posted
+// through the document's own rules tag; a `face: write-query` case is the same body posted with
+// caller-supplied rules from the case's .rules file, and any tag in the document is ignored. It
+// compares the same things the reference's writeDocument promises — the exact bytes written,
+// whether they were spliced into the source or rendered whole, a fresh extraction of them, and, for
+// a refusal, the type, message and structured details.
 func TestConformanceWrite(t *testing.T) {
-	var matched, errored, skipped int
+	var matched, errored, skipped, queries int
 
 	for _, name := range caseNames(t) {
 		meta := parseMeta(t, filepath.Join(corpusDir, "cases", name+".meta"))
-		if meta.face != "write" {
+		if meta.face != "write" && meta.face != "write-query" {
 			continue
 		}
 
@@ -44,7 +45,21 @@ func TestConformanceWrite(t *testing.T) {
 				t.Fatalf("%s.data.json: %v", name, err)
 			}
 
-			result, err := WriteDocument([]byte(source), data, meta.token)
+			var result *WriteResult
+			if meta.face == "write-query" {
+				rawRules, ok := readCaseFile(t, name, ".rules")
+				if !ok {
+					t.Fatalf("%s has no .rules", name)
+				}
+				rules, perr := ParseRelaxed(rawRules)
+				if perr != nil {
+					t.Fatalf("%s.rules: %v", name, perr)
+				}
+				queries++
+				result, err = WriteDocumentWithRules([]byte(source), data, rules)
+			} else {
+				result, err = WriteDocument([]byte(source), data, meta.token)
+			}
 
 			if meta.expect == "error" {
 				if err == nil {
@@ -58,12 +73,13 @@ func TestConformanceWrite(t *testing.T) {
 			if err != nil {
 				t.Fatalf("WriteDocument: %v", err)
 			}
-			checkWriteResult(t, name, meta.token, result)
+			checkWriteResult(t, name, meta, result)
 			matched++
 		})
 	}
 
-	t.Logf("write: %d matched, %d errored as expected, %d skipped", matched, errored, skipped)
+	t.Logf("write: %d matched, %d errored as expected, %d skipped, %d of them write-query",
+		matched, errored, skipped, queries)
 	if matched+errored == 0 {
 		t.Fatal("no write cases ran \u2014 the corpus is not wired up")
 	}
@@ -72,8 +88,9 @@ func TestConformanceWrite(t *testing.T) {
 // checkWriteResult compares the written document three ways: the exact bytes, whether they were
 // spliced, and the extraction a reader of those bytes would see. The bytes are the whole point of
 // the splice — everything the write did not touch has to be unchanged, CRLF included — so they are
-// compared first and verbatim.
-func checkWriteResult(t *testing.T, name, token string, result *WriteResult) {
+// compared first and verbatim. The extraction runs through the same rules the write did: a
+// write-query case reads its .rules file, a write case reads the tag out of the written document.
+func checkWriteResult(t *testing.T, name string, meta caseMeta, result *WriteResult) {
 	t.Helper()
 
 	rawWrite, ok := readCaseFile(t, name, ".write.json")
@@ -106,14 +123,27 @@ func checkWriteResult(t *testing.T, name, token string, result *WriteResult) {
 	if err != nil {
 		t.Fatalf("reparse written output: %v", err)
 	}
-	found, err := d.FindRulesIn(token)
-	if err != nil {
-		t.Fatalf("written output: %v", err)
+	var rules Value
+	if meta.face == "write-query" {
+		rawRules, ok := readCaseFile(t, name, ".rules")
+		if !ok {
+			t.Fatalf("%s has no .rules", name)
+		}
+		rules, err = ParseRelaxed(rawRules)
+		if err != nil {
+			t.Fatalf("%s.rules: %v", name, err)
+		}
+	} else {
+		found, ferr := d.FindRulesIn(meta.token)
+		if ferr != nil {
+			t.Fatalf("written output: %v", ferr)
+		}
+		if found == nil {
+			t.Fatalf("written output has no rules tag for %q", meta.token)
+		}
+		rules = found.Rules
 	}
-	if found == nil {
-		t.Fatalf("written output has no rules tag for %q", token)
-	}
-	got, err := d.Extract(found.Rules)
+	got, err := d.Extract(rules)
 	if err != nil {
 		t.Fatalf("Extract on written output: %v", err)
 	}

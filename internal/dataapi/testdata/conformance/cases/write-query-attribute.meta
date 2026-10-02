@@ -1,0 +1,4 @@
+tier: 1
+face: write-query
+expect: ok
+note: Caller-supplied rules drive an attribute write.

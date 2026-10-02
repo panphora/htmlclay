@@ -1,0 +1,4 @@
+tier: 1
+face: write-query
+expect: ok
+note: Writing the value already in the document changes nothing.

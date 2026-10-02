@@ -1,0 +1,11 @@
+{
+  "type": "WriteRefused",
+  "message": "write refused: 1 write(s) broke the content-only policy",
+  "status": 400,
+  "details": [
+    {
+      "target": "<script#s>",
+      "reason": "inside <script>, which is not content"
+    }
+  ]
+}

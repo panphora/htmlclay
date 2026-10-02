@@ -1,0 +1,4 @@
+tier: 1
+face: write-query
+expect: ok
+note: Caller-supplied rules drive a text write; the document needs no rules tag.

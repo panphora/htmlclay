@@ -1,0 +1,4 @@
+tier: 1
+face: write-query
+expect: error
+note: One refused path refuses the whole write: a harmless local script proves all-or-nothing.
