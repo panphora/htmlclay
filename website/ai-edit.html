@@ -1218,8 +1218,10 @@
 
     <section>
 <h2 id="before-you-start">Before you start</h2>
-<p>AI editing is on by default. You need HTML Clay or Hyperclay Local, a file that loads ClayJS, and Claude Code installed and signed in on your computer.</p>
-<p>Open the file through the app. <a href="/get-started">Get started</a> covers HTML Clay&#39;s setup and the ClayJS script tag. The app does not add that tag for you. The text needs no special markup or ids.</p>
+<p>You need HTML Clay or Hyperclay Local, a file that loads ClayJS with AI editing turned on, and Claude Code installed and signed in on your computer.</p>
+<p>Add <code>ai-edit</code> to the plugins in the ClayJS script tag. The tag from <a href="/get-started">Get started</a> becomes:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=indicator,ai-edit&quot;&gt;&lt;/script&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>Open the file through the app. The app does not add the tag for you. The text needs no special markup or ids.</p>
 <p>The request holds your words, the element containing your selection and any files you attach. Adding <code>@page</code> includes the whole saved page. Your agent sends all of it to its model provider. The app sends this content nowhere else.</p>
     </section>
 
@@ -1261,9 +1263,7 @@
     <section>
 <h2 id="turn-off-ai-editing">Turn off AI editing</h2>
 <p>Uncheck &quot;AI Editing&quot; in HTML Clay&#39;s tray menu to turn it off. In Hyperclay Local, the same setting is in Options.</p>
-<p>To turn it off for one file, add <code>exclude=ai-edit</code> to the ClayJS script URL. The tag from <a href="/get-started">Get started</a> becomes:</p>
-<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=indicator&amp;exclude=ai-edit&quot;&gt;&lt;/script&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
-<p>If the URL already has <code>exclude=</code>, add <code>ai-edit</code> to that list: <code>exclude=source,ai-edit</code>. A second <code>exclude=</code> parameter is ignored. With no options on the URL, use <code>?exclude=ai-edit</code>. Save the file and reload the page.</p>
+<p>To turn it off for one file, remove <code>ai-edit</code> from the <code>plugins=</code> list in the ClayJS script tag. Save the file and reload the page.</p>
     </section>
 
     <section>
