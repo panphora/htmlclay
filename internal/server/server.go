@@ -178,6 +178,11 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 
 	mux.HandleFunc("GET /{path...}", s.handleServeFile)
 
+	// The plain page address carries the write too, so a caller that read through ?data= can write
+	// through the same URL shape. The handler refuses everything a document write does not address
+	// and every reserved /_/ path that reached it unmatched, which ServeMux used to answer 405 for.
+	mux.HandleFunc("POST /{path...}", s.handleDataFileWrite)
+
 	handler := s.loggingMiddleware(mux)
 	handler = HostValidationMiddleware(handler, port)
 

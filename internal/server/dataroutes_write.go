@@ -41,6 +41,22 @@ func writeWriteError(w http.ResponseWriter, status int, body writeErrorBody) {
 	w.Write(bytes.TrimRight(buf.Bytes(), "\n"))
 }
 
+// handleDataFileWrite serves POST <page>?data={...}: the same write as the /_/api face, addressed
+// the way a GET of the page is. Anything else on the catch-all keeps the 405 ServeMux used to give
+// it, so this route adds an address rather than a second way into a document.
+func (s *Server) handleDataFileWrite(w http.ResponseWriter, r *http.Request) {
+	rawPath := r.PathValue("path")
+	if rawPath == "_" || strings.HasPrefix(rawPath, "_/") ||
+		!isExtractable(extractFilePath(rawPath)) || !rawQueryHasDataKey(r.URL.RawQuery) {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// The path value is passed through unchanged: this is an alias for the API face, and both must
+	// resolve "test.htmlclay" to the same file. Reserved paths never get here.
+	s.handleDataAPIWrite(w, r)
+}
+
 // handleDataAPIWrite serves POST /_/api/<path>: apply a JSON body to the document through its own
 // api rules tag, content only, and commit the result exactly as a save does.
 func (s *Server) handleDataAPIWrite(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +68,7 @@ func (s *Server) handleDataAPIWrite(w http.ResponseWriter, r *http.Request) {
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		writeWriteError(w, http.StatusUnsupportedMediaType, writeErrorBody{
 			Error:   "Unsupported Media Type",
-			Message: "POST /_/api takes Content-Type: application/json.",
+			Message: "A JSON write takes Content-Type: application/json.",
 		})
 		return
 	}
@@ -74,6 +90,16 @@ func (s *Server) handleDataAPIWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before any file is resolved or revealed: a ?data= caller writes through its own rules, and a
+	// malformed one is refused on the query string alone.
+	mode, answered := s.dataModeForQuery(w, r, relPath)
+	if answered {
+		return
+	}
+	if !mode.active() {
+		mode = dataMode{face: faceAPI}
+	}
+
 	var f *session.File
 	if isBrowser {
 		// A page proves the target's token before anything else is resolved or revealed. It can
@@ -85,7 +111,7 @@ func (s *Server) handleDataAPIWrite(w http.ResponseWriter, r *http.Request) {
 		if f == nil || subtle.ConstantTimeCompare([]byte(r.Header.Get(helperTokenHeader)), []byte(f.Token)) != 1 {
 			writeWriteError(w, http.StatusForbidden, writeErrorBody{
 				Error:   "Save-Token required",
-				Message: "A page writes through /_/api only with the target file's Save-Token header.",
+				Message: "A page writes JSON only with the target file's Save-Token header.",
 			})
 			return
 		}
@@ -125,7 +151,7 @@ func (s *Server) handleDataAPIWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeApplied(w, r, f, data)
+	s.writeApplied(w, r, f, data, mode)
 }
 
 // resolveWriteTarget turns the request path into the absolute path a write would touch, or reports
@@ -188,7 +214,7 @@ func (s *Server) mayRegisterForWrite(absPath string) bool {
 }
 
 // writeApplied is handleSave's commit sequence with the body computed from the stored bytes.
-func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session.File, data dataapi.Value) {
+func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session.File, data dataapi.Value, mode dataMode) {
 	f.Lock()
 	current, readErr := s.readRegisteredFile(f.AbsPath)
 	if readErr != nil {
@@ -213,15 +239,47 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 		return
 	}
 
-	res, err := dataapi.WriteDocument(htmlutil.StripToken(current), data, "api")
+	var res *dataapi.WriteResult
+	var err error
+	if mode.face == faceQuery {
+		mode.value, err = dataapi.ParseRelaxed(mode.rules)
+		mode.resolved = err == nil
+		if err == nil {
+			res, err = dataapi.WriteDocumentWithRules(htmlutil.StripToken(current), data, mode.value)
+		}
+	} else {
+		res, err = dataapi.WriteDocument(htmlutil.StripToken(current), data, "api")
+	}
 	if err != nil {
 		f.Unlock()
+		if mode.face == faceQuery {
+			var parse *dataapi.RulesParseError
+			var selector dataapi.SelectorFailure
+			if errors.As(err, &parse) || errors.As(err, &selector) {
+				status, body := mapDataError(err, faceQuery)
+				writeDataError(w, status, body)
+				return
+			}
+		}
 		status, body := mapWriteError(err)
 		if status == http.StatusInternalServerError {
 			s.logger.Printf("Data write of %s failed: %v", f.RelPath, err)
 		}
 		writeWriteError(w, status, body)
 		return
+	}
+
+	if mode.face == faceQuery {
+		doc, extractErr := dataapi.ParseBytes(res.HTML)
+		if extractErr == nil {
+			_, extractErr = doc.Extract(mode.value)
+		}
+		if extractErr != nil {
+			f.Unlock()
+			status, body := mapDataError(extractErr, faceQuery)
+			writeDataError(w, status, body)
+			return
+		}
 	}
 
 	written := current
@@ -261,7 +319,7 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 		s.versions.MaybePrune(key, f.AbsPath)
 		s.logger.Printf("Wrote data into %s (%d bytes, spliced=%v)", f.RelPath, len(written), res.Spliced)
 	}
-	s.writeExtracted(w, written, dataMode{face: faceAPI})
+	s.writeExtracted(w, written, mode)
 }
 
 // mapWriteError gives the write engine's refusals the bodies hyperclay-local sends, and defers to

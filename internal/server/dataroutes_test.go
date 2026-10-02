@@ -239,14 +239,14 @@ func TestDataAPIUsesTheDocumentsRulesTag(t *testing.T) {
 		t.Errorf("body = %s", got)
 	}
 
-	// ?data= is ignored on this face: it takes its rules from the document.
+	// A caller that sends ?data= is answered with its own rules on this face too.
 	req := httptest.NewRequest("GET", `/_/api/test.htmlclay?data={t:"title"}`, nil)
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
 	req.SetPathValue("path", "test.htmlclay")
-	ignored := httptest.NewRecorder()
-	srv.handleDataAPI(ignored, req)
-	if got := ignored.Body.String(); got != `{"heading":"Head"}` {
-		t.Errorf("?data= on the /_/api face changed the answer: %s", got)
+	override := httptest.NewRecorder()
+	srv.handleDataAPI(override, req)
+	if got := override.Body.String(); got != `{"t":"T"}` {
+		t.Errorf("?data= on the /_/api face = %s, want the caller's rules", got)
 	}
 }
 

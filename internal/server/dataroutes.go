@@ -44,6 +44,10 @@ const (
 type dataMode struct {
 	face  dataFace
 	rules string
+	// resolved and value carry rules a write face already parsed, so the read it answers at the end
+	// applies the same tree.
+	resolved bool
+	value    dataapi.Value
 }
 
 func (m dataMode) active() bool { return m.face != faceNone }
@@ -107,8 +111,16 @@ func (s *Server) dataModeForQuery(w http.ResponseWriter, r *http.Request, relPat
 		return dataMode{}, true
 	}
 
-	// Duplicate data keys take the first, a documented divergence: the reference 500s, because qs
-	// hands it an array and input.substring is not a function.
+	// The reference 500s here, because qs hands it an array and input.substring is not a function.
+	// A parameter sent twice is ambiguous rather than wrong, so it is refused by name instead.
+	if len(q["data"]) != 1 {
+		writeDataError(w, http.StatusBadRequest, dataError{
+			Error:   "Invalid extraction rules",
+			Message: "Provide exactly one data parameter.",
+			Example: dataExample,
+		})
+		return dataMode{}, true
+	}
 	rules := q.Get("data")
 	if rules == "" {
 		writeDataError(w, http.StatusBadRequest, dataError{
@@ -166,8 +178,16 @@ func (s *Server) handleDataAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ?data= is ignored on this face: it takes its rules from the document.
-	s.serveFile(w, r, rawPath, dataMode{face: faceAPI})
+	// A caller that sent ?data= gets its own rules on this face too; otherwise the document's own
+	// api rules tag answers, exactly as before.
+	mode, answered := s.dataModeForQuery(w, r, extractFilePath(rawPath))
+	if answered {
+		return
+	}
+	if !mode.active() {
+		mode = dataMode{face: faceAPI}
+	}
+	s.serveFile(w, r, rawPath, mode)
 }
 
 // writeExtracted is the ONLY place a data response is produced. It runs after every gate, with the
@@ -215,6 +235,9 @@ func (s *Server) writeExtracted(w http.ResponseWriter, raw []byte, mode dataMode
 
 // rulesFor resolves the rule tree for whichever face asked.
 func (s *Server) rulesFor(doc *dataapi.Document, mode dataMode) (dataapi.Value, error) {
+	if mode.resolved {
+		return mode.value, nil
+	}
 	if mode.face == faceQuery {
 		return dataapi.ParseRelaxed(mode.rules)
 	}
