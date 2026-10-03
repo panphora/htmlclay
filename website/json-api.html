@@ -4,18 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Read and write your file as JSON | HTML Clay</title>
-  <meta name="description" content="Send CSS selector rules with a request to read parts of your HTML file as JSON and post changes back, or save the rules in the file.">
+  <meta name="description" content="Read and write parts of your HTML file as JSON from the page itself or another program.">
   <link rel="canonical" href="https://htmlclay.com/json-api">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
   <meta property="og:type" content="website">
   <meta property="og:title" content="Read and write your file as JSON">
-  <meta property="og:description" content="Send CSS selector rules with a request to read parts of your HTML file as JSON and post changes back, or save the rules in the file.">
+  <meta property="og:description" content="Read and write parts of your HTML file as JSON from the page itself or another program.">
   <meta property="og:url" content="https://htmlclay.com/json-api">
   <meta property="og:image" content="https://htmlclay.com/og.png">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Read and write your file as JSON">
-  <meta name="twitter:description" content="Send CSS selector rules with a request to read parts of your HTML file as JSON and post changes back, or save the rules in the file.">
+  <meta name="twitter:description" content="Read and write parts of your HTML file as JSON from the page itself or another program.">
 
   <style>
     :root {
@@ -1206,16 +1206,17 @@
     <div class="hero">
       <p class="eyebrow">Docs</p>
       <h1>Read and write your file as JSON</h1>
-      <p class="lede">Send CSS selector rules with a request to read parts of your HTML file as JSON and post changes back, or save the rules in the file.</p>
+      <p class="lede">Read and write parts of your HTML file as JSON from the page itself or another program.</p>
     </div>
 
     <section>
 <p>Let&#39;s say your file is a task list that has a heading and two tasks. A program on your computer can read the heading and tasks as JSON and write new ones back.</p>
 <p>The file holds the data. Rules map CSS selectors to JSON keys. HTML Clay reads the matching parts of the file and returns their values. To write, send JSON with the same keys. HTML Clay writes each value into the part of the file its rule selects and saves a version. Open tabs pick up the change through the ClayJS <code>sync</code> plugin.</p>
-<p>There are two ways to give HTML Clay the rules:</p>
+<p>There are three ways to use the JSON API:</p>
 <ol>
-<li>Send them with each request. The file needs no changes, so this works on any HTML file.</li>
-<li>Save them in the file. Then a program can ask for the file&#39;s JSON without knowing its structure.</li>
+<li>Call ClayJS from the page itself.</li>
+<li>Send rules with each request. The file needs no changes, so this works on any HTML file.</li>
+<li>Save rules in the file. Then a program can ask for the file&#39;s JSON without knowing its structure.</li>
 </ol>
 <p>The page shows this list:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Output</span></div><pre tabindex="0"><code>Today
@@ -1246,9 +1247,28 @@
     &lt;li class=&quot;todo&quot; data-done=&quot;no&quot;&gt;Book tickets&lt;/li&gt;
   &lt;/ol&gt;
   &lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=sync&quot;&gt;&lt;/script&gt;
+  &lt;script src=&quot;https://clayjs.com/v1/clay-data.js&quot;&gt;&lt;/script&gt;
 &lt;/body&gt;
 &lt;/html&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 <p>The ClayJS script enables live updates. Plain <code>.html</code> files work the same way.</p>
+    </section>
+
+    <section>
+<h2 id="from-the-page-itself">From the page itself</h2>
+<p>To try it without writing code, download the <a href="https://panphora.hyperclay.com/_/download/demos/page-json.htmlclay?file=1">JSON demo</a> and open it with HTML Clay: edit the recipe and its JSON updates, edit the JSON and press Write and the recipe updates.</p>
+<p>Code in the todo page can read its live content, read the saved file and write changes back:</p>
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>JavaScript</span></div><pre tabindex="0"><code class="language-javascript">(async () =&gt; {
+  await clay.ready;
+  await clay.loaded.data;
+  const rules = { title: &quot;h1&quot;, items: &quot;.todo[]&quot; };
+  const live = clay.extractData(rules);
+  const saved = await clay.readData(rules);
+  await clay.writeData({ ...saved.data, title: &quot;Tomorrow&quot; }, {
+    rules,
+    ifMatch: saved.etag
+  });
+})();</code></pre></div><button class="copybtn" type="button">Copy</button></div>
+<p>Save ordinary page edits before calling <code>clay.writeData()</code>. After the write, ClayJS updates the open page without a reload.</p>
     </section>
 
     <section>
