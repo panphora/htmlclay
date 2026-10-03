@@ -243,7 +243,7 @@ func TestMissingBinary(t *testing.T) {
 	_, err := Run(context.Background(), Payload{
 		Tag:         "p",
 		ElementHTML: "<p>old</p>",
-		Comment:     "tighten",
+		Comment:     "@claude tighten",
 	}, Options{Env: []string{"PATH=" + t.TempDir()}}, nil)
 	if code := errorCode(t, err); code != "engine_unavailable" {
 		t.Fatalf("code = %q", code)
@@ -539,4 +539,171 @@ func TestClaudeLineOverCapIsRefusedWhileReading(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("refused only after %s: the cap waited for the deadline", elapsed)
 	}
+}
+
+// statusLog records the lifecycle status of one run.
+type statusLog struct {
+	texts []string
+}
+
+func (s *statusLog) record(text string) { s.texts = append(s.texts, text) }
+
+func (s *statusLog) check(t *testing.T, want ...string) {
+	t.Helper()
+	if len(s.texts) != len(want) {
+		t.Fatalf("status = %q, want %q", s.texts, want)
+	}
+	for i, text := range want {
+		if s.texts[i] != text {
+			t.Fatalf("status[%d] = %q, want %q", i, s.texts[i], text)
+		}
+	}
+}
+
+// isolatedEnv is a PATH that holds only the fake agents, so an agent installed
+// on this machine never decides what a test finds.
+func isolatedEnv(binDir string, extra ...string) []string {
+	return append([]string{"PATH=" + binDir}, extra...)
+}
+
+func plainPayload(comment string) Payload {
+	return Payload{Tag: "p", ElementHTML: "<p>old</p>", Comment: comment}
+}
+
+func TestDefaultClaudeFallsBackToCodex(t *testing.T) {
+	requireUnix(t)
+	binDir := t.TempDir()
+	writeAgent(t, binDir, "codex", fakeCodex)
+
+	var status statusLog
+	result, err := Run(context.Background(), plainPayload("tighten"), Options{
+		Env:    isolatedEnv(binDir),
+		Status: status.record,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.HTML != "<p>From codex</p>" {
+		t.Fatalf("html = %q", result.HTML)
+	}
+	status.check(t, "Claude Code isn't installed, editing with Codex")
+}
+
+func TestDefaultFableFallsBackToCodex(t *testing.T) {
+	requireUnix(t)
+	binDir := t.TempDir()
+	writeAgent(t, binDir, "codex", fakeCodex)
+
+	var status statusLog
+	result, err := Run(context.Background(), plainPayload("tighten"), Options{
+		Default: "fable",
+		Env:     isolatedEnv(binDir),
+		Status:  status.record,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.HTML != "<p>From codex</p>" {
+		t.Fatalf("html = %q", result.HTML)
+	}
+	status.check(t, "Claude Code isn't installed, editing with Codex")
+}
+
+func TestExplicitMissingClaudeDoesNotFallBack(t *testing.T) {
+	requireUnix(t)
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "ran")
+	writeAgent(t, binDir, "codex", "#!/bin/sh\n: > \"$FAKE_MARKER\"\n")
+
+	var status statusLog
+	_, err := Run(context.Background(), plainPayload("@claude tighten"), Options{
+		Env:    isolatedEnv(binDir, "FAKE_MARKER="+marker),
+		Status: status.record,
+	}, nil)
+	if code := errorCode(t, err); code != "engine_unavailable" {
+		t.Fatalf("code = %q", code)
+	}
+	if !strings.HasPrefix(err.Error(), "@claude isn't available: `claude` was not found") {
+		t.Fatalf("message = %q", err.Error())
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("the codex agent was started for a request that named claude")
+	}
+	status.check(t)
+}
+
+func TestBothAgentsMissing(t *testing.T) {
+	var status statusLog
+	_, err := Run(context.Background(), plainPayload("tighten"), Options{
+		Env:    isolatedEnv(t.TempDir()),
+		Status: status.record,
+	}, nil)
+	if code := errorCode(t, err); code != "engine_unavailable" {
+		t.Fatalf("code = %q", code)
+	}
+	want := "Neither Claude Code nor Codex is installed. Install one and sign in."
+	if err.Error() != want {
+		t.Fatalf("message = %q, want %q", err.Error(), want)
+	}
+	status.check(t)
+}
+
+func TestClaudePresentDoesNotFallBack(t *testing.T) {
+	requireUnix(t)
+	binDir := t.TempDir()
+	writeAgent(t, binDir, "claude", fakeClaude)
+
+	var status statusLog
+	result, err := Run(context.Background(), plainPayload("tighten"), Options{
+		Env:    isolatedEnv(binDir),
+		Status: status.record,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Model != "claude-opus-5-5" || result.HTML != "<p>New</p>" {
+		t.Fatalf("result = %+v", result)
+	}
+	status.check(t, "Editing with Claude Code")
+}
+
+func TestConfiguredCodexDefaultFallsBackToClaude(t *testing.T) {
+	requireUnix(t)
+	binDir := t.TempDir()
+	writeAgent(t, binDir, "claude", fakeClaude)
+
+	var status statusLog
+	result, err := Run(context.Background(), plainPayload("tighten"), Options{
+		Default: "codex",
+		Env:     isolatedEnv(binDir),
+		Status:  status.record,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Model != "claude-opus-5-5" || result.HTML != "<p>New</p>" {
+		t.Fatalf("result = %+v", result)
+	}
+	status.check(t, "Codex isn't installed, editing with Claude Code")
+}
+
+func TestConfiguredDefaultDoesNotFallBack(t *testing.T) {
+	requireUnix(t)
+	binDir := t.TempDir()
+	writeAgent(t, binDir, "claude", fakeClaude)
+
+	var status statusLog
+	_, err := Run(context.Background(), plainPayload("tighten"), Options{
+		Default: "mine",
+		Engines: map[string][]string{"mine": {filepath.Join(binDir, "mine-agent")}},
+		Env:     isolatedEnv(binDir),
+		Status:  status.record,
+	}, nil)
+	if code := errorCode(t, err); code != "engine_unavailable" {
+		t.Fatalf("code = %q", code)
+	}
+	if !strings.Contains(err.Error(), "@mine isn't available: its command was not found") {
+		t.Fatalf("message = %q", err.Error())
+	}
+	status.check(t)
 }

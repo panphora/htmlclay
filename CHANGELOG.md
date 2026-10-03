@@ -14,6 +14,9 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
   in the tray. A request needs the document's `Save-Token`, one runs per document at a time, and
   `@name.ext` context stays inside the document's folder. agy is refused, because it can read files
   without asking.
+- **AI editing names the agent it runs and falls back when the default program is missing.** The
+  first status names Claude Code, Fable or Codex, and requests that name no agent use the other
+  built in program if the built in default is unavailable; explicit agents never fall back.
 - **`POST /_/api/<file>` writes JSON into a document.** The body is applied through the page's
   own `api` rules tag, the same map `GET /_/api` reads with, and only content is written: text as
   text, and attributes that cannot run script. Only the changed elements are rewritten, so every

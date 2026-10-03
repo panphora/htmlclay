@@ -147,6 +147,9 @@ func (s *Server) runAIEdit(ctx context.Context, cancel context.CancelFunc, file 
 		Engines:  engines,
 		Internal: s.isInternal,
 		Mock:     os.Getenv("MOCK_MODEL") == "1",
+		Status: func(text string) {
+			s.publishAIEdit(request, "wire/status", text, nil)
+		},
 	}
 
 	var progressMu sync.Mutex

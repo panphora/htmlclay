@@ -139,6 +139,14 @@ func TestAIEditAnswersWithTheMock(t *testing.T) {
 		t.Fatalf("ack payload = %+v", ackPayload)
 	}
 
+	status := receiveHelperEnvelope(t, sub)
+	if status.Type != "wire/status" || status.Text != "Editing with Claude Code" {
+		t.Fatalf("first frame after the ack = %s %q", status.Type, status.Text)
+	}
+	if status.ID != "e1" || len(status.Payload) != 0 {
+		t.Fatalf("status frame = %+v", status)
+	}
+
 	done := receiveHelperType(t, sub, "wire/done", "e1")
 	var result struct {
 		HTML       string `json:"html"`

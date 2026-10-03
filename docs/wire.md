@@ -346,6 +346,18 @@ request per document at a time. A document that declares a helper named `ai-edit
 replace it. The request and its frames are the ones ClayJS's `ai-edit` plugin sends and reads;
 see [SECURITY.md](../SECURITY.md#ai-editing) for what the agent may do.
 
+The agent comes from the request's leading `@claude`, `@fable` or `@codex` token, and from the
+configured default agent when the comment carries no such token (Claude Code is the default when
+none is configured). The first `wire/status` names the agent, for example
+`Editing with Claude Code`. When the comment names no agent and the default agent's program is not
+found after the login PATH lookup and its one retry, `ai-edit` runs the other built in agent
+instead and says so first: `Claude Code isn't installed, editing with Codex`, or
+`Codex isn't installed, editing with Claude Code` for a Codex default. Fable reports as Claude Code
+there, because that is the program it needs. When both programs are missing the request fails with
+`engine_unavailable` and `Neither Claude Code nor Codex is installed. Install one and sign in.` A
+request that names its agent explicitly never falls back, and neither does an engine configured by
+hand.
+
 ## The CLI
 
 ```

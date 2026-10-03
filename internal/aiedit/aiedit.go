@@ -47,6 +47,7 @@ type Options struct {
 	Env      []string               // environment for the child; nil means helper.LoginEnv()
 	Internal func(path string) bool // reports a path in the server's own state; nil means none
 	Mock     bool                   // deterministic fake reply, for tests and MOCK_MODEL=1
+	Status   func(text string)      // lifecycle status for the page; nil means none
 }
 
 type Result struct {
@@ -106,26 +107,93 @@ func resolveEngines(configured map[string][]string) map[string]engine {
 var engineToken = regexp.MustCompile(`^[a-zA-Z0-9_-]+`)
 
 // routeEngine reads a leading bare @word (no dot, no slash) as an engine name.
-// @page is a context token, never an engine, and anything else is prose.
-func routeEngine(comment string, engines map[string]engine, fallback engine) (engine, string, *Error) {
+// @page is a context token, never an engine, and anything else is prose. The
+// third result reports whether the comment named a known engine itself.
+func routeEngine(comment string, engines map[string]engine, fallback engine) (engine, string, bool, *Error) {
 	trimmed := strings.TrimLeftFunc(comment, unicode.IsSpace)
 	if !strings.HasPrefix(trimmed, "@") {
-		return fallback, comment, nil
+		return fallback, comment, false, nil
 	}
 	rest := trimmed[1:]
 	word := engineToken.FindString(rest)
 	if word == "" || strings.HasPrefix(rest[len(word):], ".") || strings.HasPrefix(rest[len(word):], "/") {
-		return fallback, comment, nil
+		return fallback, comment, false, nil
 	}
 	name := strings.ToLower(word)
 	if name == "page" {
-		return fallback, comment, nil
+		return fallback, comment, false, nil
 	}
 	chosen, ok := engines[name]
 	if !ok {
-		return engine{}, "", unknownEngine(name, engines)
+		return engine{}, "", false, unknownEngine(name, engines)
 	}
-	return chosen, strings.TrimSpace(rest[len(word):]), nil
+	return chosen, strings.TrimSpace(rest[len(word):]), true, nil
+}
+
+// statusLabel is what the page's status bar calls an agent.
+func statusLabel(e engine) string {
+	switch e.name {
+	case "claude":
+		return "Claude Code"
+	case "fable":
+		return "Fable"
+	case "codex":
+		return "Codex"
+	}
+	return e.name
+}
+
+// programLabel names a missing program the way people know it: Fable runs on
+// the Claude Code program.
+func programLabel(e engine) string {
+	switch e.adapter {
+	case "claude":
+		return "Claude Code"
+	case "codex":
+		return "Codex"
+	}
+	return statusLabel(e)
+}
+
+// fallbackName is the other built-in agent a built-in default falls back to,
+// and "" when the default cannot fall back.
+func fallbackName(defaultName string) string {
+	switch defaultName {
+	case "claude", "fable":
+		return "codex"
+	case "codex":
+		return "claude"
+	}
+	return ""
+}
+
+// engineProgram is the executable an engine starts.
+func engineProgram(e engine) (string, *Error) {
+	switch e.adapter {
+	case "claude":
+		return "claude", nil
+	case "codex":
+		return "codex", nil
+	case "generic":
+		if len(e.command) == 0 {
+			return "", &Error{Code: "engine_failed", Message: fmt.Sprintf("engine @%s has an empty command", e.name)}
+		}
+		return e.command[0], nil
+	}
+	return e.name, nil
+}
+
+// unavailableError is the refusal for an engine whose program is not installed.
+func unavailableError(e engine) *Error {
+	missing := "`" + e.adapter + "`"
+	if e.adapter == "generic" {
+		missing = "its command"
+	}
+	return &Error{
+		Code: "engine_unavailable",
+		Message: fmt.Sprintf("@%s isn't available: %s was not found on this machine. Install it and sign in, or pick another agent with @claude, @fable or @codex.",
+			e.name, missing),
+	}
 }
 
 func unknownEngine(name string, engines map[string]engine) *Error {
@@ -183,7 +251,7 @@ func Run(ctx context.Context, p Payload, o Options, progress func(text string)) 
 	if !ok {
 		return Result{}, &Error{Code: "unknown_engine", Message: fmt.Sprintf("default engine %q is not configured", defaultName)}
 	}
-	chosen, comment, routeErr := routeEngine(p.Comment, engines, fallback)
+	chosen, comment, explicit, routeErr := routeEngine(p.Comment, engines, fallback)
 	if routeErr != nil {
 		return Result{}, routeErr
 	}
@@ -196,6 +264,10 @@ func Run(ctx context.Context, p Payload, o Options, progress func(text string)) 
 	report := progress
 	if report == nil {
 		report = func(string) {}
+	}
+	status := o.Status
+	if status == nil {
+		status = func(string) {}
 	}
 
 	pageText := ""
@@ -217,6 +289,7 @@ func Run(ctx context.Context, p Payload, o Options, progress func(text string)) 
 		label = chosen.name
 	}
 	if o.Mock {
+		status("Editing with " + statusLabel(chosen))
 		result, err := mockStream(ctx, p, comment, label, report)
 		if err != nil {
 			return Result{}, err
@@ -224,17 +297,9 @@ func Run(ctx context.Context, p Payload, o Options, progress func(text string)) 
 		return finish(result)
 	}
 
-	program := chosen.name
-	switch chosen.adapter {
-	case "claude":
-		program = "claude"
-	case "codex":
-		program = "codex"
-	case "generic":
-		if len(chosen.command) == 0 {
-			return Result{}, &Error{Code: "engine_failed", Message: fmt.Sprintf("engine @%s has an empty command", chosen.name)}
-		}
-		program = chosen.command[0]
+	program, programErr := engineProgram(chosen)
+	if programErr != nil {
+		return Result{}, programErr
 	}
 
 	env := o.Env
@@ -247,15 +312,26 @@ func Run(ctx context.Context, p Payload, o Options, progress func(text string)) 
 		bin, lookErr = lookPath(program, env)
 	}
 	if lookErr != nil {
-		missing := "`" + chosen.adapter + "`"
-		if chosen.adapter == "generic" {
-			missing = "its command"
+		otherName := ""
+		if !explicit {
+			otherName = fallbackName(defaultName)
 		}
-		return Result{}, &Error{
-			Code: "engine_unavailable",
-			Message: fmt.Sprintf("@%s isn't available: %s was not found on this machine. Install it and sign in, or pick another agent with @claude, @fable or @codex.",
-				chosen.name, missing),
+		other, found := engines[otherName]
+		if !found {
+			return Result{}, unavailableError(chosen)
 		}
+		otherProgram, otherProgramErr := engineProgram(other)
+		if otherProgramErr != nil {
+			return Result{}, otherProgramErr
+		}
+		otherBin, otherErr := lookPath(otherProgram, env)
+		if otherErr != nil {
+			return Result{}, &Error{Code: "engine_unavailable", Message: "Neither Claude Code nor Codex is installed. Install one and sign in."}
+		}
+		status(fmt.Sprintf("%s isn't installed, editing with %s", programLabel(chosen), statusLabel(other)))
+		chosen, program, bin = other, otherProgram, otherBin
+	} else {
+		status("Editing with " + statusLabel(chosen))
 	}
 
 	result, err := adapters[chosen.adapter](ctx, chosen, bin, userPrompt, o, env, report)
