@@ -400,7 +400,7 @@ that has bytes; a field naming no stamp this host issued is refused rather than 
 ```json
 {
   "spec": 1,
-  "extensions": ["conditional", "sync", "upload"],
+  "extensions": ["conditional", "data-read", "data-write", "sync", "upload"],
   "path": "notes.htmlclay",
   "absolutePath": "/Users/you/Desktop/notes.htmlclay",
   "name": "notes.htmlclay",
@@ -432,7 +432,7 @@ platform's own separators, because it names a file on disk rather than a route.
 ### `GET /_/meta`
 
 ```json
-{ "spec": 1, "extensions": ["conditional", "sync", "upload"] }
+{ "spec": 1, "extensions": ["conditional", "data-read", "data-write", "sync", "upload"] }
 ```
 
 The same answer without the per-file half, and it takes no token. `spec` and `extensions`

@@ -92,7 +92,7 @@ const maxSaveSize = 50 * 1024 * 1024
 // protected when they are not. Announce it only while handleSave still refuses on a
 // stamp mismatch.
 // sync-worker distinguishes the repaired shared transport from earlier sync hosts.
-var hostExtensions = []string{"conditional", "receipts", "sync", "sync-worker", "upload", "wire"}
+var hostExtensions = []string{"conditional", "data-read", "data-write", "receipts", "sync", "sync-worker", "upload", "wire"}
 
 // maxSaveIDLen caps the §6 receipt id this host will remember. The spec asks for
 // at least 128 bits of randomness, which is 32 hex characters or 22 in base64url;

@@ -129,6 +129,22 @@ func TestBothMetaRoutesAgreeOnHostScope(t *testing.T) {
 	if fmt.Sprint(host["extensions"]) != fmt.Sprint(perFile["extensions"]) {
 		t.Errorf("extensions differ: tokenless %v, token %v", host["extensions"], perFile["extensions"])
 	}
+	extensions, ok := host["extensions"].([]any)
+	if !ok {
+		t.Fatalf("extensions is not an array: %v", host["extensions"])
+	}
+	announced := make(map[string]bool, len(extensions))
+	for _, extension := range extensions {
+		name, ok := extension.(string)
+		if ok {
+			announced[name] = true
+		}
+	}
+	for _, name := range []string{"data-read", "data-write"} {
+		if !announced[name] {
+			t.Errorf("host does not announce %q: %v", name, extensions)
+		}
+	}
 }
 
 // A bad token is a per-document reason, and §5 forbids answering one with a 404:
