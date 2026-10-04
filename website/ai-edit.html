@@ -1210,16 +1210,15 @@
     </div>
 
     <section>
-<p>Select the sentence &quot;Visitors arriving late will not be admitted&quot; and ask your agent to make it friendlier. The paragraph might now read &quot;Please arrive on time, as we&#39;re unable to admit late arrivals&quot;. The rewrite stays unsaved until you click Keep.</p>
-<figure class="doc-figure"><img src="/images/ai-edit-gesture.png" alt="Select the sentence, describe the change, and review the rewrite in place before clicking Keep." width="1600" height="900" loading="lazy"><figcaption>Select the sentence, describe the change, and review the rewrite in place before clicking Keep.</figcaption></figure>
+<p>Turn a small table into a chart without leaving the page. Download the <a href="https://panphora.hyperclay.com/_/download/demos/ai-native-html-files/ai-edit.htmlclay?file=1">AI editing demo</a> and open it with HTML Clay or Hyperclay Local. Click Edit with AI, then send the suggested request: “Turn this table data into a chart and put it above the table.” The chart appears above the unchanged table. Keep saves the result; Revert restores the original.</p>
+<figure class="doc-figure"><img src="/images/ai-edit-gesture.png" alt="An illustrative chart above the unchanged table, with Keep and Revert in the bottom bar." width="1000" height="1100" loading="lazy"><figcaption>An illustrative chart above the unchanged table, with Keep and Revert in the bottom bar.</figcaption></figure>
 
-<p>To try it, download the <a href="https://panphora.hyperclay.com/_/download/demos/ai-edit/event-notice.htmlclay?file=1">AI editing demo</a> and open it with HTML Clay.</p>
 <p>ClayJS sends the paragraph around your selection and your request to your agent through HTML Clay or Hyperclay Local. The agent returns revised HTML. ClayJS shows the rewrite on the page. Keep saves the rewrite into the file.</p>
     </section>
 
     <section>
 <h2 id="before-you-start">Before you start</h2>
-<p>You need HTML Clay or Hyperclay Local, a file that loads ClayJS with AI editing turned on, and Claude Code installed and signed in on your computer.</p>
+<p>You need HTML Clay or Hyperclay Local, a file that loads ClayJS with the <code>ai-edit</code> plugin, and Claude Code or Codex installed and signed in on your computer. Turn on AI Editing in HTML Clay&#39;s tray menu or Hyperclay Local&#39;s Options.</p>
 <p>Add <code>ai-edit</code> to the plugins in the ClayJS script tag. The tag from <a href="/get-started">Get started</a> becomes:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=indicator,ai-edit&quot;&gt;&lt;/script&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 <p>Open the file through the app. The app does not add the tag for you. The text needs no special markup or ids.</p>
@@ -1231,10 +1230,10 @@
 <p>The rewrite replaces the original paragraph on the page. You can read it before deciding whether to save it.</p>
 <ol>
 <li>Select the sentence you want changed, such as &quot;Visitors arriving late will not be admitted&quot;. Keep the selection inside one paragraph.</li>
-<li>Press ⌘J on macOS or Ctrl+J on Windows and Linux. You can also click the small AI chip at the end of the selection. The selected words stay highlighted. A panel opens under them with one box and a Send button. Escape closes the panel.</li>
+<li>Press ⌘J on macOS or Ctrl+J on Windows and Linux. You can also click the small AI chip at the end of the selection. The selected words stay highlighted. A panel opens under them with one box and a Send button. Escape closes the panel. Clicking outside it also closes it. Your unsent request stays as a draft for that part of the page.</li>
 <li>In the &quot;Describe the change&quot; box, type &quot;Make this friendlier. Keep the rule that late arrivals cannot enter&quot;. Shift+Enter adds a line to your request.</li>
-<li>Press Enter or click Send. Send becomes Stop. A status line below the box shows progress, such as &quot;Writing, 1.2 KB&quot;. Stop or Escape cancels the request and restores the original paragraph. When the reply arrives, the rewrite replaces the paragraph. Revert and Keep appear, and the status line names the model that answered.</li>
-<li>Check that the rewrite still says what you mean. Revert restores the original paragraph. Escape also discards the rewrite. Click Keep to save the rewrite into the file. Check the status line for a save confirmation or an error.</li>
+<li>Press Enter or click Send. The panel closes and a bottom bar shows progress and Stop. Stop or Escape cancels the running request and restores the original paragraph. When the reply arrives, the rewrite replaces the paragraph and the bar offers Keep, Revert and X.</li>
+<li>Check that the rewrite still says what you mean. Revert restores the original paragraph. Keep, X or Escape keeps the rewrite and saves it into the file. Check the bar for a save confirmation or an error.</li>
 </ol>
 <p>Every save waits while you review the rewrite, including autosave and ⌘S. Revert runs any waiting save with the original paragraph back. Keep saves the rewrite instead.</p>
 <p>After Keep, open the file in your text editor. If you kept the example rewrite, the paragraph now contains:</p>
@@ -1244,9 +1243,9 @@
 
     <section>
 <h2 id="choose-an-agent">Choose an agent</h2>
-<p>Claude Code handles requests by default. To use Fable through Claude Code, start your request with <code>@fable</code>:</p>
+<p>Claude Code handles requests by default. HTML Clay falls back to Codex if the default agent is not installed; if Codex is your configured default, it can fall back to Claude Code. An explicit <code>@agent</code> request never falls back, and a sign-in error does not trigger fallback. Hyperclay Local users can choose Codex explicitly with <code>@codex</code>. To use Fable through Claude Code, start your request with <code>@fable</code>:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Output</span></div><pre tabindex="0"><code>@fable Make this friendlier. Keep the rule that late arrivals cannot enter.</code></pre></div></div>
-<p>Use <code>@codex</code> instead for Codex. The Codex CLI must be installed and signed in on your computer. Its status line stays on &quot;sending…&quot; until the reply arrives, then reads <code>done (codex)</code>.</p>
+<p>Use <code>@codex</code> instead for Codex. The Codex CLI must be installed and signed in on your computer. The rewrite appears when the agent’s request finishes.</p>
     </section>
 
     <section>
@@ -1270,8 +1269,8 @@
     <section>
 <h2 id="when-it-does-not-work">When it does not work</h2>
 <ol>
-<li>If the status line says an agent was not found or is not signed in, install or sign in to the agent you asked for (Claude Code unless you typed <code>@fable</code> or <code>@codex</code>). Then send again.</li>
-<li>Unknown <code>@name</code>: the panel lists the agents it knows. Remove the name to use Claude Code, or use <code>@fable</code> or <code>@codex</code>.</li>
+<li>If the bar says an agent was not found or is not signed in, install or sign in to that agent, then send again. HTML Clay can fall back when a default CLI is missing, but an explicit <code>@agent</code> request and a sign-in failure need your attention.</li>
+<li>Unknown <code>@name</code>: the panel lists the agents it knows. Remove the name to use the configured default, or use <code>@fable</code> or <code>@codex</code>.</li>
 <li>AI editing is turned off, with no Send button: enable &quot;AI Editing&quot; in the app&#39;s menu.</li>
 <li>The shortcut does something else or nothing: select some text first. If the browser keeps the shortcut, click the AI chip. If no chip appears, check that the file is open through the app and AI editing is on.</li>
 <li>Another request is running: wait for it to finish. Each file handles one request at a time.</li>
