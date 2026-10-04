@@ -225,8 +225,9 @@ func TestNoDataParameterServesTheDocumentUnchanged(t *testing.T) {
 			t.Errorf("%s Content-Type = %q", target, ct)
 		}
 
-		// The serve path adds exactly two things to the disk bytes: the durable id and the save
-		// token. Remove both and what is left must be the file.
+		// The serve path adds exactly three things to the disk bytes: the durable id, the save
+		// token, and the response version stamp. The token strip takes the stamp with it, both
+		// being ephemeral response metadata. Remove them and what is left must be the file.
 		stripped := string(htmlutil.StripHTMLClayID(htmlutil.StripToken(w.Body.Bytes())))
 		if stripped != content {
 			t.Errorf("%s body diverged from disk:\n got: %q\nwant: %q", target, stripped, content)

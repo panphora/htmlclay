@@ -31,6 +31,14 @@ var tokenAttrs = []*regexp.Regexp{attrPattern("savetoken"), attrPattern("htmlcla
 // move rather than following its path.
 var documentIDAttrs = []*regexp.Regexp{attrPattern("documentid"), attrPattern("htmlclayid")}
 
+// rootAttributeToken matches one attribute on the root tag: the whitespace before
+// it, its name, and its value if it has one. Splitting the run of attributes into
+// tokens is what keeps a name that only appears inside a quoted value from being
+// read as an attribute of its own: searching the run for `documentetag` would
+// find it in `data-x="see documentetag"`, and stripping that would rewrite the
+// author's bytes.
+var rootAttributeToken = regexp.MustCompile(`\s+([^\s=/>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?`)
+
 func isHTMLSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
 }
@@ -341,12 +349,56 @@ func InjectToken(data []byte, value string) []byte {
 	return injectAttr(data, tokenAttrs, value, "savetoken", "htmlclaytoken")
 }
 
-// StripToken removes the save token from <html> under either spelling. This one
-// has to stay permissive forever: a document saved by a pre-rename build arrives
-// carrying htmlclaytoken, and a strip that only knew the new name would write a
-// live credential to disk.
+// StripToken removes the save token from <html> under either spelling, and the
+// response stamp with it. This one has to stay permissive forever: a document
+// saved by a pre-rename build arrives carrying htmlclaytoken, and a strip that
+// only knew the new name would write a live credential to disk.
+//
+// The stamp is in here because it is the other piece of ephemeral response
+// metadata: a tab that saved the bytes it was served would freeze one response's
+// version into the file, and the next reader would be told it holds a document it
+// does not. Every ingress of client bytes already runs through this function, so
+// the stamp is stripped on all of them without a call site that can be forgotten.
 func StripToken(data []byte) []byte {
-	return stripAttr(data, tokenAttrs)
+	return StripDocumentETag(stripAttr(data, tokenAttrs))
+}
+
+// StripDocumentETag removes any documentetag attribute from the root tag, leaving
+// every other byte of the run — other attributes, their quoting, and any child
+// attribute of the same name — exactly as it was. A document with no stamp, or no
+// root tag at all, is returned unchanged.
+func StripDocumentETag(data []byte) []byte {
+	start, end, ok := findHTMLTagRange(data)
+	if !ok {
+		return data
+	}
+	attrs := data[start+5 : end]
+	var out []byte
+	at := 0
+	for _, m := range rootAttributeToken.FindAllSubmatchIndex(attrs, -1) {
+		if !equalFoldASCII(attrs[m[2]:m[3]], "documentetag") {
+			continue
+		}
+		if out == nil {
+			out = append(make([]byte, 0, len(data)), data[:start+5]...)
+		}
+		out = append(out, attrs[at:m[0]]...)
+		at = m[1]
+	}
+	if out == nil {
+		return data
+	}
+	out = append(out, attrs[at:]...)
+	return append(out, data[end:]...)
+}
+
+// InjectDocumentETag stamps the response with the version of the bytes it was
+// built from, replacing any stamp already there so serving the same document
+// twice cannot leave a stale value behind. It is response metadata only: the
+// value is never written to disk and never relayed to another browser, because a
+// peer's tab is not the tab this stamp describes.
+func InjectDocumentETag(data []byte, value string) []byte {
+	return injectAttr(StripDocumentETag(data), nil, value, "documentetag")
 }
 
 // ReadHTMLClayID extracts the document id from the <html> tag, preferring the

@@ -408,6 +408,12 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 		served = htmlutil.SetHTMLClayID(data, id)
 	}
 
+	// The response carries the version stamp of the DISK bytes it was built from,
+	// computed before anything was injected, so a client can tell the version it
+	// navigated to from whatever a later discovery answer reports. data is never
+	// touched: the stamp describes the file, not the response.
+	served = htmlutil.InjectDocumentETag(served, specwire.Etag(data))
+
 	// B1a: capture a version when a file is first served, so a freshly opened file
 	// that is never saved still has something to restore.
 	//
