@@ -1210,15 +1210,15 @@
     </div>
 
     <section>
-<p>Turn a small table into a chart without leaving the page. Download the <a href="https://panphora.hyperclay.com/_/download/demos/ai-native-html-files/ai-edit.htmlclay?file=1">AI editing demo</a> and open it with HTML Clay or Hyperclay Local. Click Edit with AI, then send the suggested request: “Turn this table data into a chart and put it above the table.” The chart appears above the unchanged table. Keep saves the result; Revert restores the original.</p>
-<figure class="doc-figure"><img src="/images/ai-edit-gesture.png" alt="An illustrative chart above the unchanged table, with Keep and Revert in the bottom bar." width="1000" height="1100" loading="lazy"><figcaption>An illustrative chart above the unchanged table, with Keep and Revert in the bottom bar.</figcaption></figure>
+<p>Turn a small table into a chart without leaving the page. Download the <a href="https://panphora.hyperclay.com/_/download/demos/ai-native-html-files/ai-edit.htmlclay?file=1">AI editing demo</a> and open it with HTML Clay or Hyperclay Local. Click Edit with AI, then send the suggested request: “Make a chart of this table&#39;s data and place it above the table”. The chart appears above the unchanged table. Keep saves the result; Revert restores the original.</p>
+<figure class="doc-figure"><img src="/images/ai-edit-gesture-a1dc7668.png" alt="An AI-generated chart above the unchanged table, with Keep and Revert in the bottom bar." width="1000" height="1100" loading="lazy"><figcaption>An AI-generated chart above the unchanged table, with Keep and Revert in the bottom bar.</figcaption></figure>
 
-<p>ClayJS sends the paragraph around your selection and your request to your agent through HTML Clay or Hyperclay Local. The agent returns revised HTML. ClayJS shows the rewrite on the page. Keep saves the rewrite into the file.</p>
+<p>ClayJS sends the selected HTML, your request and any included context to your agent through HTML Clay or Hyperclay Local. The agent returns revised HTML. ClayJS shows the rewrite on the page. Keep saves the rewrite into the file.</p>
     </section>
 
     <section>
 <h2 id="before-you-start">Before you start</h2>
-<p>You need HTML Clay or Hyperclay Local, a file that loads ClayJS with the <code>ai-edit</code> plugin, and Claude Code or Codex installed and signed in on your computer. Turn on AI Editing in HTML Clay&#39;s tray menu or Hyperclay Local&#39;s Options.</p>
+<p>You need HTML Clay or Hyperclay Local, a file that loads ClayJS with the <code>ai-edit</code> plugin, and Claude Code or Codex installed and signed in on your computer. Make sure AI Editing is checked in HTML Clay&#39;s tray menu or Hyperclay Local&#39;s Options. In Hyperclay Local, start your request with <code>@codex</code> if you use Codex.</p>
 <p>Add <code>ai-edit</code> to the plugins in the ClayJS script tag. The tag from <a href="/get-started">Get started</a> becomes:</p>
 <div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>HTML</span></div><pre tabindex="0"><code class="language-markup">&lt;script src=&quot;https://clayjs.com/v1/clay.js?plugins=indicator,ai-edit&quot;&gt;&lt;/script&gt;</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 <p>Open the file through the app. The app does not add the tag for you. The text needs no special markup or ids.</p>

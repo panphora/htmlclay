@@ -944,9 +944,10 @@
     <section id="safe" aria-labelledby="safe-title">
       <h2 id="safe-title">The exact safety boundary</h2>
       <div class="safe">
-        <p><b>A page can write only to its own file.</b> A trusted folder is the one exception. Any HTML Clay file inside it can change any other file in that folder, including files added later. Untrust the folder and that permission ends.</p>
-        <p><b>Nothing outside your home folder can be opened at all.</b> HTML Clay also refuses dotfiles, its settings, and its backups. A missing file and a refused file return the same response, so a page cannot use HTML Clay to see what is on your disk.</p>
-        <p><b>Your files stay on your machine.</b> HTML Clay checks for a new version once at startup. It sends no file contents, and nothing else leaves your machine.</p>
+        <p><b>A page saves only into its own file by default.</b> Inside a trusted folder, HTML Clay files can change other files in that folder, including files added later. Untrust the folder and that permission ends.</p>
+        <p><b>Document programs require separate approval.</b> An approved program runs with your account’s permissions and can read or change files your account can access. The file server’s restrictions do not sandbox that program. Only approve programs you trust.</p>
+        <p><b>The file server does not serve files outside your home folder.</b> It also refuses dotfiles, its settings and its backups. A missing file and a refused file return the same response.</p>
+        <p><b>The file server runs locally.</b> HTML Clay checks for a new version at startup without sending file contents. AI editing sends selected HTML, your request and any included context to your local agent, which may contact its model provider. Other approved programs can also make network requests.</p>
         <p>The full model, including the risks it accepts, is written down in <a href="https://github.com/panphora/htmlclay/blob/main/SECURITY.md">SECURITY.md</a>.</p>
       </div>
     </section>
@@ -990,7 +991,7 @@
           <dl>
             <dt>Download</dt><dd>64 bit ZIP, signed executable</dd>
             <dt>Signing</dt><dd>Signed executable</dd>
-            <dt>File setup</dt><dd>Run <code>register.bat</code> manually</dd>
+            <dt>File setup</dt><dd>File associations register automatically when the app launches</dd>
             <dt>Permissions</dt><dd>Beta dialog, fails closed</dd>
             <dt>Folder trust</dt><dd>Pinned to path only</dd>
             <dt>Save durability</dt><dd>Almost complete: skips the final folder flush</dd>
@@ -1032,14 +1033,14 @@
           <p>The command receives a small JSON request on stdin. Each line it prints becomes a progress update that the page can show. Exit 0 means the work is done. The program edits the file on disk with whatever tools it already has. The command <code>claude -p "$(cat)"</code> works as an AI handler without extra code.</p>
         </div>
 
-        <figure class="wire-flow" role="img" aria-label="Three step wire flow. First, the open page sends a small opaque JSON request. Second, the local handler reads stdin, reports progress on stdout, and edits the file directly. Third, HTML Clay notices an ordinary file change, versions it, and updates the page. No HTML crosses the channel.">
+        <figure class="wire-flow" role="img" aria-label="Three step wire flow. First, the open page sends a small opaque JSON request. Second, the local handler reads stdin, reports progress on stdout, and edits the file directly. Third, HTML Clay notices an ordinary file change, versions it, and updates the page. The program decides what data the request and response contain.">
           <div class="wire-step" aria-hidden="true"><span class="num">1</span><b>Page asks</b><small>Opaque JSON request</small></div>
           <span class="wire-arrow" aria-hidden="true"></span>
           <div class="wire-step" aria-hidden="true"><span class="num">2</span><b>Program edits</b><small>File on disk</small></div>
           <span class="wire-arrow" aria-hidden="true"></span>
           <div class="wire-step" aria-hidden="true"><span class="num">3</span><b>Page updates</b><small>Ordinary file change</small></div>
         </figure>
-        <p class="fine-print">No HTML crosses the wire in either direction. The file is the only shared state. Requests are capped at 1 MiB, so nothing document sized can drift through the channel.</p>
+        <p class="fine-print">The wire carries JSON requests and responses. AI editing includes the selected HTML, your request and any included context; your local agent may send that content to its model provider. Requests are capped at 1 MiB.</p>
 
         <div class="point" style="margin-top: 19px;">
           <h3>Built to be trusted with your files</h3>
@@ -1051,8 +1052,8 @@
       </section>
 
       <section aria-labelledby="data-title">
-        <h2 id="data-title">Read a document as JSON</h2>
-        <p class="section-lede">A file can publish a small read only API. Your script gets the fields the document chose to expose, without a browser or an HTML parser.</p>
+        <h2 id="data-title">Read and write a document as JSON</h2>
+        <p class="section-lede">Each file can expose a JSON endpoint. GET reads mapped values; POST writes mapped values back into the HTML file. Your script does not need a browser or its own HTML parser.</p>
 
         <div class="code-window">
           <div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>notes.htmlclay</span></div>
@@ -1071,7 +1072,7 @@
 
         <div class="api-note">
           <p><b>The same file boundary applies.</b> A data request can read only what a normal request could serve.</p>
-          <p><b>The API does not write.</b> It creates no editing session, save token, or version.</p>
+          <p><b>Reading does not change the file.</b> GET creates no editing session, save token or version. POST changes mapped values in a writable file. Include the optional <code>If-Match</code> header to reject a write if the file has changed since you read it. See the <a href="/json-api">JSON API guide</a> for the request format.</p>
         </div>
         <p class="fine-print">The API uses the same rules dialect as the Hyperclay platform, so a rule written for either one works with the other. A caller can also pass ad hoc rules in the URL with <code>?data={...}</code>. The API sends no CORS headers, so a page served by another local server on your machine cannot read your files.</p>
       </section>
