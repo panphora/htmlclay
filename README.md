@@ -175,9 +175,24 @@ User double-clicks .htmlclay file
                 → Server writes changes back to disk
 ```
 
-Every trusted folder's port is bound again at startup, before any file is opened, so an address
-bookmarked before the last quit still answers. An address HTML Clay remembers but is not serving
-answers with a fixed recovery page that holds no permissions at all.
+Every live trusted folder's remembered port is bound at startup before a file is opened. If
+trusting an enclosing folder changes the active origin, an ordinary remembered address redirects an
+eligible top-level document navigation to the current trusted origin. The old listener serves no
+files and grants no permissions. Missing trust, a failed folder identity check, unsafe paths, and
+non-navigation requests keep the recovery page. Explicitly revoked addresses remain on that page for
+the rest of the run.
+
+An occupied port cannot be held by HTML Clay. Folder trust does not migrate browser storage between
+origins, and forgotten or evicted port records are not permanent bookmark records.
+
+### Programs
+
+**Programs → Configure an Open File…** lists the programs a document declares for files already
+registered, including files opened from a bookmark. Selecting a row shows its current status, chooses
+the executable, and then asks for explicit document-only or any-document approval. Helpers receive
+protocol requests on stdin; launchers that only open pages are not helpers. Cancel or deny leaves
+bindings unchanged. A stored valid binding is restored on reload or restart without another approval.
+This menu is generic; Search's specific contract belongs in its own README.
 
 ### Server endpoints
 
