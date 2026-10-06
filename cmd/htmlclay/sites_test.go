@@ -2451,3 +2451,28 @@ func TestFileURLUsesForwardSlashes(t *testing.T) {
 		})
 	}
 }
+
+// TestFileURLLiteralCharacters pins the escaping of a decoded filesystem-relative
+// path. relPath reaches fileURL already decoded, so a literal percent in a
+// filename has to be escaped exactly once -- escaping it a second time would name a
+// different file -- while a space, "#", "?", or a non-ASCII character must not
+// split the path into a query, a fragment, or raw bytes.
+func TestFileURLLiteralCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rel  string
+		want string
+	}{
+		{"literal percent", "report%20one.htmlclay", "http://127.0.0.1:4000/report%2520one.htmlclay"},
+		{"space", "report one.htmlclay", "http://127.0.0.1:4000/report%20one.htmlclay"},
+		{"hash", "report#one.htmlclay", "http://127.0.0.1:4000/report%23one.htmlclay"},
+		{"question mark", "report?one.htmlclay", "http://127.0.0.1:4000/report%3Fone.htmlclay"},
+		{"unicode", "café.htmlclay", "http://127.0.0.1:4000/caf%C3%A9.htmlclay"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fileURL(4000, tc.rel); got != tc.want {
+				t.Errorf("fileURL(4000, %q) = %q, want %q", tc.rel, got, tc.want)
+			}
+		})
+	}
+}

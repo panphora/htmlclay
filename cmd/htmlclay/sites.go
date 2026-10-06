@@ -177,7 +177,7 @@ func (a *app) listenForAnchor(anchor string) (net.Listener, error) {
 		if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p)); err == nil {
 			return ln, nil
 		}
-		a.rt.logger.Printf("Remembered port %d for %s is taken, picking another", p, anchor)
+		a.rt.logger.Printf("Remembered port %d for %s is taken; using another port, so old bookmarks cannot be held", p, anchor)
 	}
 	return net.Listen("tcp", "127.0.0.1:0")
 }
@@ -241,12 +241,15 @@ func (a *app) rememberPort(anchor string, port int) {
 	if anchor == a.rt.home {
 		return
 	}
-	if a.rt.cfg.SitePort(anchor) == port {
+	previous := a.rt.cfg.SitePort(anchor)
+	if previous == port {
 		return
 	}
 	a.rt.cfg.RememberSitePort(anchor, port)
 	if err := a.rt.cfg.Save(); err != nil {
 		a.rt.logger.Printf("Could not persist port for %s: %v", anchor, err)
+	} else if previous != 0 {
+		a.rt.logger.Printf("Origin port changed: anchor=%s previous=%d current=%d; old bookmarks cannot be held if another process owns that port", anchor, previous, port)
 	}
 }
 
@@ -429,9 +432,14 @@ func (a *app) routeTrusted(absPath string) (string, bool) {
 // bound port answers with is the whole of the feature:
 //
 //	live trusted folder      its own site: the file, editable, no dialog
-//	nested under a broader   a recovery page, because the broader folder owns
-//	trusted folder           the tree and the file lives on its origin now
-//	remembered ad-hoc root   a recovery page. No roots armed, nothing registered
+//	nested under a broader   a redirect to the broader folder's origin for an
+//	trusted folder           eligible navigation, the recovery page otherwise,
+//	                         because the broader folder owns the tree and the
+//	                         file lives on its origin now
+//	remembered ad-hoc root   a redirect to the origin current trust gives the
+//	                         requested file for an eligible navigation, the
+//	                         recovery page otherwise. No roots armed, nothing
+//	                         registered
 //	dead trusted folder      the dead-folder recovery page. Never a site: serving
 //	                         would serve whatever now sits at that path, and a
 //	                         parked listener cannot serve anything
@@ -455,6 +463,7 @@ func (a *app) startSites() {
 		// folder falls through to the parking loop, so a bookmark made before the
 		// broader folder was declared still answers with a page.
 		if anchor, ok := a.trustedAnchor(tf.Path); ok && anchor != tf.Path {
+			a.rt.logger.Printf("Trusted folder %s is covered by %s; its remembered origin uses navigation recovery", tf.Path, anchor)
 			continue
 		}
 		s, err := a.buildSite(tf.Path, true)
@@ -488,19 +497,12 @@ func (a *app) startSites() {
 // parkDead holds a dead trusted folder's remembered port with the page that says
 // why it is dead. A parked listener is structurally incapable of serving a file,
 // so this grants nothing; it only replaces "refused to connect" with a reason.
-// A dead folder under a live broader one gets the ordinary recovery page, as a
-// shadowed folder does: re-approving it would not bring its origin back, because
-// the broader folder owns the tree.
 func (a *app) parkDead(anchor string) {
 	port := a.rt.cfg.SitePort(anchor)
 	if port == 0 {
 		return
 	}
-	page := deadFolderPage
-	if outer, ok := a.trustedAnchor(anchor); ok && outer != anchor {
-		page = recoveryPage
-	}
-	a.parkPortWith(anchor, port, page)
+	a.parkPortWith(anchor, port, deadFolderPage)
 }
 
 // shutdown stops every listener and releases every capability handle.
@@ -547,18 +549,13 @@ func (a *app) shutdown() {
 }
 
 func fileURL(port int, relPath string) string {
-	base := fmt.Sprintf("http://127.0.0.1:%d/", port)
-	// relPath comes from filepath.Rel, so on Windows its separators are
-	// backslashes. url.JoinPath percent-encodes those as %5C rather than reading
-	// them as separators, which collapses the whole path into ONE segment: a page
-	// at /Documents%5CGitHub%5Cnotes%5Cx.htmlclay resolves a relative
-	// "vendor/clay.js" against the server root, so every relative asset in a
-	// .htmlclay file 404s. Only the generated URL was ever affected -- the server
-	// already accepts forward slashes, because ValidatePath joins them onto the
-	// home dir and Windows takes either separator.
-	result, err := url.JoinPath(base, filepath.ToSlash(relPath))
-	if err != nil {
-		return base + filepath.ToSlash(relPath)
-	}
-	return result
+	// relPath is a decoded filesystem-relative path, so assigning it to Path
+	// escapes a literal percent exactly once. ToSlash is still needed on Windows,
+	// where filepath.Rel hands back backslashes: Path would encode those as %5C
+	// and every relative asset in the page would resolve against the server root.
+	return (&url.URL{
+		Scheme: "http",
+		Host:   fmt.Sprintf("127.0.0.1:%d", port),
+		Path:   "/" + filepath.ToSlash(relPath),
+	}).String()
 }

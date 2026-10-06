@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -186,13 +187,20 @@ func (s *Server) shouldAutoRegister(r *http.Request, absPath string) bool {
 // failure falls back to the plain read-only asset path, which is also what
 // happens when the folder's identity pin no longer matches.
 func (s *Server) autoRegister(w http.ResponseWriter, r *http.Request, absPath string) (*session.File, bool) {
-	url, ok := s.hooks.Route(absPath)
+	target, ok := s.hooks.Route(absPath)
 	if !ok {
 		return nil, false
 	}
 	if f, ok := s.sessions.LookupByPath(absPath); ok {
 		return f, false
 	}
-	http.Redirect(w, r, url, http.StatusFound)
+	destination, err := url.Parse(target)
+	if err != nil {
+		return nil, false
+	}
+	if r.URL.RawQuery != "" {
+		destination.RawQuery = r.URL.RawQuery
+	}
+	http.Redirect(w, r, destination.String(), http.StatusFound)
 	return nil, true
 }

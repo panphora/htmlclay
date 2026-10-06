@@ -39,7 +39,7 @@ func TestDeadFolderNeverTakesALiveFoldersPort(t *testing.T) {
 	}
 }
 
-func TestDeadFolderUnderALiveOneGetsTheOrdinaryRecoveryPage(t *testing.T) {
+func TestDeadFolderUnderALiveOneExplainsItsOwnReapproval(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	proj := filepath.Join(home, "proj")
 	sub := filepath.Join(proj, "sub")
@@ -63,12 +63,15 @@ func TestDeadFolderUnderALiveOneGetsTheOrdinaryRecoveryPage(t *testing.T) {
 	second.startSites()
 	t.Cleanup(second.shutdown)
 
-	_, body := fetch(t, subBookmark)
-	if strings.Contains(body, "needs approving again") {
-		t.Fatal("re-approving a folder under a live one cannot bring its origin back, so the page must not ask for it")
+	code, headers, body := do(t, browserClient(), navRequest(t, subBookmark))
+	if code != 404 || headers.Get("Location") != "" {
+		t.Fatalf("a dead source relocated: %d, %q", code, headers.Get("Location"))
 	}
-	if !strings.Contains(body, "Nothing is open at this address") {
-		t.Fatal("expected the ordinary recovery page")
+	if body != string(deadFolderPage) {
+		t.Fatalf("expected the dead-folder approval page, got %q", body)
+	}
+	if n := registrations(t, second, page); n != 0 {
+		t.Fatalf("a dead source registered the file in %d sites", n)
 	}
 }
 

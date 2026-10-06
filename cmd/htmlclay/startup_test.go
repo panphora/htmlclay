@@ -297,6 +297,13 @@ func TestNestedTrustedFolderIsShadowedButItsPortIsHeld(t *testing.T) {
 	if code != 404 || !strings.Contains(body, "Nothing is open at this address") {
 		t.Fatalf("the shadowed folder's port should hold the recovery page: %d, %q", code, body)
 	}
+
+	// A real navigation from the old bookmark goes to the folder that owns the
+	// tree now, which is what the held port is for.
+	parent := liveSite(t, second, proj)
+	if got := recoveryRedirect(t, subBookmark); got != fileURL(parent.port, rel) {
+		t.Fatalf("a navigation on the shadowed port relocated to %q, want %q", got, fileURL(parent.port, rel))
+	}
 }
 
 // A file named on the command line after startup routes onto the site that is

@@ -48,6 +48,9 @@ func (a *app) trustFolder(dir string) error {
 	a.mu.Unlock()
 
 	a.rt.logger.Printf("Trusted folder added: %s", canonical)
+	if anchor, ok := a.trustedAnchor(canonical); ok && anchor != canonical {
+		a.rt.logger.Printf("Trusted folder %s is covered by %s; remembered bookmarks use that origin after current folder approval", canonical, anchor)
+	}
 	a.bringLive(canonical)
 	return nil
 }
@@ -230,6 +233,11 @@ func (a *app) untrustFolder(dir string) error {
 	for _, p := range dropped {
 		a.rt.ls.DropSubscribers(p)
 	}
+	for _, tf := range a.rt.cfg.TrustedFolderList() {
+		if tf.Path != dir && session.EqualOrUnder(tf.Path, dir) {
+			a.bringLive(tf.Path)
+		}
+	}
 	for _, p := range reopen {
 		s, _, ok := a.route(p, session.ViaOsOpen)
 		if !ok {
@@ -248,7 +256,7 @@ func (a *app) untrustFolder(dir string) error {
 		freedPort = a.unpark(dir)
 	}
 	if freedPort != 0 {
-		a.parkPort(dir, freedPort)
+		a.parkPortMode(dir, freedPort, recoveryPage, recoveryRevoked)
 	}
 
 	a.rt.logger.Printf("Trusted folder removed: %s (%d registrations dropped, %d re-homed)", dir, len(dropped), len(reopen))
