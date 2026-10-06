@@ -70,9 +70,11 @@ type TrustedFolderHooks struct {
 // HelperHooks are the app operations the Programs submenu drives. Each returns
 // the authoritative list so the tray always re-renders from config state.
 type HelperHooks struct {
-	List func() []Row
-	Add  func() []Row
-	Row  func(id string) []Row
+	List      func() []Row
+	Add       func() []Row
+	Row       func(id string) []Row
+	Documents func() []Row
+	Document  func(key string) []Row
 	// AIEditOff runs after the AI Editing checkbox is turned off, to cancel
 	// running AI edits. May be nil.
 	AIEditOff func()
@@ -106,10 +108,11 @@ type Tray struct {
 	updateItem    *systray.MenuItem
 	updateURL     string
 
-	trusted     *TrustedFolderHooks
-	trustedMenu *listMenu
-	helpers     *HelperHooks
-	helpersMenu *listMenu
+	trusted             *TrustedFolderHooks
+	trustedMenu         *listMenu
+	helpers             *HelperHooks
+	helpersMenu         *listMenu
+	helperDocumentsMenu *listMenu
 
 	// notice is a permanent row for something about this machine that HTML Clay
 	// cannot fix and the user can. Empty means there is nothing to say.
@@ -418,6 +421,14 @@ func (t *Tray) buildHelpersMenu() *systray.MenuItem {
 	if t.helpers.List != nil {
 		lm.render(t.helpers.List())
 	}
+	if t.helpers.Documents != nil && t.helpers.Document != nil {
+		menu := lm.menu.AddSubMenuItem("Configure an Open File…", "Choose a program for a file already open in HTML Clay")
+		dm := &listMenu{menu: menu, rowTooltip: "Click to choose and approve this file's program"}
+		dm.empty = menu.AddSubMenuItem("No open files use programs", "")
+		dm.empty.Disable()
+		dm.render(t.helpers.Documents())
+		t.helperDocumentsMenu = dm
+	}
 	return addItem
 }
 
@@ -437,6 +448,9 @@ func (t *Tray) watchHelpersMenu(addItem *systray.MenuItem) {
 		}()
 	}
 	t.helpersMenu.watch(t.helpers.Row, t.helpers.List)
+	if t.helperDocumentsMenu != nil {
+		t.helperDocumentsMenu.watch(t.helpers.Document, t.helpers.Documents)
+	}
 }
 
 func (t *Tray) toggleLoginItem(loginItem *systray.MenuItem) {

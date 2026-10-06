@@ -245,6 +245,10 @@ func helperApprovalLine(candidate helperCandidate) string {
 func (a *app) resolvedHelpers(document string, names []string) (map[string]config.HelperProgram, []string) {
 	a.helperStateMu.Lock()
 	defer a.helperStateMu.Unlock()
+	return a.resolvedHelpersLocked(document, names)
+}
+
+func (a *app) resolvedHelpersLocked(document string, names []string) (map[string]config.HelperProgram, []string) {
 	allowed := make(map[string]config.HelperProgram)
 	var denied []string
 	for _, name := range names {
@@ -284,6 +288,12 @@ func (a *app) setOpenDenials(document string, names []string) {
 func (a *app) saveHelperDecisionSet(document string, candidates []helperCandidate, choice platform.ConfirmChoice) error {
 	a.helperStateMu.Lock()
 	defer a.helperStateMu.Unlock()
+	return a.saveHelperDecisionSetLocked(document, candidates, choice)
+}
+
+// saveHelperDecisionSetLocked is saveHelperDecisionSet for a caller that already
+// holds helperStateMu, so a registration check and the save share one transaction.
+func (a *app) saveHelperDecisionSetLocked(document string, candidates []helperCandidate, choice platform.ConfirmChoice) error {
 	added := make([]config.HelperProgram, 0, len(candidates))
 	flagUndo := make(map[string]bool)
 	decisionUndo := make([]helperDecisionUndo, 0, len(candidates))
@@ -354,6 +364,20 @@ func (a *app) saveHelperDecisionSet(document string, candidates []helperCandidat
 		rollback()
 		return fmt.Errorf("could not save helper decisions: %w", err)
 	}
+	for _, program := range added {
+		a.rt.logger.Printf("Helper program registered: id=%s name=%s path=%s", program.ID, program.Name, program.Path)
+	}
+	scope := "document"
+	if choice == platform.ConfirmAllowAlways {
+		scope = "any document"
+	}
+	for i, candidate := range candidates {
+		previous := ""
+		if decisionUndo[i].had {
+			previous = decisionUndo[i].previous.Program
+		}
+		a.rt.logger.Printf("Helper binding saved: document=%s name=%s program=%s path=%s scope=%s previous=%s", document, candidate.name, candidate.program.ID, candidate.program.Path, scope, previous)
+	}
 	return nil
 }
 
@@ -379,11 +403,14 @@ func registeredAtPath(programs []config.HelperProgram, path string) (config.Help
 }
 
 func (a *app) applyHelperPlan(s *site, document string, plan helperOpenPlan) {
+	a.helperStateMu.Lock()
+	defer a.helperStateMu.Unlock()
 	if len(plan.names) == 0 {
 		s.srv.DetachHelpers(document)
 		return
 	}
-	if err := s.srv.AttachHelpers(document, plan.allowed, plan.denied); err != nil {
+	allowed, denied := a.resolvedHelpersLocked(document, plan.names)
+	if err := s.srv.AttachHelpers(document, allowed, denied); err != nil {
 		a.rt.logger.Printf("Could not attach helpers for %s: %v", document, err)
 	}
 }
@@ -410,7 +437,7 @@ func (a *app) refreshHelperDispatchers() {
 	}
 	a.mu.Unlock()
 	for _, document := range documents {
-		a.applyHelperPlan(document.site, document.path, a.helpersForOpen(document.path, false))
+		a.applyHelperPlan(document.site, document.path, a.helpersForNavigation(document.path))
 	}
 }
 

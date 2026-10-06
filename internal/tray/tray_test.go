@@ -156,3 +156,43 @@ func TestNoticeRowAppearsOnlyWhenThereIsSomethingToSay(t *testing.T) {
 		t.Error("the notice row must be disabled; there is nothing behind it to click")
 	}
 }
+
+// The Configure an Open File submenu lists one row per open document that
+// declares a program, and a click hands the row's own key to the app, which is
+// what lets a bookmark-opened document be configured from the tray.
+func TestHelpersMenuConfigureAnOpenFilePassesTheRowKey(t *testing.T) {
+	const key = "/home/me/page.htmlclay\x00search"
+	clicked := make(chan string, 1)
+	tr := &Tray{helpers: &HelperHooks{
+		List: func() []Row { return nil },
+		Documents: func() []Row {
+			return []Row{{Path: key, Label: "~/page.htmlclay: search (approval needed: /usr/local/bin/search)"}}
+		},
+		Document: func(got string) []Row {
+			clicked <- got
+			return nil
+		},
+	}}
+	tr.buildHelpersMenu()
+	tr.watchHelpersMenu(nil)
+	if tr.helperDocumentsMenu == nil {
+		t.Fatal("the Programs submenu did not offer configuring an open file")
+	}
+
+	tr.helperDocumentsMenu.mu.Lock()
+	var item *systray.MenuItem
+	for _, s := range tr.helperDocumentsMenu.slots {
+		if s.path == key {
+			item = s.item
+			break
+		}
+	}
+	tr.helperDocumentsMenu.mu.Unlock()
+	if item == nil {
+		t.Fatal("the open document did not receive a row")
+	}
+	item.ClickedCh <- struct{}{}
+	if got := testutil.Receive(t, 2*time.Second, "the open file row hook", clicked); got != key {
+		t.Fatalf("row hook received %q, want the document key %q", got, key)
+	}
+}

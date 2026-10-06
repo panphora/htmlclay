@@ -85,9 +85,10 @@ type app struct {
 	parked   []*parked
 	stopping bool
 	noTray   bool
-	// helperStateMu guards the permission transactions themselves, so a read can
-	// see a whole one without waiting behind helperMu, which a native dialog can
-	// hold for minutes. Lock order is helperMu, then helperStateMu, then mu.
+	// helperStateMu guards the permission transactions themselves and the current
+	// resolution through dispatcher attachment, so a read can see a whole one
+	// without waiting behind helperMu, which a native dialog can hold for minutes.
+	// Lock order is helperMu, then helperStateMu, then mu.
 	// Never take helperMu while holding either of the others.
 	helperStateMu sync.Mutex
 	// openDenials holds the names refused at a document's last direct open. A
@@ -348,6 +349,9 @@ func (a *app) finishUpgrade() {
 	// that trusts nothing new and keeps its port touches none of them. A pin that
 	// never lands is a pin re-taken from whatever directory sits at that path at
 	// the time, which is exactly the swap it exists to catch.
+	if a.loaded.DroppedHelperPrograms != 0 || a.loaded.DroppedHelperDecisions != 0 {
+		a.rt.logger.Printf("Helper config normalization dropped records: programs=%d decisions=%d", a.loaded.DroppedHelperPrograms, a.loaded.DroppedHelperDecisions)
+	}
 	repinned := a.repinTrustedFolders()
 	if a.loaded.PromotedLegacy || a.loaded.PinnedIdentities || repinned {
 		if err := a.rt.cfg.Save(); err != nil {
@@ -406,6 +410,8 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 		List:      a.helperProgramRows,
 		Add:       a.pickHelperProgram,
 		Row:       a.manageHelperProgramAndRefresh,
+		Documents: a.helperDocumentRows,
+		Document:  a.configureHelperDocument,
 		AIEditOff: a.cancelAIEdits,
 	}, a.dialogAdvice)
 	a.rt.logger.Printf("Tray exited")

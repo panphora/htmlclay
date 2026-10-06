@@ -50,6 +50,8 @@ func (a *app) helperProgramRows() []tray.Row {
 		switch {
 		case helperProgramMissing(program.Path):
 			status = "missing"
+		case runtime.GOOS != "windows" && !helperProgramExecutable(program.Path):
+			status = "not executable"
 		case program.AnyDocument:
 			status = "any document"
 		case count == 1:
@@ -71,6 +73,11 @@ func helperProgramMissing(path string) bool {
 	return err != nil || !info.Mode().IsRegular()
 }
 
+func helperProgramExecutable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0
+}
+
 func (a *app) pickHelperProgram() []tray.Row {
 	return a.pickHelperProgramWith(systemHelperProgramDialogs())
 }
@@ -85,7 +92,7 @@ func (a *app) pickHelperProgramWith(dialogs helperProgramDialogs) []tray.Row {
 		return a.helperProgramRows()
 	}
 
-	path, ok, err := dialogs.selectFile("Choose the program named " + name)
+	path, ok, err := dialogs.selectFile("Choose the program named " + name + ". Helpers receive requests on stdin; a program that only opens a page is not a helper.")
 	if err != nil {
 		a.reportHelperProgramError("Could not choose the program", err)
 		return a.helperProgramRows()
@@ -111,6 +118,9 @@ func (a *app) pickHelperProgramWith(dialogs helperProgramDialogs) []tray.Row {
 	}
 	a.mu.Unlock()
 	a.helperStateMu.Unlock()
+	if err == nil {
+		a.rt.logger.Printf("Helper program registered: id=%s name=%s path=%s", program.ID, program.Name, program.Path)
+	}
 	if err != nil {
 		a.reportHelperProgramError("Could not add the program", err)
 	}
@@ -233,6 +243,8 @@ func (a *app) manageHelperProgramWith(id string, manage func(platform.ProgramSum
 			previous, _ := a.rt.cfg.SetHelperAnyDocument(id, !current.AnyDocument)
 			if saveErr = a.rt.cfg.Save(); saveErr != nil {
 				a.rt.cfg.SetHelperAnyDocument(id, previous)
+			} else {
+				a.rt.logger.Printf("Helper program permission changed: id=%s name=%s path=%s anyDocument=%t", current.ID, current.Name, current.Path, !current.AnyDocument)
 			}
 		}
 	case platform.ManageForgetDecisions:
@@ -240,6 +252,8 @@ func (a *app) manageHelperProgramWith(id string, manage func(platform.ProgramSum
 		if len(removed) > 0 {
 			if saveErr = a.rt.cfg.Save(); saveErr != nil {
 				a.rt.cfg.RestoreHelperDecisions(removed)
+			} else {
+				a.rt.logger.Printf("Helper program approvals forgotten: id=%s name=%s path=%s count=%d", program.ID, program.Name, program.Path, len(removed))
 			}
 		}
 	case platform.ManageRemove:
@@ -247,6 +261,8 @@ func (a *app) manageHelperProgramWith(id string, manage func(platform.ProgramSum
 		if found {
 			if saveErr = a.rt.cfg.Save(); saveErr != nil {
 				a.rt.cfg.RestoreHelperProgram(removedProgram)
+			} else {
+				a.rt.logger.Printf("Helper program removed: id=%s name=%s path=%s", removedProgram.ID, removedProgram.Name, removedProgram.Path)
 			}
 		}
 	}
