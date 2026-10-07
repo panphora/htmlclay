@@ -4,10 +4,11 @@ package platform
 
 import (
 	"bytes"
+	"encoding/xml"
 	"fmt"
-	"html/template"
 	"os"
 	"path/filepath"
+	"text/template"
 )
 
 const launchAgentLabel = "com.htmlclay"
@@ -20,15 +21,21 @@ func launchAgentPath() (string, error) {
 	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist"), nil
 }
 
-var plistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
+var plistTmpl = template.Must(template.New("plist").Funcs(template.FuncMap{
+	"xml": func(s string) (string, error) {
+		var b bytes.Buffer
+		err := xml.EscapeText(&b, []byte(s))
+		return b.String(), err
+	},
+}).Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{{.Label}}</string>
+    <string>{{xml .Label}}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{{.ExecPath}}</string>
+        <string>{{xml .ExecPath}}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
