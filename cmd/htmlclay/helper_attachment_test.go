@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,18 +29,74 @@ type attachmentTerminal struct {
 	} `json:"payload"`
 }
 
-func attachmentProgram(t *testing.T, label, marker string) string {
-	t.Helper()
+// The test binary doubles as the helper program. The dispatcher starts a
+// registered program with no arguments and passes this process's environment
+// through, so TestMain picks the fake by environment variable, and the copy's
+// file name tells it which program it is.
+const attachmentHelperMode = "HTMLCLAY_ATTACHMENT_HELPER"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(attachmentHelperMode) != "" {
+		os.Exit(runAttachmentHelper())
+	}
+	os.Exit(m.Run())
+}
+
+func runAttachmentHelper() int {
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		return 1
+	}
+	self := os.Args[0]
+	marker, err := os.OpenFile(self+".ran", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return 1
+	}
+	if _, err := marker.WriteString("ran\n"); err != nil {
+		marker.Close()
+		return 1
+	}
+	if err := marker.Close(); err != nil {
+		return 1
+	}
+	label := strings.TrimSuffix(filepath.Base(self), ".exe")
 	result, err := json.Marshal(map[string]any{"type": "result", "value": map[string]string{"program": label}})
+	if err != nil {
+		return 1
+	}
+	fmt.Println(string(result))
+	return 0
+}
+
+func attachmentProgram(t *testing.T, label string) (path, marker string) {
+	t.Helper()
+	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "program")
-	script := "#!/bin/sh\ncat > /dev/null\necho ran >> " + strconv.Quote(marker) + "\nprintf '%s\\n' '" + string(result) + "'\n"
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatal(err)
+	path = filepath.Join(t.TempDir(), label)
+	if runtime.GOOS == "windows" {
+		path += ".exe"
 	}
-	return path
+	if err := os.Link(self, path); err != nil {
+		source, err := os.Open(self)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer source.Close()
+		target, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0755)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(target, source); err != nil {
+			target.Close()
+			t.Fatal(err)
+		}
+		if err := target.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(attachmentHelperMode, "1")
+	return path, path + ".ran"
 }
 
 func attachmentRequestTerminal(t *testing.T, s *site, document, token, id string) attachmentTerminal {
@@ -88,10 +145,8 @@ func TestHelperAttachmentUsesCurrentPermissions(t *testing.T) {
 			a := newTestApp(t, home)
 			document := writeHelperPage(t, home, "search")
 			s, _ := a.openForTest(t, document)
-			oldMarker := filepath.Join(t.TempDir(), "old-ran")
-			newMarker := filepath.Join(t.TempDir(), "replacement-ran")
-			oldPath := attachmentProgram(t, "old", oldMarker)
-			newPath := attachmentProgram(t, "replacement", newMarker)
+			oldPath, oldMarker := attachmentProgram(t, "old")
+			newPath, newMarker := attachmentProgram(t, "replacement")
 			old, err := a.rt.cfg.AddHelperProgram("search", oldPath)
 			if err != nil {
 				t.Fatal(err)
