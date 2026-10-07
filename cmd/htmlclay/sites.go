@@ -51,6 +51,7 @@ type site struct {
 }
 
 func (s *site) start(logger *logging.Logger) {
+	logger.Printf("Server listening on 127.0.0.1:%d", s.port)
 	go func() {
 		if err := s.srv.Start(); err != nil {
 			logger.Printf("Server error on site %s: %v", s.anchor, err)

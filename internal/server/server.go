@@ -218,7 +218,6 @@ func (s *Server) isInternal(absPath string) bool {
 }
 
 func (s *Server) Start() error {
-	s.logger.Printf("Server listening on 127.0.0.1:%d", s.port)
 	err := s.httpServer.Serve(s.listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
