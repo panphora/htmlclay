@@ -35,6 +35,7 @@ import (
 type parked struct {
 	anchor string // for the location lookup and the log, never for the recovery body
 	port   int
+	kind   recoveryKind
 	ln     net.Listener
 	srv    *http.Server
 }
@@ -72,7 +73,7 @@ func (a *app) parkPortMode(anchor string, port int, page []byte, kind recoveryKi
 		a.rt.logger.Printf("Remembered port %d for %s is taken; not holding it", port, anchor)
 		return
 	}
-	p := &parked{anchor: anchor, port: port, ln: ln}
+	p := &parked{anchor: anchor, port: port, ln: ln, kind: kind}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -206,13 +207,15 @@ func (a *app) recoveryTargetFor(anchor string, port int, r *http.Request, requir
 // unpark releases the recovery listener holding anchor's port, so a real site
 // can bind that exact port and the bookmark keeps working. Without this, route
 // would find the port taken by HTML Clay's own placeholder and move the origin,
-// which is the one thing binding at startup exists to prevent.
+// which is the one thing binding at startup exists to prevent. A revoked
+// listener is never released: its port was forgotten with the trust, so no site
+// will bind it again, and it keeps the old address on the recovery page.
 func (a *app) unpark(anchor string) int {
 	a.mu.Lock()
 	var found *parked
 	kept := a.parked[:0]
 	for _, p := range a.parked {
-		if p.anchor == anchor && found == nil {
+		if p.anchor == anchor && p.kind != recoveryRevoked && found == nil {
 			found = p
 			continue
 		}

@@ -3,11 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 
 	"github.com/panphora/htmlclay/internal/platform"
+	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/tray"
 )
 
@@ -77,8 +79,8 @@ func (a *app) helperDocumentRows() []tray.Row {
 		}
 		for _, name := range names {
 			label := document
-			if strings.HasPrefix(label, a.rt.home+"/") {
-				label = "~/" + strings.TrimPrefix(label, a.rt.home+"/")
+			if rel, err := filepath.Rel(a.rt.home, document); err == nil && document != a.rt.home && session.EqualOrUnder(document, a.rt.home) {
+				label = "~/" + filepath.ToSlash(rel)
 			}
 			rows = append(rows, tray.Row{
 				Path:  document + "\x00" + name,
@@ -154,9 +156,15 @@ func (a *app) configureHelperDocumentWith(key string, dialogs helperApprovalDial
 	if err == nil {
 		candidate := helperCandidate{name: name, path: path}
 		for _, program := range a.rt.cfg.HelperProgramList() {
-			if program.Path == path && (choice != platform.ConfirmAllowAlways || program.Name == name) {
+			if program.Path != path {
+				continue
+			}
+			if program.Name == name {
 				candidate.program = program
 				break
+			}
+			if choice != platform.ConfirmAllowAlways && candidate.program.ID == "" {
+				candidate.program = program
 			}
 		}
 		candidates := []helperCandidate{candidate}

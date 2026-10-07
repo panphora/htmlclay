@@ -988,3 +988,30 @@ func TestHelperDocumentCrossNameWiderApprovalUsesTheDeclaredName(t *testing.T) {
 		})
 	}
 }
+
+func TestHelperDocumentConfigurePrefersTheSameNameAtASharedPath(t *testing.T) {
+	home, err := resolveSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newTestAppWithConfigDir(t, home, t.TempDir())
+	document := writeHelperPage(t, home, "search")
+	programPath := writeTestProgram(t, t.TempDir(), "shared", 0755)
+	if _, err := a.rt.cfg.AddHelperProgram("xyd", programPath); err != nil {
+		t.Fatal(err)
+	}
+	search, err := a.rt.cfg.AddHelperProgram("search", programPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	a.openForTest(t, document)
+
+	a.configureHelperDocumentWith(helperDocumentKey(document, "search"), allowDocumentDialogs(programPath, platform.ConfirmAllowOnce, nil))
+	decisions := a.rt.cfg.HelperDecisionList()
+	if len(decisions) != 1 || decisions[0].Name != "search" || decisions[0].Program != search.ID || !decisions[0].Allowed {
+		t.Fatalf("decisions = %+v, want search bound to the registration named search (%s)", decisions, search.ID)
+	}
+}

@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/panphora/htmlclay/internal/versions"
 )
@@ -1059,5 +1061,108 @@ func TestRecoveryDeadNestedSourceExplainsItsOwnReapproval(t *testing.T) {
 	target := liveSite(t, current, parent)
 	if code != http.StatusFound || headers.Get("Location") != fileURL(target.port, rel) || body != "" {
 		t.Fatalf("reapproved source: %d %q %q", code, headers.Get("Location"), body)
+	}
+}
+
+func revokedTestSite(a *app, anchor string) *site {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.siteAtLocked(anchor)
+}
+
+func revokedTestNavigation(t *testing.T, client *http.Client, target string) (int, error) {
+	t.Helper()
+	r, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Sec-Fetch-Mode", "navigate")
+	r.Header.Set("Sec-Fetch-Dest", "document")
+	r.Header.Set("Sec-Fetch-Site", "none")
+	resp, err := client.Do(r)
+	if err != nil {
+		return 0, err
+	}
+	resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+func revokedTestClient() *http.Client {
+	return &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+func TestRecoveryRevokedChildPortSurvivesParentRemoval(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(home, "project")
+	child := filepath.Join(parent, "child")
+	writeTestFile(t, filepath.Join(child, "page.htmlclay"), "<!doctype html><body>fixture</body>")
+	cfgBase := t.TempDir()
+	first := newTestAppWithConfigDir(t, home, cfgBase)
+	if err := first.trustFolder(child); err != nil {
+		t.Fatal(err)
+	}
+	oldPort := revokedTestSite(first, child).port
+	if err := first.trustFolder(parent); err != nil {
+		t.Fatal(err)
+	}
+	first.shutdown()
+
+	a := newTestAppWithConfigDir(t, home, cfgBase)
+	a.startSites()
+	if err := a.untrustFolder(child); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.trustFolder(child); err != nil {
+		t.Fatal(err)
+	}
+	bookmark := fileURL(oldPort, "project/child/page.htmlclay")
+	client := revokedTestClient()
+	if status, err := revokedTestNavigation(t, client, bookmark); err != nil || status != http.StatusNotFound {
+		t.Fatalf("revoked child before parent removal = %d, %v; want 404", status, err)
+	}
+	if err := a.untrustFolder(parent); err != nil {
+		t.Fatal(err)
+	}
+	status, err := revokedTestNavigation(t, client, bookmark)
+	if err != nil {
+		ln, bindErr := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(oldPort))
+		if bindErr == nil {
+			ln.Close()
+		}
+		t.Fatalf("revoked bookmark stopped answering after parent removal: %v; old port free=%v", err, bindErr == nil)
+	}
+	if status != http.StatusNotFound {
+		t.Fatalf("revoked port = %d, want 404", status)
+	}
+}
+
+func TestRecoveryRevokedPortSurvivesRetrustingTheSameFolder(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Join(home, "proj")
+	writeTestFile(t, filepath.Join(folder, "page.htmlclay"), "<!doctype html><body>fixture</body>")
+	a := newTestAppWithConfigDir(t, home, t.TempDir())
+	if err := a.trustFolder(folder); err != nil {
+		t.Fatal(err)
+	}
+	oldPort := revokedTestSite(a, folder).port
+	if err := a.untrustFolder(folder); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.trustFolder(folder); err != nil {
+		t.Fatal(err)
+	}
+	s := revokedTestSite(a, folder)
+	if s == nil || s.port == oldPort {
+		t.Fatalf("re-trusted site = %+v, want a live site on a fresh port", s)
+	}
+	status, err := revokedTestNavigation(t, revokedTestClient(), fileURL(oldPort, "proj/page.htmlclay"))
+	if err != nil || status != http.StatusNotFound {
+		t.Fatalf("revoked address after re-trust = %d, %v; want the 404 recovery page", status, err)
 	}
 }

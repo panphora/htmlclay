@@ -264,8 +264,11 @@ Facts that matter when you are reasoning about this:
   remembered per anchor folder in `config.json` and bound again at every startup, before any
   file is opened, so a bookmarked address still answers after a restart. A remembered port that
   is taken at startup is given up and the new one recorded.
-- An address HTML Clay remembers but is not currently serving answers with a fixed recovery page
-  that holds no permissions and never touches the disk.
+- An address HTML Clay remembers but is not currently serving holds no permissions and serves no
+  files. A top-level navigation to a `.htmlclay` file that a trusted folder still covers is
+  redirected to that folder's current address. Anything else gets a fixed recovery page that never
+  echoes the requested path, and an address whose folder was untrusted keeps that page for the
+  rest of the run.
 
 Three host additions ride on a document navigation, and none of them is a script:
 
