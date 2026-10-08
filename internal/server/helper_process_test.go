@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -30,6 +31,13 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(serverHelperMode); mode != "" {
 		runServerHelperProcess(mode, os.Getenv(serverHelperArg))
 		return
+	}
+	// Playwright finds its browsers under the user cache, which moves with HOME:
+	// keep pointing it at the real one so the conformance gate can launch Chromium.
+	if os.Getenv("PLAYWRIGHT_BROWSERS_PATH") == "" {
+		if cache, err := os.UserCacheDir(); err == nil {
+			os.Setenv("PLAYWRIGHT_BROWSERS_PATH", filepath.Join(cache, "ms-playwright"))
+		}
 	}
 	home, err := os.MkdirTemp("", "htmlclay-test-home")
 	if err != nil {
