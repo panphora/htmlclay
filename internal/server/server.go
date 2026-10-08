@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,7 +24,11 @@ type Server struct {
 	logger      *logging.Logger
 	versions    *versions.Store
 	internalDir string
-	broker      *broker
+	// uploadsDir is the per-computer uploads library, ~/htmlclay/uploads. Empty
+	// when the home directory could not be resolved, which refuses uploads and
+	// 404s the library route rather than writing anywhere else.
+	uploadsDir string
+	broker     *broker
 	// beforeAssetCapabilityOpen runs between an asset path being resolved and the
 	// capability open that acts on it. Tests only; nil everywhere else.
 	beforeAssetCapabilityOpen func()
@@ -57,6 +62,18 @@ type Server struct {
 	openDenied     []string
 	trustDenied    []string
 	autoRegistered int
+}
+
+// uploadsLibraryDir is the one folder on this computer every upload lands in,
+// ~/htmlclay/uploads, beside the examples folder the app already keeps there.
+// A document links its files as /_/uploads/<folder>/<name>, which every site
+// server answers from here, so the document can move anywhere and keep them.
+func uploadsLibraryDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "htmlclay", "uploads"), nil
 }
 
 // SeqPath is where the live-sync sequence high-water mark lives, beside the
@@ -95,6 +112,9 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 		coord:    ls.coord,
 		wire:     newWireHub(),
 	}
+	// Not fatal: a server with no home directory still serves every document, it
+	// just cannot store or answer an upload.
+	s.uploadsDir, _ = uploadsLibraryDir()
 
 	mux := http.NewServeMux()
 
@@ -175,6 +195,11 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	wire := s.wireMux()
 	mux.Handle("GET /_/wire/", wire)
 	mux.Handle("POST /_/wire/", wire)
+
+	// The uploads library, ahead of the catch-all so a stored file is answered from
+	// the one per-computer folder rather than read as a file under home. No token:
+	// an <img> carries none. HostValidationMiddleware still wraps the whole mux.
+	mux.HandleFunc("GET /_/uploads/{path...}", s.handleLibraryUpload)
 
 	mux.HandleFunc("GET /{path...}", s.handleServeFile)
 

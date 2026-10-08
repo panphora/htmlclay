@@ -641,37 +641,7 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	}
 
 	name := filepath.Base(absPath)
-
-	// An SVG is a document: it can carry <script>, and served inline from this
-	// origin it runs with the same authority as the page beside it. Uploads accept
-	// SVG precisely BECAUSE serving it inert is possible, so this header is what
-	// makes that decision safe. Unconditional, because provenance is not knowable
-	// here: a file that arrived through /_/upload and one the person saved into
-	// the folder themselves look identical at serve time.
-	ext := strings.ToLower(filepath.Ext(name))
-	if ext == ".svg" || ext == ".svgz" {
-		w.Header().Set("Content-Disposition", "attachment")
-	}
-	// Never sniff. http.ServeContent guesses a type from the bytes when none is
-	// set, and a file with no extension or an unknown one that holds HTML would
-	// come back as a page that runs script on this origin. An unknown type is a
-	// download.
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	ctype := mime.TypeByExtension(ext)
-	if ext == ".htmlclay" {
-		// Not in any MIME table, and it was only ever served as a page because
-		// the bytes were sniffed. Say so explicitly instead.
-		ctype = "text/html; charset=utf-8"
-	}
-	if ctype == "" {
-		ctype = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", ctype)
-	// A page type inside an uploads folder is something that arrived as an
-	// attachment before this check existed: hand it over as a download.
-	if uploaded {
-		w.Header().Set("Content-Disposition", "attachment")
-	}
+	setAssetHeaders(w, name, uploaded)
 
 	// B8: assets always revalidate. Detailed failure causes go in the log; the
 	// response bodies above stay coarse.
@@ -691,6 +661,43 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	}
 
 	http.ServeContent(w, r, name, info.ModTime(), file)
+}
+
+// setAssetHeaders applies the inert-asset rules both the catch-all asset lane and
+// the uploads library serve with, so the two cannot drift apart. uploaded marks a
+// file that arrived as an upload, which is a download whatever its type.
+//
+// An SVG is a document: it can carry <script>, and served inline from this origin
+// it runs with the same authority as the page beside it. Uploads accept SVG
+// precisely BECAUSE serving it inert is possible, so this header is what makes
+// that decision safe. Unconditional, because provenance is not knowable here: a
+// file that arrived through /_/upload and one the person saved into the folder
+// themselves look identical at serve time.
+//
+// Never sniff. http.ServeContent guesses a type from the bytes when none is set,
+// and a file with no extension or an unknown one that holds HTML would come back
+// as a page that runs script on this origin. An unknown type is a download.
+func setAssetHeaders(w http.ResponseWriter, name string, uploaded bool) {
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == ".svg" || ext == ".svgz" {
+		w.Header().Set("Content-Disposition", "attachment")
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	ctype := mime.TypeByExtension(ext)
+	if ext == ".htmlclay" {
+		// Not in any MIME table, and it was only ever served as a page because
+		// the bytes were sniffed. Say so explicitly instead.
+		ctype = "text/html; charset=utf-8"
+	}
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	// A page type inside an uploads folder is something that arrived as an
+	// attachment before this check existed: hand it over as a download.
+	if uploaded {
+		w.Header().Set("Content-Disposition", "attachment")
+	}
 }
 
 // write403 is the fixed response for a denied out-of-scope read. It carries no

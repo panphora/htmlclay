@@ -8,15 +8,18 @@ import (
 	"fmt"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/session"
+	"github.com/panphora/htmlclay/internal/versions"
 )
 
 type uploadResponse struct {
@@ -63,13 +66,25 @@ func decodeUpload(t *testing.T, w *httptest.ResponseRecorder) uploadResponse {
 	return out
 }
 
-// assetsDir is where uploads for the fixture document land.
-func assetsDir(f *session.File) string {
-	dir, _ := assetsDirFor(f.AbsPath)
-	return dir
+// assetsDir is where uploads for the fixture document land: its folder inside the
+// per-computer library this server was pointed at.
+func assetsDir(srv *Server, f *session.File) string {
+	return filepath.Join(srv.uploadsDir, assetsFolderName(f.AbsPath))
 }
 
-func TestUploadStoresBesideTheDocument(t *testing.T) {
+// getFromLibrary fetches a library path through the real mux, so the route
+// registration, the wildcard value and the host gate are all exercised rather
+// than bypassed by calling a handler directly.
+func getFromLibrary(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	return w
+}
+
+func TestUploadLandsInTheLibrary(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	w := postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
@@ -82,20 +97,28 @@ func TestUploadStoresBesideTheDocument(t *testing.T) {
 	}
 	up := res.Uploads[0]
 
-	// The document is test.htmlclay, so the folder is assets-test and the URL is
-	// relative to the document itself.
-	if !strings.HasPrefix(up.URL, "assets-test/") {
-		t.Errorf("url = %q, want it under assets-test/", up.URL)
+	// The document is test.htmlclay, so the library folder is assets-test and the
+	// URL is a host path into the library, which every site server answers. The
+	// name carries at least 128 bits of content hash, so it is not guessable from
+	// the document's own name.
+	pattern := regexp.MustCompile(`^/_/uploads/assets-test/cover-[0-9a-f]{32,}\.png$`)
+	if !pattern.MatchString(up.URL) {
+		t.Errorf("url = %q, want it to match %s", up.URL, pattern)
 	}
 	if up.Bytes != 7 {
 		t.Errorf("bytes = %d, want 7", up.Bytes)
 	}
-	stored, err := os.ReadFile(filepath.Join(assetsDir(f), up.Name))
+	stored, err := os.ReadFile(filepath.Join(assetsDir(srv, f), up.Name))
 	if err != nil {
 		t.Fatalf("stored file: %v", err)
 	}
 	if string(stored) != "PNGDATA" {
 		t.Errorf("stored %q, want PNGDATA", stored)
+	}
+	// Nothing lands beside the document any more: that folder is what made the
+	// link break the moment the document moved.
+	if _, err := os.Stat(filepath.Join(filepath.Dir(f.AbsPath), "assets-test")); err == nil {
+		t.Error("the upload was also stored beside the document")
 	}
 }
 
@@ -107,7 +130,7 @@ func TestUploadIdenticalBytesConverge(t *testing.T) {
 	if a.Uploads[0].URL != b.Uploads[0].URL {
 		t.Errorf("same bytes stored twice: %q vs %q", a.Uploads[0].URL, b.Uploads[0].URL)
 	}
-	entries, _ := os.ReadDir(assetsDir(f))
+	entries, _ := os.ReadDir(assetsDir(srv, f))
 	if len(entries) != 1 {
 		t.Errorf("expected 1 file, got %d", len(entries))
 	}
@@ -121,7 +144,7 @@ func TestUploadDifferentBytesBothSurvive(t *testing.T) {
 	if a.Uploads[0].URL == b.Uploads[0].URL {
 		t.Fatal("different bytes collapsed onto one name")
 	}
-	entries, _ := os.ReadDir(assetsDir(f))
+	entries, _ := os.ReadDir(assetsDir(srv, f))
 	if len(entries) != 2 {
 		t.Errorf("expected 2 files, got %d", len(entries))
 	}
@@ -135,9 +158,9 @@ func TestUploadNeverOverwritesADifferentFile(t *testing.T) {
 
 	content := []byte("the real upload")
 	sum := sha256.Sum256(content)
-	taken := "photo-" + hex.EncodeToString(sum[:])[:6] + ".png"
+	taken := "photo-" + hex.EncodeToString(sum[:])[:uploadHashMin] + ".png"
 
-	dir := assetsDir(f)
+	dir := assetsDir(srv, f)
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, taken), []byte("SOMETHING ELSE"), 0o644)
 
@@ -163,8 +186,8 @@ func TestUploadRefusesActiveContent(t *testing.T) {
 			t.Errorf("%s: code = %q", name, code)
 		}
 	}
-	if _, err := os.Stat(assetsDir(f)); err == nil {
-		t.Error("a refused upload created the assets folder")
+	if _, err := os.Stat(assetsDir(srv, f)); err == nil {
+		t.Error("a refused upload created the library folder")
 	}
 }
 
@@ -179,13 +202,7 @@ func TestUploadSVGIsStoredAndServedInert(t *testing.T) {
 		t.Fatal("SVG was refused; it should be stored and served inert instead")
 	}
 
-	rel := res.Uploads[0].URL
-	req := httptest.NewRequest("GET", "/"+rel, nil)
-	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
-	req.SetPathValue("path", rel)
-	w := httptest.NewRecorder()
-	srv.handleServeFile(w, req)
-
+	w := getFromLibrary(t, srv, res.Uploads[0].URL)
 	if w.Code != 200 {
 		t.Fatalf("serving the upload back: expected 200, got %d", w.Code)
 	}
@@ -197,26 +214,73 @@ func TestUploadSVGIsStoredAndServedInert(t *testing.T) {
 	}
 }
 
-// The upload has to be readable back, which is the half a store-only test misses:
-// opening a document grants a read root over its folder, and the assets folder
-// sits inside it.
+// The upload has to be readable back, which is the half a store-only test misses.
+// It is answered from the library by the site server, not through a read root:
+// nothing here installs ~/htmlclay/uploads as one.
 func TestUploadIsReadableBack(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	res := decodeUpload(t, postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA")))
-	rel := res.Uploads[0].URL
-
-	req := httptest.NewRequest("GET", "/"+rel, nil)
-	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
-	req.SetPathValue("path", rel)
-	w := httptest.NewRecorder()
-	srv.handleServeFile(w, req)
+	w := getFromLibrary(t, srv, res.Uploads[0].URL)
 
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	if w.Body.String() != "PNGDATA" {
 		t.Errorf("served %q, want PNGDATA", w.Body.String())
+	}
+}
+
+// The whole point of one per-computer library: the same link resolves on every
+// site server, whatever folder its document sits in.
+func TestUploadServedFromASecondSiteServer(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	payload := []byte("PNGDATA")
+	res := decodeUpload(t, postUpload(t, srv, f.Token, "cover.png", payload))
+
+	// A second site on its own port, serving a document from a folder the first
+	// site has never seen, with the same per-computer library.
+	otherHome := t.TempDir()
+	otherDoc := filepath.Join(otherHome, "sub", "other.htmlclay")
+	if err := os.MkdirAll(filepath.Dir(otherDoc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherDoc, []byte("<!DOCTYPE html>\n<html><body>other</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := newTestManager(t, otherHome)
+	other, err := mgr.Register(otherDoc, session.ViaOsOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	site := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
+	site.uploadsDir = srv.uploadsDir
+
+	w := getFromLibrary(t, site, res.Uploads[0].URL)
+	if w.Code != 200 {
+		t.Fatalf("second site server: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Equal(w.Body.Bytes(), payload) {
+		t.Errorf("second site server served %q, want %q", w.Body.String(), payload)
+	}
+
+	// An upload from that second document lands in the same library, under its
+	// own folder, and the first site answers it from there.
+	made := decodeUpload(t, postUpload(t, site, other.Token, "other.png", []byte("OTHER")))
+	if !strings.HasPrefix(made.Uploads[0].URL, "/_/uploads/assets-other/") {
+		t.Errorf("second site upload url = %q, want it under /_/uploads/assets-other/", made.Uploads[0].URL)
+	}
+	if _, err := os.Stat(filepath.Join(srv.uploadsDir, "assets-other", made.Uploads[0].Name)); err != nil {
+		t.Errorf("second site upload is not in the shared library: %v", err)
+	}
+	if back := getFromLibrary(t, srv, made.Uploads[0].URL); back.Code != 200 || back.Body.String() != "OTHER" {
+		t.Errorf("first site serving the second site's upload: %d %q", back.Code, back.Body.String())
 	}
 }
 
@@ -232,9 +296,9 @@ func TestUploadFilenameCannotEscape(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(home), "escaped.png")); err == nil {
 		t.Error("upload escaped the home directory")
 	}
-	entries, _ := os.ReadDir(assetsDir(f))
+	entries, _ := os.ReadDir(assetsDir(srv, f))
 	if len(entries) != 1 {
-		t.Errorf("expected 1 file in the assets folder, got %d", len(entries))
+		t.Errorf("expected 1 file in the library folder, got %d", len(entries))
 	}
 }
 
@@ -246,7 +310,7 @@ func TestUploadEncodesTheReturnedURL(t *testing.T) {
 	if !strings.Contains(up.URL, "%20") {
 		t.Errorf("url = %q, want the space percent-encoded (a raw space breaks srcset)", up.URL)
 	}
-	if _, err := os.Stat(filepath.Join(assetsDir(f), up.Name)); err != nil {
+	if _, err := os.Stat(filepath.Join(assetsDir(srv, f), up.Name)); err != nil {
 		t.Errorf("stored name should keep its real characters: %v", err)
 	}
 }
@@ -337,9 +401,8 @@ func TestUploadRouteIsGuardedAtRegistration(t *testing.T) {
 	if w.Code == 200 {
 		t.Fatalf("a cross-origin upload was accepted: %s", w.Body.String())
 	}
-	dir, _ := assetsDirFor(f.AbsPath)
-	if _, err := os.Stat(dir); err == nil {
-		t.Error("a cross-origin upload created the assets folder")
+	if _, err := os.Stat(assetsDir(srv, f)); err == nil {
+		t.Error("a cross-origin upload created the library folder")
 	}
 }
 
@@ -358,8 +421,8 @@ func TestUploadRefusesEveryPageAndScriptType(t *testing.T) {
 			t.Errorf("%s: code = %q", name, code)
 		}
 	}
-	if _, err := os.Stat(assetsDir(f)); err == nil {
-		t.Error("a refused upload created the assets folder")
+	if _, err := os.Stat(assetsDir(srv, f)); err == nil {
+		t.Error("a refused upload created the library folder")
 	}
 }
 
@@ -375,14 +438,7 @@ func TestUploadAcceptsUnknownTypesAndServesThemAsDownloads(t *testing.T) {
 		if len(res.Uploads) != 1 {
 			t.Fatalf("%s: expected one upload, got %d", name, len(res.Uploads))
 		}
-		rel := res.Uploads[0].URL
-
-		req := httptest.NewRequest("GET", "/"+rel, nil)
-		req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
-		req.SetPathValue("path", rel)
-		w := httptest.NewRecorder()
-		srv.handleServeFile(w, req)
-
+		w := getFromLibrary(t, srv, res.Uploads[0].URL)
 		if w.Code != 200 {
 			t.Fatalf("%s: expected 200, got %d", name, w.Code)
 		}
@@ -510,15 +566,14 @@ func TestUploadTokenDoesNotReachTheAccessLog(t *testing.T) {
 	}
 }
 
-// A symlinked assets folder is the whole reason the write path uses an *os.Root:
+// A symlinked library folder is the whole reason the write path uses an *os.Root:
 // MkdirAll and OpenFile on the joined path would follow the link and drop the
-// file outside the document's folder, where the read root does not cover it.
-func TestUploadRefusesASymlinkedAssetsFolder(t *testing.T) {
+// file outside the library.
+func TestUploadRefusesASymlinkedLibraryFolder(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	outside := t.TempDir()
-	dir, _ := assetsDirFor(f.AbsPath)
-	if err := os.Symlink(outside, dir); err != nil {
+	if err := os.Symlink(outside, assetsDir(srv, f)); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 
@@ -531,7 +586,7 @@ func TestUploadRefusesASymlinkedAssetsFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(entries) != 0 {
-		t.Errorf("the write followed the symlink out of the document's folder: %v", entries)
+		t.Errorf("the write followed the symlink out of the library: %v", entries)
 	}
 }
 
@@ -544,7 +599,7 @@ func TestUploadLeavesNoTempFileBehind(t *testing.T) {
 	postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
 	postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
 
-	entries, err := os.ReadDir(assetsDir(f))
+	entries, err := os.ReadDir(assetsDir(srv, f))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,5 +610,211 @@ func TestUploadLeavesNoTempFileBehind(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("expected 1 published file, got %d", len(entries))
+	}
+}
+
+// The library folder is the document's own name, slugged to the alphabet
+// hyperclay.com accepts, so the same layout works on every host.
+func TestAssetsFolderName(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"/home/d/board.htmlclay", "assets-board"},
+		{"/home/d/My Board.v2.htmlclay", "assets-my-board-v2"},
+		{"/home/d/---.html", "assets-document"},
+		{"/home/d/Plan (draft)!.html", "assets-plan-draft"},
+		{"/home/d/Ünicode 名前.htmlclay", "assets-nicode"},
+		{"/home/d/keep_this-one.html", "assets-keep_this-one"},
+		{"/home/d/folder.html", "assets-folder"},
+	} {
+		if got := assetsFolderName(tc.path); got != tc.want {
+			t.Errorf("assetsFolderName(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+// The library is served without a token, so containment cannot rest on one: the
+// OS refuses anything that leaves the library, whatever the spelling.
+func TestLibraryRefusesTraversal(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	res := decodeUpload(t, postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA")))
+	tail := strings.TrimPrefix(res.Uploads[0].URL, "/_/uploads/")
+
+	outside := filepath.Join(filepath.Dir(srv.uploadsDir), "outside-secret.txt")
+	if err := os.WriteFile(outside, []byte("SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{
+		"/_/uploads/../outside-secret.txt",
+		"/_/uploads/assets-test/../../outside-secret.txt",
+		"/_/uploads/%2e%2e/outside-secret.txt",
+		"/_/uploads/assets-test/%2e%2e%2foutside-secret.txt",
+		"/_/uploads/assets-test/..%2Foutside-secret.txt",
+	} {
+		w := getFromLibrary(t, srv, path)
+		if w.Code == 200 || strings.Contains(w.Body.String(), "SECRET") {
+			t.Errorf("%s: escaped the library: %d %q", path, w.Code, w.Body.String())
+		}
+		// A raw ".." is cleaned by the mux into a 307 before the handler runs, so
+		// the one thing left to check is that it does not redirect back in here.
+		if loc := w.Header().Get("Location"); strings.HasPrefix(loc, "/_/uploads/") {
+			t.Errorf("%s: redirected back into the library: %q", path, loc)
+		}
+	}
+
+	// The same paths as the handler receives them once the mux has decoded the
+	// wildcard, so the check does not depend on ServeMux cleaning anything first.
+	for _, rel := range []string{
+		"../outside-secret.txt",
+		"assets-test/../../outside-secret.txt",
+		tail + "/../../outside-secret.txt",
+	} {
+		req := httptest.NewRequest("GET", "/_/uploads/", nil)
+		req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+		req.SetPathValue("path", rel)
+		w := httptest.NewRecorder()
+		srv.handleLibraryUpload(w, req)
+		if w.Code == 200 || strings.Contains(w.Body.String(), "SECRET") {
+			t.Errorf("path %q: escaped the library: %d %q", rel, w.Code, w.Body.String())
+		}
+	}
+}
+
+// A symlink inside the library is the one way a path that looks contained can
+// point elsewhere, so it must be refused by the open itself.
+func TestLibraryRefusesSymlinksLeavingIt(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(assetsDir(srv, f), "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(srv.uploadsDir, "assets-linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{
+		"/_/uploads/assets-test/link.txt",
+		"/_/uploads/assets-linked/secret.txt",
+	} {
+		w := getFromLibrary(t, srv, path)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s: expected 404, got %d", path, w.Code)
+		}
+		if strings.Contains(w.Body.String(), "SECRET") {
+			t.Errorf("%s: served a file from outside the library", path)
+		}
+	}
+}
+
+// The library is a flat folder of files. Nothing in it is a listing, and a hidden
+// name is the temp file an interrupted upload leaves rather than a file to serve.
+func TestLibraryServesOnlyRegularNonHiddenFiles(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
+	if err := os.WriteFile(filepath.Join(assetsDir(srv, f), ".hidden.png"), []byte("HIDDEN"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{
+		"/_/uploads/",
+		"/_/uploads/assets-test",
+		"/_/uploads/assets-test/",
+		"/_/uploads/assets-test/.hidden.png",
+		"/_/uploads/.hidden.png",
+		"/_/uploads/assets-nope/cover.png",
+		"/_/uploads/assets-test/nope.png",
+	} {
+		w := getFromLibrary(t, srv, path)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s: expected 404, got %d: %s", path, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "HIDDEN") || strings.Contains(w.Body.String(), "PNGDATA") {
+			t.Errorf("%s: answered with file bytes", path)
+		}
+	}
+}
+
+// Everything in the library arrived as an upload, so a page type is handed over as
+// a download however it got there. A hand-placed page.html is the case a
+// name-based rule would miss.
+func TestLibraryServesPagesAsAttachments(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+
+	page := []byte(`<html><script>alert(1)</script></html>`)
+	dir := filepath.Join(srv.uploadsDir, "assets-x")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "page.html"), page, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := getFromLibrary(t, srv, "/_/uploads/assets-x/page.html")
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != "attachment" {
+		t.Errorf("Content-Disposition = %q, want attachment", cd)
+	}
+	if xcto := w.Header().Get("X-Content-Type-Options"); xcto != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", xcto)
+	}
+	if !bytes.Equal(w.Body.Bytes(), page) {
+		t.Errorf("served %q, want the stored bytes", w.Body.String())
+	}
+}
+
+// A refused type reached through the upload route is refused on the way in, so a
+// file in the library is only ever one that was accepted; the attachment rule is
+// still what makes an unknown type safe.
+func TestLibraryUnknownTypeIsADownload(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+
+	dir := filepath.Join(srv.uploadsDir, "assets-x")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "note"), []byte("<html>hi</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := getFromLibrary(t, srv, "/_/uploads/assets-x/note")
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want application/octet-stream", ct)
+	}
+	if xcto := w.Header().Get("X-Content-Type-Options"); xcto != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", xcto)
+	}
+}
+
+// With no home directory there is no library. Uploads have to fail loudly and the
+// route has to answer 404, never fall back to writing somewhere else.
+func TestUploadAndLibraryWithoutALibraryDirectory(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+	srv.uploadsDir = ""
+
+	w := postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if code := decodeUpload(t, w).Code; code != "error" {
+		t.Errorf("code = %q, want error", code)
+	}
+
+	if got := getFromLibrary(t, srv, "/_/uploads/assets-test/cover.png"); got.Code != http.StatusNotFound {
+		t.Errorf("library route with no library: expected 404, got %d", got.Code)
 	}
 }

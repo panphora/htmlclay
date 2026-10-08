@@ -39,6 +39,10 @@ func setupHandlerTest(t *testing.T) (*Server, *session.File, string) {
 
 	logger := logging.NewStdout()
 	srv := New(ln, mgr, logger, versions.New(t.TempDir()))
+	// Uploads land in the one per-computer library, ~/htmlclay/uploads in
+	// production. A test must never write into the real one, so point this server
+	// at a temp library instead.
+	srv.uploadsDir = t.TempDir()
 
 	return srv, f, content
 }

@@ -110,6 +110,41 @@ func assetsDirFor(absPath string) (dir, folder string) {
 	return filepath.Join(filepath.Dir(absPath), folder), folder
 }
 
+// assetsFolderName is the library folder for one document's uploads, slugged to
+// the alphabet hyperclay.com accepts for folders so the layout is the same on
+// every host: "My Board.v2.htmlclay" -> "assets-my-board-v2".
+func assetsFolderName(absPath string) string {
+	base := filepath.Base(absPath)
+	if ext := filepath.Ext(base); documentExt[strings.ToLower(ext)] {
+		base = strings.TrimSuffix(base, ext)
+	}
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(base) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			if r == '-' {
+				if dash {
+					continue
+				}
+				dash = true
+			} else {
+				dash = false
+			}
+			b.WriteRune(r)
+			continue
+		}
+		if !dash {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "document"
+	}
+	return "assets-" + slug
+}
+
 // splitUploadName reduces a client-supplied filename to a bare stem and
 // extension. Both separators are stripped, not just the platform's: a Windows
 // browser sends a backslash path and filepath.Base leaves it whole on unix. A
@@ -130,11 +165,18 @@ func splitUploadName(filename string) (stem, ext string) {
 	return stem, ext
 }
 
+// uploadHashMin is how many hex characters of the content hash the shortest
+// candidate name carries. 32 is 128 bits: every HTML Clay site can read the
+// library by path, so a name must not be guessable from the document's own name,
+// which is the only other thing an attacker knows. Same bytes still converge on
+// one file; a real prefix collision lengthens the tail, up to the whole digest.
+const uploadHashMin = 32
+
 // storeUpload writes the bytes under a content-derived name inside folder,
-// beneath the document's own directory. Every filesystem call goes through an
-// *os.Root held on that directory, so a symlinked assets folder (or a ..
-// smuggled into a name) can never send the write anywhere else; the folder
-// itself must be a real directory, not a link.
+// beneath the library directory it is given. Every filesystem call goes through
+// an *os.Root held on that directory, so a symlinked folder (or a .. smuggled
+// into a name) can never send the write anywhere else; the folder itself must be
+// a real directory, not a link.
 //
 // The bytes go to a hidden temp file first and are published with an exclusive
 // hard link, so the final name never exists half-written and never replaces a
@@ -184,7 +226,7 @@ func storeUpload(parentDir, folder, stem, ext string, data []byte) (string, erro
 
 	sum := sha256.Sum256(data)
 	digest := hex.EncodeToString(sum[:])
-	for n := 6; n <= 32; n += 2 {
+	for n := uploadHashMin; n <= len(digest); n += 2 {
 		name := stem + "-" + digest[:n] + ext
 		err := dir.Link(tmp, name)
 		if err == nil {
@@ -205,7 +247,7 @@ func storeUpload(parentDir, folder, stem, ext string, data []byte) (string, erro
 }
 
 func storeInPlace(dir *os.Root, stem, digest, ext string, data []byte) (string, error) {
-	for n := 6; n <= 32; n += 2 {
+	for n := uploadHashMin; n <= len(digest); n += 2 {
 		name := stem + "-" + digest[:n] + ext
 		fh, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
@@ -277,34 +319,82 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir, folder := assetsDirFor(f.AbsPath)
-
-	name, err := storeUpload(filepath.Dir(f.AbsPath), folder, stem, ext, data)
-	if err != nil {
-		s.logger.Printf("Error storing upload in %s: %v", dir, err)
+	folder := assetsFolderName(f.AbsPath)
+	if s.uploadsDir == "" {
+		uploadError(w, http.StatusInternalServerError, "error", "Could not store the file")
+		return
+	}
+	if err := os.MkdirAll(s.uploadsDir, 0o755); err != nil {
+		s.logger.Printf("Error creating the uploads library: %v", err)
 		uploadError(w, http.StatusInternalServerError, "error", "Could not store the file")
 		return
 	}
 
-	// Read roots contain their whole subtree, so a document opened normally can
-	// already read this folder through the root installed when it opened. The
-	// exception is the one that makes this call necessary: installReadRoot refuses
-	// the home directory itself, so a document sitting loose in ~ has NO root, and
-	// without this grant its uploads would store fine and 404 on the way back.
-	if err := s.sessions.GrantReadRoot(dir); err != nil {
-		s.logger.Printf("Could not grant read access to %s: %v", dir, err)
+	name, err := storeUpload(s.uploadsDir, folder, stem, ext, data)
+	if err != nil {
+		s.logger.Printf("Error storing upload in %s: %v", folder, err)
+		uploadError(w, http.StatusInternalServerError, "error", "Could not store the file")
+		return
 	}
 
-	// Percent-encoded per segment, while the stored name keeps its own
-	// characters. A raw space renders through img src, because the browser
-	// repairs it, and breaks in srcset, where a space separates candidates.
-	served := url.PathEscape(folder) + "/" + url.PathEscape(name)
+	// A host path into the library, answered by GET /_/uploads/ on every site
+	// server. Percent-encoded per segment, while the stored name keeps its own
+	// characters: a raw space breaks srcset, where a space separates candidates.
+	served := "/_/uploads/" + url.PathEscape(folder) + "/" + url.PathEscape(name)
 
 	noStoreJSON(w)
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok": true, "msg": "Uploaded", "msgType": "success",
 		"uploads": []map[string]any{{"name": name, "url": served, "bytes": len(data)}},
 	})
+}
+
+// handleLibraryUpload serves one file out of the per-computer uploads library at
+// GET /_/uploads/<folder>/<name>, the path every upload is written back as. No
+// token: the request comes from an <img> or a fetch, which carry none, and the
+// library holds only files the person uploaded themselves. HostValidationMiddleware
+// still wraps the whole mux.
+//
+// os.Root is the containment, not string matching: "..", an absolute path and a
+// symlink that leaves the library are all refused by the OS. A hidden segment is
+// refused too, so the temp file an interrupted upload leaves is not served. Only
+// a regular file is answered; a folder is 404, never a listing.
+func (s *Server) handleLibraryUpload(w http.ResponseWriter, r *http.Request) {
+	if s.uploadsDir == "" {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	root, err := os.OpenRoot(s.uploadsDir)
+	if err != nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	defer root.Close()
+
+	rel := r.PathValue("path")
+	for _, seg := range strings.Split(rel, "/") {
+		if strings.HasPrefix(seg, ".") {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+	}
+	file, err := root.Open(rel)
+	if err != nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	// Everything here arrived as an upload, so a page or a script type is handed
+	// over as a download whatever its extension claims.
+	name := filepath.Base(rel)
+	setAssetHeaders(w, name, refusedUpload(strings.ToLower(filepath.Ext(name))))
+	http.ServeContent(w, r, name, info.ModTime(), file)
 }
 
 // specVersion is the Malleable HTML File specification this host answers for.
