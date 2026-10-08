@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // Uploads (spec §9). A document that cannot upload has to put a picture INSIDE
@@ -182,17 +181,22 @@ const libraryKeyFile = ".library-key"
 // the HMAC-SHA256 it keys and more than enough that no one can guess it.
 const libraryKeyLen = 32
 
-// libraryKeyReadTries bounds how long a loser of the creation race waits for the
-// winner's bytes. The exclusive create publishes the NAME before its bytes, and
-// two sites of one app share one library, so an empty file is a real moment and
-// not a corrupt key.
-const libraryKeyReadTries = 50
-
 // loadOrCreateLibraryKey returns the library's naming key, creating it on first
 // use. Every filesystem call goes through an *os.Root held on the library, so a
-// symlinked library or key cannot send the write anywhere else, and the create is
-// exclusive: two uploads racing on a fresh library both end up with the winner's
-// key rather than two keys and two names for one file.
+// symlinked library or key cannot send the write anywhere else.
+//
+// The bytes are written to a hidden temp file, fsynced, and only then published
+// under the key's name with an exclusive hard link, so the name never exists
+// half-written: a crash leaves an orphan temp file rather than a short key, and
+// two uploads racing on a fresh library both end up with the winner's key rather
+// than two keys and two names for one file. The loser of the race reads back what
+// the winner published.
+//
+// A key of the wrong length is therefore not something this code can produce, and
+// it is not repaired. The repair would have to rename the key away, and a caller
+// that read a short key would then rename away the good key another caller had
+// just published: nothing here can tell an abandoned key from one a person is
+// editing, so the length is checked and the fix is named instead.
 func loadOrCreateLibraryKey(dir string) ([]byte, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -200,46 +204,65 @@ func loadOrCreateLibraryKey(dir string) ([]byte, error) {
 	}
 	defer root.Close()
 
-	fh, err := root.OpenFile(libraryKeyFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		// A racing creator has the name but may not have written its bytes yet, so a
-		// short read is retried rather than taken: half a key is a guessable key,
-		// and two sites reading two different keys would name one file two ways.
-		for try := 0; ; try++ {
-			key, readErr := root.ReadFile(libraryKeyFile)
-			if readErr != nil {
-				return nil, readErr
-			}
-			if len(key) == libraryKeyLen {
-				return key, nil
-			}
-			if try >= libraryKeyReadTries {
-				return nil, fmt.Errorf("%s is %d bytes, want %d", libraryKeyFile, len(key), libraryKeyLen)
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
+	key, err := readLibraryKey(root, dir)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		return key, err
 	}
 
-	key := make([]byte, libraryKeyLen)
-	if _, err := rand.Read(key); err != nil {
-		fh.Close()
-		root.Remove(libraryKeyFile)
+	tmp, err := writeLibraryKeyTemp(root)
+	if err != nil {
 		return nil, err
 	}
-	_, writeErr := fh.Write(key)
-	closeErr := fh.Close()
-	if err := errors.Join(writeErr, closeErr); err != nil {
-		root.Remove(libraryKeyFile)
+	defer root.Remove(tmp)
+
+	if err := root.Link(tmp, libraryKeyFile); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, err
+	}
+	return readLibraryKey(root, dir)
+}
+
+// readLibraryKey reads the published key and refuses a wrong length with the fix,
+// rather than guessing at one: a short key is a guessable key, and two sites
+// reading two different keys would name one file two ways.
+func readLibraryKey(root *os.Root, dir string) ([]byte, error) {
+	key, err := root.ReadFile(libraryKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	if len(key) != libraryKeyLen {
+		return nil, fmt.Errorf("%s in %s is %d bytes, want %d: delete it and upload again", libraryKeyFile, dir, len(key), libraryKeyLen)
 	}
 	return key, nil
 }
 
+// writeLibraryKeyTemp writes a fresh key to a uniquely named hidden file in the
+// library and fsyncs it, so the bytes are on disk before the name is published.
+// The caller publishes or removes it; nothing here is ever the key's own name.
+func writeLibraryKeyTemp(root *os.Root) (string, error) {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	name := libraryKeyFile + ".tmp-" + hex.EncodeToString(nonce[:])
+	fh, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+
+	key := make([]byte, libraryKeyLen)
+	_, randErr := rand.Read(key)
+	_, writeErr := fh.Write(key)
+	syncErr := fh.Sync()
+	closeErr := fh.Close()
+	if err := errors.Join(randErr, writeErr, syncErr, closeErr); err != nil {
+		root.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
 // uploadKey is the library's naming key for this server, read once and kept. A
-// failure is not cached: the library may be created, or its key repaired, and the
+// failure is not cached: the library may be created between two uploads, and the
 // next upload must be able to succeed. An empty library has no key at all.
 func (s *Server) uploadKeyBytes() ([]byte, error) {
 	s.uploadKeyMu.Lock()
@@ -258,12 +281,21 @@ func (s *Server) uploadKeyBytes() ([]byte, error) {
 	return key, nil
 }
 
-// uploadDigest is the hex HMAC-SHA256 of a file's bytes under the library key.
-// Keyed, not a bare content hash: the hash of a short text or a known image is
-// something any page on any HTML Clay port can compute, and a name it can compute
-// is a name it can probe for.
-func uploadDigest(key, data []byte) string {
+// uploadDigest is the hex HMAC-SHA256 of a file's bytes under the library key,
+// scoped to the folder the file is stored in. Keyed, not a bare content hash: the
+// hash of a short text or a known image is something any page on any HTML Clay
+// port can compute, and a name it can compute is a name it can probe for.
+//
+// The folder is inside the digest so that a name learned in one document's folder
+// says nothing about another's. Every page can upload, read the name it is handed
+// back, and then request that name in someone else's folder: an unkeyed-by-folder
+// digest answers 200 and confirms those exact bytes are there. Two documents whose
+// stems slug to the same folder already share that folder and its files, so this
+// hides nothing they can already see.
+func uploadDigest(key []byte, folder string, data []byte) string {
 	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(folder))
+	mac.Write([]byte{0})
 	mac.Write(data)
 	return hex.EncodeToString(mac.Sum(nil))
 }
@@ -320,7 +352,7 @@ func storeUpload(parentDir, folder, stem, ext string, key, data []byte) (string,
 		return "", err
 	}
 
-	digest := uploadDigest(key, data)
+	digest := uploadDigest(key, folder, data)
 	for n := uploadHashMin; n <= len(digest); n += 2 {
 		name := stem + "-" + digest[:n] + ext
 		err := dir.Link(tmp, name)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"mime/multipart"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/panphora/htmlclay/internal/logging"
@@ -32,9 +34,10 @@ type uploadResponse struct {
 	} `json:"uploads"`
 }
 
-// postUpload sends one multipart file part named "file", the canonical request
-// from section 9.
-func postUpload(t *testing.T, srv *Server, token, filename string, content []byte) *httptest.ResponseRecorder {
+// uploadBody builds the multipart body postUpload sends: one file part named
+// "file", the canonical request from section 9. Split out so a test that drives
+// the handler from goroutines can build the request without touching t.
+func uploadBody(t *testing.T, filename string, content []byte) ([]byte, string) {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
@@ -46,10 +49,18 @@ func postUpload(t *testing.T, srv *Server, token, filename string, content []byt
 		t.Fatalf("write part: %v", err)
 	}
 	mw.Close()
+	return body.Bytes(), mw.FormDataContentType()
+}
 
-	req := httptest.NewRequest("POST", "/_/upload/"+token, &body)
+// postUpload sends one multipart file part named "file", the canonical request
+// from section 9.
+func postUpload(t *testing.T, srv *Server, token, filename string, content []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	body, ctype := uploadBody(t, filename, content)
+
+	req := httptest.NewRequest("POST", "/_/upload/"+token, bytes.NewReader(body))
 	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Content-Type", ctype)
 	req.SetPathValue("token", token)
 
 	w := httptest.NewRecorder()
@@ -163,7 +174,7 @@ func TestUploadNeverOverwritesADifferentFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("library key: %v", err)
 	}
-	prefix := "photo-" + uploadDigest(key, content)[:uploadHashMin]
+	prefix := "photo-" + uploadDigest(key, assetsFolderName(f.AbsPath), content)[:uploadHashMin]
 	taken := prefix + ".png"
 
 	dir := assetsDir(srv, f)
@@ -293,11 +304,20 @@ func TestUploadServedFromASecondSiteServer(t *testing.T) {
 	}
 
 	// The naming key belongs to the library, not to a site: a second site reads
-	// the key the first one created, so the same bytes converge on one name here
-	// too, and the same bytes never land twice in one folder.
-	same := decodeUpload(t, postUpload(t, site, other.Token, "cover.png", payload))
-	if same.Uploads[0].Name != res.Uploads[0].Name {
-		t.Errorf("the second site named the same bytes %q, want %q", same.Uploads[0].Name, res.Uploads[0].Name)
+	// the key the first one created, so the same bytes in the same folder converge
+	// on one name here too. The folder is what the name is scoped to, so the
+	// second document needs the first one's stem to land in it.
+	sameDoc := filepath.Join(otherHome, "test.htmlclay")
+	if err := os.WriteFile(sameDoc, []byte("<!DOCTYPE html>\n<html><body>same</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	same, err := mgr.Register(sameDoc, session.ViaOsOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	converged := decodeUpload(t, postUpload(t, site, same.Token, "cover.png", payload))
+	if converged.Uploads[0].Name != res.Uploads[0].Name {
+		t.Errorf("the second site named the same bytes in the same folder %q, want %q", converged.Uploads[0].Name, res.Uploads[0].Name)
 	}
 }
 
@@ -914,5 +934,325 @@ func TestUploadStrictlyEncodesTheReturnedURL(t *testing.T) {
 		if w.Code != http.StatusOK || w.Body.String() != tc.name {
 			t.Errorf("%s: GET %s = %d %q", tc.name, up.URL, w.Code, w.Body.String())
 		}
+	}
+}
+
+// The same bytes uploaded by two documents land in two different folders, and the
+// name is scoped to the folder it lands in. A name learned in one folder then says
+// nothing about another: without the folder inside the digest, a page that can
+// upload can store candidate bytes in its own folder, read the name it is handed
+// back, and request that name in another document's folder -- a 200 confirms that
+// other document holds those exact bytes.
+func TestUploadNamesAreScopedToTheirFolder(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	other := filepath.Join(srv.sessions.HomeDir(), "board.htmlclay")
+	if err := os.WriteFile(other, []byte("<!DOCTYPE html>\n<html><body>board</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	board, err := srv.sessions.Register(other, session.ViaOsOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := []byte("the same bytes in two documents")
+	mine := decodeUpload(t, postUpload(t, srv, f.Token, "photo.png", content))
+	theirs := decodeUpload(t, postUpload(t, srv, board.Token, "photo.png", content))
+	if mine.Uploads[0].Name == theirs.Uploads[0].Name {
+		t.Errorf("two folders named the same bytes %q", mine.Uploads[0].Name)
+	}
+	if _, err := os.Stat(filepath.Join(assetsDir(srv, board), theirs.Uploads[0].Name)); err != nil {
+		t.Errorf("the second document's upload is not in its own folder: %v", err)
+	}
+
+	// Within one folder the same bytes still converge on one name, which is what
+	// keeps a re-upload from piling up copies.
+	again := decodeUpload(t, postUpload(t, srv, f.Token, "photo.png", content))
+	if again.Uploads[0].Name != mine.Uploads[0].Name {
+		t.Errorf("same bytes in one folder stored twice: %q vs %q", mine.Uploads[0].Name, again.Uploads[0].Name)
+	}
+}
+
+// A wrong-length key cannot come from the code that writes it: the bytes are
+// fsynced before the name is published, so the name never exists short, and the
+// exclusive link means a loser of the creation race reads the winner's key rather
+// than writing its own. There is nothing to repair, and a repair could only rename
+// away a good key another caller had just published, so the wrong length is
+// refused with the fix instead.
+func TestUploadRefusesAWrongLengthLibraryKey(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	short := []byte("half")
+	keyPath := filepath.Join(srv.uploadsDir, libraryKeyFile)
+	if err := os.WriteFile(keyPath, short, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("upload against a %d-byte key: expected 500, got %d: %s", len(short), w.Code, w.Body.String())
+	}
+
+	got, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("library key: %v", err)
+	}
+	if !bytes.Equal(got, short) {
+		t.Errorf("library key = %q, want it left as %q", got, short)
+	}
+	entries := libraryEntries(t, srv.uploadsDir)
+	if len(entries) != 1 {
+		t.Errorf("the library holds %d entries, want only the key: %v", len(entries), entries)
+	}
+	if _, err := os.Stat(assetsDir(srv, f)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a refused upload left something in %s: %v", assetsDir(srv, f), err)
+	}
+}
+
+// libraryEntries lists the library itself, which is where the key and any temp
+// file beside it live.
+func libraryEntries(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the library: %v", err)
+	}
+	return entries
+}
+
+// Two sites of one app share one library, so on a fresh one they can create the
+// key at the same instant. The name is published only once its bytes are on disk,
+// so both read back the winner's key instead of naming one file two ways -- and
+// neither leaves a short key behind that blocks every later upload.
+func TestUploadConcurrentServersOnAFreshLibraryShareOneKey(t *testing.T) {
+	library := t.TempDir()
+
+	var servers []*Server
+	var tokens []string
+	for i := 0; i < 2; i++ {
+		home := t.TempDir()
+		doc := filepath.Join(home, "test.htmlclay")
+		if err := os.WriteFile(doc, []byte("<!DOCTYPE html>\n<html><body>t</body></html>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mgr := newTestManager(t, home)
+		f, err := mgr.Register(doc, session.ViaOsOpen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
+		srv.uploadsDir = library
+		servers = append(servers, srv)
+		tokens = append(tokens, f.Token)
+	}
+
+	// One document per server, same stem, so both write into the same folder of
+	// the shared library and only a shared key can name the bytes alike.
+	content := []byte("one library, one key")
+	body, ctype := uploadBody(t, "photo.png", content)
+
+	const perServer = 4
+	recorders := make([]*httptest.ResponseRecorder, len(servers)*perServer)
+	var wg sync.WaitGroup
+	for i := range servers {
+		for j := 0; j < perServer; j++ {
+			wg.Add(1)
+			go func(i, j int) {
+				defer wg.Done()
+				req := httptest.NewRequest("POST", "/_/upload/"+tokens[i], bytes.NewReader(body))
+				req.Host = fmt.Sprintf("127.0.0.1:%d", servers[i].port)
+				req.Header.Set("Content-Type", ctype)
+				req.SetPathValue("token", tokens[i])
+				w := httptest.NewRecorder()
+				servers[i].handleUpload(w, req)
+				recorders[i*perServer+j] = w
+			}(i, j)
+		}
+	}
+	wg.Wait()
+
+	var want string
+	for i, w := range recorders {
+		if w.Code != http.StatusOK {
+			t.Fatalf("concurrent upload %d: expected 200, got %d: %s", i, w.Code, w.Body.String())
+		}
+		res := decodeUpload(t, w)
+		if len(res.Uploads) != 1 {
+			t.Fatalf("concurrent upload %d answered with %d uploads", i, len(res.Uploads))
+		}
+		if want == "" {
+			want = res.Uploads[0].Name
+		}
+		if res.Uploads[0].Name != want {
+			t.Errorf("concurrent upload %d named the same bytes %q, want %q", i, res.Uploads[0].Name, want)
+		}
+	}
+
+	key, err := os.ReadFile(filepath.Join(library, libraryKeyFile))
+	if err != nil {
+		t.Fatalf("library key: %v", err)
+	}
+	if len(key) != libraryKeyLen {
+		t.Errorf("library key is %d bytes, want %d", len(key), libraryKeyLen)
+	}
+	for _, e := range libraryEntries(t, library) {
+		if strings.HasPrefix(e.Name(), libraryKeyFile+".tmp-") {
+			t.Errorf("temp key file left behind: %s", e.Name())
+		}
+	}
+}
+
+// Every test in this package builds a Server, and New resolves and creates the
+// uploads library from HOME before a test can point the server elsewhere. The test
+// binary pins HOME to a temp directory before the first test runs, so no test
+// resolves or creates the real ~/htmlclay/uploads.
+func TestServerTestsNeverTouchTheRealHome(t *testing.T) {
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Fatal("HOME is unset, so this test cannot tell a temp home from the real one")
+	}
+	if !strings.HasPrefix(home, os.TempDir()) {
+		t.Fatalf("HOME = %q, want a directory under %q", home, os.TempDir())
+	}
+
+	// New resolves the library the way production does, and it lands inside that
+	// temp home rather than beside the real one.
+	library, err := ResolvedUploadsLibraryDir()
+	if err != nil {
+		t.Fatalf("resolve the library: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(library, resolved+string(filepath.Separator)) {
+		t.Errorf("library = %q, want it under the test home %q", library, resolved)
+	}
+}
+
+// A library reached through a symlink is still htmlclay's own state. ~/htmlclay is
+// a symlink whenever the library lives in Dropbox or on another volume, and the
+// serve path judges resolved paths: a lexical uploadsDir does not contain its own
+// files, so a .htmlclay dropped in the library is served as an editable page with
+// a save token, through either spelling of the path. The library route is not the
+// serve path and keeps answering the file, inert.
+func TestSymlinkedLibraryIsNeverServedAsAPage(t *testing.T) {
+	for _, existed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("existed=%v", existed), func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// ~/htmlclay is a symlink to a folder elsewhere in home, which is the
+			// shape a Dropbox or external library has.
+			linked := filepath.Join(home, "Dropbox", "htmlclay")
+			if err := os.MkdirAll(linked, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(linked, filepath.Join(home, "htmlclay")); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+
+			if existed {
+				if err := os.MkdirAll(filepath.Join(linked, "uploads", "assets-test"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			doc := filepath.Join(home, "test.htmlclay")
+			if err := os.WriteFile(doc, []byte("<!DOCTYPE html>\n<html><body>t</body></html>"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mgr := newTestManager(t, home)
+			f, err := mgr.Register(doc, session.ViaOsOpen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { ln.Close() })
+			srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
+
+			library := filepath.Join(linked, "uploads")
+			if srv.uploadsDir != library {
+				t.Fatalf("uploadsDir = %q, want the resolved library %q", srv.uploadsDir, library)
+			}
+
+			if !existed {
+				res := decodeUpload(t, postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA")))
+				if res.Uploads[0].Name == "" {
+					t.Fatalf("the first upload stored nothing: %q", res.Uploads[0].URL)
+				}
+			}
+
+			folder := filepath.Join(library, "assets-test")
+			if err := os.MkdirAll(folder, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			page := filepath.Join(folder, "board.htmlclay")
+			body := "<!DOCTYPE html>\n<html><body>board</body></html>"
+			if err := os.WriteFile(page, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			// The library's ancestor stays grantable and trustable, as it must:
+			// ~/htmlclay is a folder people keep documents in. Only the library
+			// itself is refused, so the serve path is the only thing left holding
+			// the page back.
+			ancestor := filepath.Join(home, "htmlclay")
+			if err := srv.sessions.GrantReadRoot(ancestor); err != nil {
+				t.Fatalf("granting the library's ancestor: %v", err)
+			}
+			if err := srv.sessions.InstallTrustedRoot(ancestor); err != nil {
+				t.Fatalf("trusting the library's ancestor: %v", err)
+			}
+			srv.SetHooks(Hooks{
+				TrustedCovers: func(absPath string) bool { return session.EqualOrUnder(absPath, linked) },
+				Route: func(absPath string) (string, bool) {
+					if _, err := srv.sessions.Register(absPath, session.ViaTrusted); err != nil {
+						return "", false
+					}
+					return fmt.Sprintf("http://127.0.0.1:%d/", srv.port), true
+				},
+			})
+
+			for _, rel := range []string{
+				"htmlclay/uploads/assets-test/board.htmlclay",
+				"Dropbox/htmlclay/uploads/assets-test/board.htmlclay",
+			} {
+				req := httptest.NewRequest("GET", "/"+rel, nil)
+				req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+				req.Header.Set("Sec-Fetch-Dest", "document")
+				req.Header.Set("Sec-Fetch-User", "?1")
+				w := httptest.NewRecorder()
+				srv.httpServer.Handler.ServeHTTP(w, req)
+
+				if w.Code != http.StatusNotFound {
+					t.Errorf("/%s: a page in the symlinked library was served: %d %q", rel, w.Code, w.Body.String())
+				}
+				if strings.Contains(w.Body.String(), "savetoken") {
+					t.Errorf("/%s: a page in the symlinked library was handed a save token", rel)
+				}
+			}
+			if _, ok := srv.sessions.LookupByPath(page); ok {
+				t.Error("a page in the symlinked library was registered for editing")
+			}
+
+			got := getFromLibrary(t, srv, "/_/uploads/assets-test/board.htmlclay")
+			if got.Code != http.StatusOK {
+				t.Fatalf("the library route: expected 200, got %d", got.Code)
+			}
+			if cd := got.Header().Get("Content-Disposition"); cd != "attachment" {
+				t.Errorf("Content-Disposition = %q, want attachment", cd)
+			}
+		})
 	}
 }

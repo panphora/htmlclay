@@ -22,12 +22,25 @@ const (
 	serverHelperArg  = "HTMLCLAY_SERVER_HELPER_ARG"
 )
 
+// TestMain also pins HOME for the whole package. New resolves and creates the
+// uploads library from HOME, so without this every test that builds a Server --
+// and every helper process this binary re-runs itself as, which inherits this
+// environment -- would create and read the real ~/htmlclay/uploads.
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(serverHelperMode); mode != "" {
 		runServerHelperProcess(mode, os.Getenv(serverHelperArg))
 		return
 	}
-	os.Exit(m.Run())
+	home, err := os.MkdirTemp("", "htmlclay-test-home")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "test home:", err)
+		os.Exit(1)
+	}
+	os.Setenv("HOME", home)
+	os.Setenv("USERPROFILE", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
 }
 
 func structuredHelper(t *testing.T, mode string) string {

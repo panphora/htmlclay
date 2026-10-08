@@ -311,11 +311,12 @@ func (a *app) startRuntime() {
 	// same reason: a grant that covers it would turn a page dropped in it into an
 	// editable page. Its ancestors stay grantable on purpose, because ~/htmlclay
 	// and home are the folders a person keeps documents in.
-	library, lErr := server.UploadsLibraryDir()
-	if lErr == nil {
-		if resolved, rErr := resolveSymlinks(library); rErr == nil {
-			library = resolved
-		}
+	// Resolved, so a ~/htmlclay symlink cannot hand the guard a spelling the
+	// trust flow never uses: Canonical resolves the folder it is asked to trust,
+	// and the guard has to compare against the folder that resolution lands on.
+	library, lErr := server.ResolvedUploadsLibraryDir()
+	if lErr != nil {
+		library, _ = server.UploadsLibraryDir()
 	}
 	a.rt.guard = func(dir string) bool { return grantForbidden(dir, forbidden, library) }
 	a.rt.policy = trust.Policy{Home: a.rt.home, Guard: a.rt.guard}

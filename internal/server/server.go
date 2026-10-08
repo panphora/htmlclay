@@ -80,6 +80,26 @@ func UploadsLibraryDir() (string, error) {
 	return filepath.Join(home, "htmlclay", "uploads"), nil
 }
 
+// ResolvedUploadsLibraryDir is UploadsLibraryDir with the library created and
+// every symlink in the path resolved, so the one folder has one spelling.
+//
+// ~/htmlclay is a symlink whenever the library lives somewhere else -- Dropbox,
+// an external drive -- and a lexical path then names a folder that is not the
+// one the OS opens. isInternal compares real paths, so a lexical library would
+// miss its own files and serve a page dropped in it as an editable page with a
+// save token. Creating it here means the resolution also answers for a library
+// that does not exist yet, which the startup-only resolution could not.
+func ResolvedUploadsLibraryDir() (string, error) {
+	dir, err := UploadsLibraryDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(dir)
+}
+
 // SeqPath is where the live-sync sequence high-water mark lives, beside the
 // backups in a private 0700 directory the server refuses to serve.
 func SeqPath(store *versions.Store) string {
@@ -118,7 +138,7 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	}
 	// Not fatal: a server with no home directory still serves every document, it
 	// just cannot store or answer an upload.
-	s.uploadsDir, _ = UploadsLibraryDir()
+	s.uploadsDir, _ = ResolvedUploadsLibraryDir()
 
 	mux := http.NewServeMux()
 

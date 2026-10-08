@@ -2508,3 +2508,52 @@ func TestFileURLLiteralCharacters(t *testing.T) {
 		})
 	}
 }
+
+// A library reached through a symlink is refused by the guard whatever spelling a
+// trust request names. ~/htmlclay is a symlink whenever the library lives in
+// Dropbox or on another volume, and the trust flow resolves a folder before the
+// guard sees it, so the guard has to hold the resolved library: a lexical one
+// would leave the real spelling trustable, and a page dropped in the library
+// would open as an editable page.
+func TestGuardRefusesASymlinkedUploadsLibraryByBothSpellings(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	linked := filepath.Join(home, "Dropbox", "htmlclay")
+	if err := os.MkdirAll(linked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(linked, filepath.Join(home, "htmlclay")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	// The library does not exist yet, which is the state the guard is built in on
+	// a first run. Resolving only what already exists leaves the guard holding the
+	// lexical path for the rest of the session, and then the real spelling -- the
+	// one Canonical hands it -- is trustable.
+	if _, err := os.Stat(filepath.Join(home, "htmlclay", "uploads")); err == nil {
+		t.Fatal("the library must not exist before the guard is built")
+	}
+	a := newTestApp(t, home)
+	a.startRuntime()
+
+	if err := os.MkdirAll(filepath.Join(linked, "uploads", "assets-board"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, spelling := range []string{
+		filepath.Join(home, "htmlclay", "uploads"),
+		filepath.Join(home, "htmlclay", "uploads", "assets-board"),
+		filepath.Join(linked, "uploads"),
+		filepath.Join(linked, "uploads", "assets-board"),
+	} {
+		if _, err := a.rt.policy.Canonical(spelling); err == nil {
+			t.Errorf("trusting %q must be refused", spelling)
+		}
+	}
+
+	// The library's ancestor stays grantable, as it must: ~/htmlclay is a folder
+	// people keep documents in.
+	if _, err := a.rt.policy.Canonical(filepath.Join(home, "htmlclay")); err != nil {
+		t.Errorf("trusting the library's ancestor must be allowed: %v", err)
+	}
+}
