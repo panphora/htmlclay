@@ -28,7 +28,11 @@ type Server struct {
 	// when the home directory could not be resolved, which refuses uploads and
 	// 404s the library route rather than writing anywhere else.
 	uploadsDir string
-	broker     *broker
+	// uploadKeyMu guards the library key: the one secret that makes an upload's
+	// name unguessable, read out of the library on first use and then held here.
+	uploadKeyMu sync.Mutex
+	uploadKey   []byte
+	broker      *broker
 	// beforeAssetCapabilityOpen runs between an asset path being resolved and the
 	// capability open that acts on it. Tests only; nil everywhere else.
 	beforeAssetCapabilityOpen func()
@@ -235,11 +239,21 @@ func (s *Server) SetSiteLabel(label string) { s.broker.label = label }
 
 // isInternal reports whether absPath belongs to htmlclay's own state and must be
 // refused outright, before any existence check, so the denial is not an oracle.
+//
+// The uploads library is htmlclay's own state too: it holds files the person
+// uploaded, named and served as attachments, and it must never be a page's
+// folder. A read root, a trusted folder, or a grant that covers ~/htmlclay would
+// otherwise turn a .htmlclay dropped in the library into an editable page with a
+// save token. The dedicated GET /_/uploads/ route does not go through here, so
+// the library is still served where it is meant to be.
 func (s *Server) isInternal(absPath string) bool {
 	if s.versions.Contains(absPath) {
 		return true
 	}
-	return s.internalDir != "" && session.EqualOrUnder(absPath, s.internalDir)
+	if s.internalDir != "" && session.EqualOrUnder(absPath, s.internalDir) {
+		return true
+	}
+	return s.uploadsDir != "" && session.EqualOrUnder(absPath, s.uploadsDir)
 }
 
 func (s *Server) Start() error {

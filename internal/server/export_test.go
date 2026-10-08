@@ -451,3 +451,43 @@ func TestHostUploadRefsRefusesWhatIsNotALibraryFile(t *testing.T) {
 		}
 	}
 }
+
+// The link the upload route hands back is what a document links, so the exporter
+// has to read the whole of it. A name with @ + & = in it used to come back with
+// those bytes raw, which is where the zip scanner reads a link to end: the file
+// was cut short and left out of the archive. The link is strictly encoded now, and
+// this drives the two halves against each other rather than assuming the shape.
+func TestExportDocumentZipPackagesStrictlyEncodedUploadLinks(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	first := decodeUpload(t, postUpload(t, srv, f.Token, "cover@2x.png", []byte("PNGDATA")))
+	second := decodeUpload(t, postUpload(t, srv, f.Token, "a+b&c=d.png", []byte("MOREDATA")))
+	one, two := first.Uploads[0], second.Uploads[0]
+
+	dir := t.TempDir()
+	outDir := t.TempDir()
+	document := filepath.Join(dir, "board.htmlclay")
+	doc := `<img src="` + one.URL + `"><a href="` + two.URL + `">a</a>`
+	writeExportFile(t, document, doc)
+
+	out, err := ExportDocumentZip(document, outDir, srv.uploadsDir)
+	if err != nil {
+		t.Fatalf("ExportDocumentZip: %v", err)
+	}
+	entries := zipEntries(t, out)
+	want := map[string]string{
+		// The link says uploads/ instead of /_/uploads/ and keeps the escapes the
+		// document wrote, which still resolve to the file's real name.
+		"board/board.htmlclay":                  strings.ReplaceAll(doc, "/_/uploads/", "uploads/"),
+		"board/uploads/assets-test/" + one.Name: "PNGDATA",
+		"board/uploads/assets-test/" + two.Name: "MOREDATA",
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("zip holds %v, want exactly %v", exportNames(entries), exportNames(want))
+	}
+	for name, content := range want {
+		if entries[name] != content {
+			t.Errorf("zip entry %q = %q, want %q", name, entries[name], content)
+		}
+	}
+}

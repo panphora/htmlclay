@@ -307,12 +307,33 @@ func (a *app) startRuntime() {
 	// serve path denies the same tree structurally (Server.SetInternalDir); this
 	// guard just stops the grant from being offered in the first place.
 	forbidden := a.rt.configDir
-	a.rt.guard = func(dir string) bool {
-		return session.EqualOrUnder(dir, forbidden) || session.EqualOrUnder(forbidden, dir)
+	// The uploads library is refused as itself and as a folder inside it, for the
+	// same reason: a grant that covers it would turn a page dropped in it into an
+	// editable page. Its ancestors stay grantable on purpose, because ~/htmlclay
+	// and home are the folders a person keeps documents in.
+	library, lErr := server.UploadsLibraryDir()
+	if lErr == nil {
+		if resolved, rErr := resolveSymlinks(library); rErr == nil {
+			library = resolved
+		}
 	}
+	a.rt.guard = func(dir string) bool { return grantForbidden(dir, forbidden, library) }
 	a.rt.policy = trust.Policy{Home: a.rt.home, Guard: a.rt.guard}
 
 	a.rt.logger.Printf("Runtime ready (home=%s)", a.rt.home)
+}
+
+// grantForbidden reports whether a read grant on dir must be refused. The config
+// tree is refused in either direction, since a grant of an ancestor that swallows
+// it is as good as a grant inside it. The uploads library is refused only as
+// itself or as something inside it: ~/htmlclay, home and every other ancestor of
+// the library stay grantable, because refusing them would refuse the folders
+// people keep their documents in.
+func grantForbidden(dir, configDir, library string) bool {
+	if session.EqualOrUnder(dir, configDir) || session.EqualOrUnder(configDir, dir) {
+		return true
+	}
+	return library != "" && session.EqualOrUnder(dir, library)
 }
 
 // repinTrustedFolders moves every pin that still matches onto the fingerprint the

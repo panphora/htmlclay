@@ -150,15 +150,21 @@ func TestUploadDifferentBytesBothSurvive(t *testing.T) {
 	}
 }
 
-// The one case the exclusive create exists for. Content-hash naming means
-// different bytes normally get different names and never contend, so without
-// this the O_EXCL could become a plain write and every other test still pass.
+// The one case the exclusive create exists for. Digest naming means different
+// bytes normally get different names and never contend, so without this the O_EXCL
+// could become a plain write and every other test still pass. The occupied name is
+// the one the server would itself have chosen, so the lengthened tail is the only
+// thing that can make the upload land somewhere else.
 func TestUploadNeverOverwritesADifferentFile(t *testing.T) {
 	srv, f, _ := setupHandlerTest(t)
 
 	content := []byte("the real upload")
-	sum := sha256.Sum256(content)
-	taken := "photo-" + hex.EncodeToString(sum[:])[:uploadHashMin] + ".png"
+	key, err := srv.uploadKeyBytes()
+	if err != nil {
+		t.Fatalf("library key: %v", err)
+	}
+	prefix := "photo-" + uploadDigest(key, content)[:uploadHashMin]
+	taken := prefix + ".png"
 
 	dir := assetsDir(srv, f)
 	os.MkdirAll(dir, 0o755)
@@ -167,6 +173,9 @@ func TestUploadNeverOverwritesADifferentFile(t *testing.T) {
 	res := decodeUpload(t, postUpload(t, srv, f.Token, "photo.png", content))
 	if res.Uploads[0].Name == taken {
 		t.Fatal("upload took a name that was already occupied by different bytes")
+	}
+	if !strings.HasPrefix(res.Uploads[0].Name, prefix) {
+		t.Errorf("upload name %q does not carry the digest of its bytes", res.Uploads[0].Name)
 	}
 	kept, _ := os.ReadFile(filepath.Join(dir, taken))
 	if string(kept) != "SOMETHING ELSE" {
@@ -281,6 +290,14 @@ func TestUploadServedFromASecondSiteServer(t *testing.T) {
 	}
 	if back := getFromLibrary(t, srv, made.Uploads[0].URL); back.Code != 200 || back.Body.String() != "OTHER" {
 		t.Errorf("first site serving the second site's upload: %d %q", back.Code, back.Body.String())
+	}
+
+	// The naming key belongs to the library, not to a site: a second site reads
+	// the key the first one created, so the same bytes converge on one name here
+	// too, and the same bytes never land twice in one folder.
+	same := decodeUpload(t, postUpload(t, site, other.Token, "cover.png", payload))
+	if same.Uploads[0].Name != res.Uploads[0].Name {
+		t.Errorf("the second site named the same bytes %q, want %q", same.Uploads[0].Name, res.Uploads[0].Name)
 	}
 }
 
@@ -816,5 +833,86 @@ func TestUploadAndLibraryWithoutALibraryDirectory(t *testing.T) {
 
 	if got := getFromLibrary(t, srv, "/_/uploads/assets-test/cover.png"); got.Code != http.StatusNotFound {
 		t.Errorf("library route with no library: expected 404, got %d", got.Code)
+	}
+}
+
+// The name is the only secret an upload has. Every HTML Clay site serves the
+// library by path with no token, so a name a page can compute from the bytes --
+// the SHA-256 of a short text or a known image -- is a name it can probe for. It
+// is keyed by the library's own random key instead, and that key is created once,
+// kept hidden and never served.
+func TestUploadNamesAreKeyedNotPublicHashes(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	content := []byte("a short text, or a known image, is guessable")
+	a := decodeUpload(t, postUpload(t, srv, f.Token, "photo.png", content))
+	b := decodeUpload(t, postUpload(t, srv, f.Token, "photo.png", content))
+	if a.Uploads[0].Name != b.Uploads[0].Name {
+		t.Errorf("same bytes stored twice: %q vs %q", a.Uploads[0].Name, b.Uploads[0].Name)
+	}
+	sum := sha256.Sum256(content)
+	if strings.Contains(a.Uploads[0].Name, hex.EncodeToString(sum[:])[:uploadHashMin]) {
+		t.Errorf("name %q carries the public SHA-256 of its own bytes", a.Uploads[0].Name)
+	}
+
+	// A library with a new key names the same bytes differently, which is what the
+	// key buys: the name is not a function of the bytes alone.
+	other, fOther, _ := setupHandlerTest(t)
+	made := decodeUpload(t, postUpload(t, other, fOther.Token, "photo.png", content))
+	if made.Uploads[0].Name == a.Uploads[0].Name {
+		t.Errorf("two libraries named the same bytes %q", made.Uploads[0].Name)
+	}
+
+	// The key lives in the library, is readable only by its owner, and is a file the
+	// library route refuses like any other hidden one.
+	info, err := os.Stat(filepath.Join(srv.uploadsDir, libraryKeyFile))
+	if err != nil {
+		t.Fatalf("library key: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("library key mode = %o, want 600", perm)
+	}
+	if info.Size() != libraryKeyLen {
+		t.Errorf("library key is %d bytes, want %d", info.Size(), libraryKeyLen)
+	}
+	if got := getFromLibrary(t, srv, "/_/uploads/.library-key"); got.Code != http.StatusNotFound {
+		t.Errorf("the library served its own key: %d", got.Code)
+	}
+}
+
+// The returned link has to survive the round trip through a document and the zip
+// scanner: url.PathEscape left @ + & = raw, and hostUploadRefs reads a raw one as
+// the end of a link, so the file it named was left out of the export.
+func TestUploadStrictlyEncodesTheReturnedURL(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	for _, tc := range []struct {
+		name    string
+		escapes []string
+	}{
+		{"cover@2x.png", []string{"%40"}},
+		{"a+b&c=d.png", []string{"%2B", "%26", "%3D"}},
+	} {
+		res := decodeUpload(t, postUpload(t, srv, f.Token, tc.name, []byte(tc.name)))
+		up := res.Uploads[0]
+		for _, esc := range tc.escapes {
+			if !strings.Contains(up.URL, esc) {
+				t.Errorf("%s: url = %q, want %s", tc.name, up.URL, esc)
+			}
+		}
+		for _, raw := range []string{"@", "+", "&", "="} {
+			if strings.Contains(up.URL, raw) {
+				t.Errorf("%s: url = %q keeps the raw %q", tc.name, up.URL, raw)
+			}
+		}
+		// The stored name keeps its real characters, and the encoded link resolves
+		// back to it through the route.
+		if _, err := os.Stat(filepath.Join(assetsDir(srv, f), up.Name)); err != nil {
+			t.Errorf("%s: stored name: %v", tc.name, err)
+		}
+		w := getFromLibrary(t, srv, up.URL)
+		if w.Code != http.StatusOK || w.Body.String() != tc.name {
+			t.Errorf("%s: GET %s = %d %q", tc.name, up.URL, w.Code, w.Body.String())
+		}
 	}
 }

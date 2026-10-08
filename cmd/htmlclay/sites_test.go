@@ -595,6 +595,38 @@ func TestGuardRefusesConfigTreeBothDirections(t *testing.T) {
 	}
 }
 
+// The uploads library is htmlclay's own state, so a grant that is the library or
+// sits inside it is refused: a grant there would turn a page dropped in the
+// library into an editable page. Its ancestors stay grantable on purpose, because
+// ~/htmlclay and home are the folders people keep documents in.
+func TestGuardRefusesTheUploadsLibraryOnlyAsItself(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	configDir := filepath.Join(home, "Library", "Application Support", "htmlclay")
+	library := filepath.Join(home, "htmlclay", "uploads")
+
+	for _, dir := range []string{
+		library,
+		filepath.Join(library, "assets-board"),
+	} {
+		if !grantForbidden(dir, configDir, library) {
+			t.Errorf("granting %q must be refused", dir)
+		}
+	}
+	for _, dir := range []string{
+		filepath.Join(home, "htmlclay"),
+		filepath.Join(home, "work"),
+	} {
+		if grantForbidden(dir, configDir, library) {
+			t.Errorf("granting %q must be allowed: the library rule must not refuse its ancestors", dir)
+		}
+	}
+	// Home is refused only by the config rule, which the config tree under it
+	// triggers; with the config tree elsewhere the library rule leaves it alone.
+	if grantForbidden(home, filepath.Join(t.TempDir(), "config"), library) {
+		t.Error("the library rule refused home, which must stay grantable")
+	}
+}
+
 // A file opened from inside a trusted folder serves its whole tree with no
 // permission prompt (confirm defaults to deny, so any prompt would 403), while the
 // opened file itself still self-saves. This is the point of Trusted Folders: run

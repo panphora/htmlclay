@@ -887,3 +887,76 @@ func TestServeAssetHTMLClayInUploadsFolderIsADownload(t *testing.T) {
 		t.Error("a stored upload was served as the read-only banner page")
 	}
 }
+
+// The uploads library is htmlclay's own state, never a folder of documents. A page
+// dropped in it must not be served as a page however a grant covers it: not by the
+// trusted-folder auto-registration that mints a save token, and not by the asset
+// lane that serves the rest of the tree. The library's own route still answers the
+// file, as an attachment.
+func TestLibraryIsNeverServedAsAPage(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	home := srv.sessions.HomeDir()
+
+	// The library as production lays it out: ~/htmlclay/uploads, with a document's
+	// folder and a page in it.
+	srv.uploadsDir = filepath.Join(home, "htmlclay", "uploads")
+	folder := filepath.Join(srv.uploadsDir, "assets-test")
+	if err := os.MkdirAll(folder, 0755); err != nil {
+		t.Fatal(err)
+	}
+	page := filepath.Join(folder, "board.htmlclay")
+	body := "<!DOCTYPE html>\n<html><body>board</body></html>"
+	if err := os.WriteFile(page, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// ~/htmlclay is the ancestor every upload's folder sits under, and it stays
+	// grantable and trustable: only the library itself is refused, by the app's
+	// guard. Both are installed here so the serve path is the only thing left
+	// holding the library back.
+	ancestor := filepath.Join(home, "htmlclay")
+	if err := srv.sessions.GrantReadRoot(ancestor); err != nil {
+		t.Fatalf("granting the library's ancestor: %v", err)
+	}
+	if err := srv.sessions.InstallTrustedRoot(ancestor); err != nil {
+		t.Fatalf("trusting the library's ancestor: %v", err)
+	}
+	srv.SetHooks(Hooks{
+		TrustedCovers: func(absPath string) bool { return session.EqualOrUnder(absPath, ancestor) },
+		Route: func(absPath string) (string, bool) {
+			if _, err := srv.sessions.Register(absPath, session.ViaTrusted); err != nil {
+				return "", false
+			}
+			return fmt.Sprintf("http://127.0.0.1:%d/", srv.port), true
+		},
+	})
+
+	req := httptest.NewRequest("GET", "/htmlclay/uploads/assets-test/board.htmlclay", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != 404 {
+		t.Errorf("a page in the library was served: %d %q", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "savetoken") {
+		t.Error("a page in the library was handed a save token")
+	}
+	if _, ok := srv.sessions.LookupByPath(page); ok {
+		t.Error("a page in the library was registered for editing")
+	}
+
+	// The dedicated route is not the serve path and keeps serving it, inert.
+	got := getFromLibrary(t, srv, "/_/uploads/assets-test/board.htmlclay")
+	if got.Code != 200 {
+		t.Fatalf("the library route: expected 200, got %d", got.Code)
+	}
+	if cd := got.Header().Get("Content-Disposition"); cd != "attachment" {
+		t.Errorf("Content-Disposition = %q, want attachment", cd)
+	}
+	if got.Body.String() != body {
+		t.Errorf("the library route served %q, want the stored bytes", got.Body.String())
+	}
+}

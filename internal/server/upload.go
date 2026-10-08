@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,11 +12,11 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Uploads (spec §9). A document that cannot upload has to put a picture INSIDE
@@ -165,27 +166,122 @@ func splitUploadName(filename string) (stem, ext string) {
 	return stem, ext
 }
 
-// uploadHashMin is how many hex characters of the content hash the shortest
+// uploadHashMin is how many hex characters of the keyed digest the shortest
 // candidate name carries. 32 is 128 bits: every HTML Clay site can read the
 // library by path, so a name must not be guessable from the document's own name,
 // which is the only other thing an attacker knows. Same bytes still converge on
 // one file; a real prefix collision lengthens the tail, up to the whole digest.
 const uploadHashMin = 32
 
-// storeUpload writes the bytes under a content-derived name inside folder,
-// beneath the library directory it is given. Every filesystem call goes through
-// an *os.Root held on that directory, so a symlinked folder (or a .. smuggled
-// into a name) can never send the write anywhere else; the folder itself must be
-// a real directory, not a link.
+// libraryKeyFile is the library's own secret, hidden beside the uploads folders.
+// The asset lane refuses a hidden component and the exporter skips one, so it is
+// never served and never packaged.
+const libraryKeyFile = ".library-key"
+
+// libraryKeyLen is the key's size in bytes: 256 bits, which is the block size of
+// the HMAC-SHA256 it keys and more than enough that no one can guess it.
+const libraryKeyLen = 32
+
+// libraryKeyReadTries bounds how long a loser of the creation race waits for the
+// winner's bytes. The exclusive create publishes the NAME before its bytes, and
+// two sites of one app share one library, so an empty file is a real moment and
+// not a corrupt key.
+const libraryKeyReadTries = 50
+
+// loadOrCreateLibraryKey returns the library's naming key, creating it on first
+// use. Every filesystem call goes through an *os.Root held on the library, so a
+// symlinked library or key cannot send the write anywhere else, and the create is
+// exclusive: two uploads racing on a fresh library both end up with the winner's
+// key rather than two keys and two names for one file.
+func loadOrCreateLibraryKey(dir string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	fh, err := root.OpenFile(libraryKeyFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		// A racing creator has the name but may not have written its bytes yet, so a
+		// short read is retried rather than taken: half a key is a guessable key,
+		// and two sites reading two different keys would name one file two ways.
+		for try := 0; ; try++ {
+			key, readErr := root.ReadFile(libraryKeyFile)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if len(key) == libraryKeyLen {
+				return key, nil
+			}
+			if try >= libraryKeyReadTries {
+				return nil, fmt.Errorf("%s is %d bytes, want %d", libraryKeyFile, len(key), libraryKeyLen)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+	key := make([]byte, libraryKeyLen)
+	if _, err := rand.Read(key); err != nil {
+		fh.Close()
+		root.Remove(libraryKeyFile)
+		return nil, err
+	}
+	_, writeErr := fh.Write(key)
+	closeErr := fh.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		root.Remove(libraryKeyFile)
+		return nil, err
+	}
+	return key, nil
+}
+
+// uploadKey is the library's naming key for this server, read once and kept. A
+// failure is not cached: the library may be created, or its key repaired, and the
+// next upload must be able to succeed. An empty library has no key at all.
+func (s *Server) uploadKeyBytes() ([]byte, error) {
+	s.uploadKeyMu.Lock()
+	defer s.uploadKeyMu.Unlock()
+	if s.uploadKey != nil {
+		return s.uploadKey, nil
+	}
+	if s.uploadsDir == "" {
+		return nil, errors.New("no uploads library")
+	}
+	key, err := loadOrCreateLibraryKey(s.uploadsDir)
+	if err != nil {
+		return nil, err
+	}
+	s.uploadKey = key
+	return key, nil
+}
+
+// uploadDigest is the hex HMAC-SHA256 of a file's bytes under the library key.
+// Keyed, not a bare content hash: the hash of a short text or a known image is
+// something any page on any HTML Clay port can compute, and a name it can compute
+// is a name it can probe for.
+func uploadDigest(key, data []byte) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// storeUpload writes the bytes under a name derived from them and the library key
+// inside folder, beneath the library directory it is given. Every filesystem call
+// goes through an *os.Root held on that directory, so a symlinked folder (or a
+// ".." smuggled into a name) can never send the write anywhere else; the folder
+// itself must be a real directory, not a link.
 //
 // The bytes go to a hidden temp file first and are published with an exclusive
 // hard link, so the final name never exists half-written and never replaces a
-// file already there. The hash is what removes the race, not a lock: two
+// file already there. The digest is what removes the race, not a lock: two
 // uploads of DIFFERENT bytes get different names and never contend, and two
 // uploads of the SAME bytes converge on one file, with whichever loses the link
 // reading back what the winner published and agreeing with it. The tail
-// lengthens only on a real hash-prefix collision between different content.
-func storeUpload(parentDir, folder, stem, ext string, data []byte) (string, error) {
+// lengthens only on a real digest-prefix collision between different content.
+func storeUpload(parentDir, folder, stem, ext string, key, data []byte) (string, error) {
 	parent, err := os.OpenRoot(parentDir)
 	if err != nil {
 		return "", err
@@ -224,8 +320,7 @@ func storeUpload(parentDir, folder, stem, ext string, data []byte) (string, erro
 		return "", err
 	}
 
-	sum := sha256.Sum256(data)
-	digest := hex.EncodeToString(sum[:])
+	digest := uploadDigest(key, data)
 	for n := uploadHashMin; n <= len(digest); n += 2 {
 		name := stem + "-" + digest[:n] + ext
 		err := dir.Link(tmp, name)
@@ -269,6 +364,30 @@ func storeInPlace(dir *os.Root, stem, digest, ext string, data []byte) (string, 
 		return name, nil
 	}
 	return "", errors.New("no free name for that file")
+}
+
+// hostPathSegment percent-encodes one segment of a returned upload URL: every byte
+// outside the unreserved URL set becomes %XX with uppercase hex. This is stricter
+// than url.PathEscape, which leaves the sub-delimiters @ + & = $ : , raw. A raw
+// one of those ends a link for the exporter's scanner, so the file the document
+// links would be cut out of the zip, and one is enough to break a URL a client
+// pastes anywhere. The route decodes through PathValue, so a strictly encoded
+// link still resolves.
+func hostPathSegment(s string) string {
+	const hexDigits = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '.' || c == '_' || c == '~' {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(hexDigits[c>>4])
+		b.WriteByte(hexDigits[c&0x0f])
+	}
+	return b.String()
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
@@ -330,7 +449,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, err := storeUpload(s.uploadsDir, folder, stem, ext, data)
+	key, err := s.uploadKeyBytes()
+	if err != nil {
+		s.logger.Printf("Error reading the uploads library key: %v", err)
+		uploadError(w, http.StatusInternalServerError, "error", "Could not store the file")
+		return
+	}
+
+	name, err := storeUpload(s.uploadsDir, folder, stem, ext, key, data)
 	if err != nil {
 		s.logger.Printf("Error storing upload in %s: %v", folder, err)
 		uploadError(w, http.StatusInternalServerError, "error", "Could not store the file")
@@ -338,9 +464,11 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A host path into the library, answered by GET /_/uploads/ on every site
-	// server. Percent-encoded per segment, while the stored name keeps its own
-	// characters: a raw space breaks srcset, where a space separates candidates.
-	served := "/_/uploads/" + url.PathEscape(folder) + "/" + url.PathEscape(name)
+	// server. Every byte outside the URL path alphabet is escaped, while the stored
+	// name keeps its own characters: a raw space breaks srcset, where a space
+	// separates candidates, and the exporter reads a raw @ + & = $ : , as the end of
+	// a link and would leave the file out of the zip.
+	served := "/_/uploads/" + hostPathSegment(folder) + "/" + hostPathSegment(name)
 
 	noStoreJSON(w)
 	json.NewEncoder(w).Encode(map[string]any{
