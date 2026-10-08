@@ -143,6 +143,92 @@ func Run(cfg *config.Config, version string, onOpenExample func(), onOpenBackups
 	systray.Run(t.onReady, t.onExit)
 }
 
+const profilePrivacy = "Use this name in files opened with this app. Files can save your name and person ID, and anyone who receives those files can read them.\n\nTurning this off stops HTML Clay supplying your name. Names already saved in files stay there."
+
+// profileActions are the Profile submenu's operations, with the native dialogs
+// passed in so tests can drive them without opening any UI.
+type profileActions struct {
+	cfg    *config.Config
+	prompt func(title, message, initial string) (string, bool, error)
+	alert  func(title, message string)
+}
+
+// askName asks until it gets a valid name or the person cancels.
+func (p *profileActions) askName(initial string) (string, bool) {
+	message := profilePrivacy
+	for {
+		value, ok, err := p.prompt("Display Name", message, initial)
+		if err != nil {
+			p.alert("Could not ask for a name", err.Error())
+			return "", false
+		}
+		if !ok {
+			return "", false
+		}
+		name, err := config.CleanProfileName(value)
+		if err == nil {
+			return name, true
+		}
+		message = err.Error() + "\n\n" + profilePrivacy
+		initial = value
+	}
+}
+
+// toggle turns sharing on or off and returns whether it is now on. A profile that is on
+// but damaged reads as off in the menu, and clicking it repairs it: the name is asked for
+// again and a damaged id is replaced.
+func (p *profileActions) toggle() bool {
+	cur := p.cfg.ProfileState()
+	next := cur
+	if cur.Shareable() {
+		next.Enabled = false
+	} else {
+		if _, err := config.CleanProfileName(cur.Name); err != nil {
+			name, ok := p.askName(cur.Name)
+			if !ok {
+				return false
+			}
+			next.Name = name
+		}
+		if !config.ValidProfileID(next.ID) {
+			id, err := config.NewProfileID()
+			if err != nil {
+				p.alert("Could not set up your profile", err.Error())
+				return false
+			}
+			next.ID = id
+		}
+		next.Enabled = true
+	}
+	if err := p.cfg.UpdateProfile(next); err != nil {
+		p.alert("Could not save your profile", err.Error())
+		return p.cfg.ProfileState().Shareable()
+	}
+	return next.Enabled
+}
+
+// rename changes the display name, keeping the id and whether sharing is on.
+func (p *profileActions) rename() {
+	cur := p.cfg.ProfileState()
+	name, ok := p.askName(cur.Name)
+	if !ok {
+		return
+	}
+	next := cur
+	next.Name = name
+	if !config.ValidProfileID(next.ID) {
+		id, err := config.NewProfileID()
+		if err != nil {
+			p.alert("Could not set up your profile", err.Error())
+			return
+		}
+		next.ID = id
+	}
+	if err := p.cfg.UpdateProfile(next); err != nil {
+		p.alert("Could not save your profile", err.Error())
+	}
+}
+
 // listMenu renders an authoritative list into a growing slot pool, with an
 // optional add row, per-row click actions, and polling for lists that change
 // outside the tray.
@@ -327,6 +413,16 @@ func (t *Tray) onReady() {
 	aiEditItem := systray.AddMenuItemCheckbox("AI Editing", "Select text in an HTML file and press ⌘J to ask an agent on this computer to rewrite it", t.cfg.AIEditEnabled())
 	systray.AddSeparator()
 
+	profile := &profileActions{
+		cfg:    t.cfg,
+		prompt: platform.PromptName,
+		alert:  func(title, message string) { _ = platform.Notify(title, message) },
+	}
+	profileItem := systray.AddMenuItem("Profile", "Your name in files opened with HTML Clay")
+	useProfileItem := profileItem.AddSubMenuItemCheckbox("Use My Profile in Files", "Files can save your name and person ID", t.cfg.ProfileState().Shareable())
+	renameProfileItem := profileItem.AddSubMenuItem("Change Display Name…", "")
+	systray.AddSeparator()
+
 	loginItem := systray.AddMenuItemCheckbox("Start on Login", "", t.cfg.StartOnLoginEnabled())
 	systray.AddSeparator()
 
@@ -343,6 +439,14 @@ func (t *Tray) onReady() {
 				t.toggleLoginItem(loginItem)
 			case <-aiEditItem.ClickedCh:
 				t.toggleAIEdit(aiEditItem)
+			case <-useProfileItem.ClickedCh:
+				if profile.toggle() {
+					useProfileItem.Check()
+				} else {
+					useProfileItem.Uncheck()
+				}
+			case <-renameProfileItem.ClickedCh:
+				profile.rename()
 			case info := <-t.updateCh:
 				t.showUpdate(info)
 			case <-t.updateItem.ClickedCh:

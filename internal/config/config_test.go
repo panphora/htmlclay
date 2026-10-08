@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -822,4 +823,379 @@ func TestAIEditOffKeepsEngines(t *testing.T) {
 	if len(engines) != 1 || engines["echo"][0] != "sh" {
 		t.Errorf("turning AI editing off dropped the user engines: %v", engines)
 	}
+}
+
+// readProfileOnDisk returns the profile stored in config.json, so a test can tell
+// a rollback that only touched memory from one that reached disk.
+func readProfileOnDisk(t *testing.T, baseDir string) Profile {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(DirFrom(baseDir), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk struct {
+		Profile *Profile `json:"profile"`
+	}
+	if err := json.Unmarshal(data, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.Profile == nil {
+		return Profile{}
+	}
+	return *onDisk.Profile
+}
+
+// Every existing install, and every fresh one, starts with no profile: a config
+// file that never carried the key must read as off.
+func TestProfileDefaultsOff(t *testing.T) {
+	baseDir := t.TempDir()
+	writeConfigJSON(t, baseDir, `{"startOnLogin":true}`)
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if got := cfg.ProfileState(); got != (Profile{}) {
+		t.Errorf("a config with no profile read as %+v, want the zero value", got)
+	}
+	if cfg.ProfileState().Shareable() {
+		t.Error("a profile that was never set up must not be shareable")
+	}
+}
+
+func TestProfileRoundTrip(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SetStartOnLogin(true)
+	cfg.RememberSitePort("/root/sites", 12345)
+
+	id, err := NewProfileID()
+	if err != nil {
+		t.Fatalf("mint error: %v", err)
+	}
+	if err := cfg.UpdateProfile(Profile{Enabled: true, ID: id, Name: "  Ada   Chen "}); err != nil {
+		t.Fatalf("update error: %v", err)
+	}
+
+	loaded, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Profile{Enabled: true, ID: id, Name: "Ada Chen"}
+	if got := loaded.ProfileState(); got != want {
+		t.Errorf("profile reloaded as %+v, want %+v", got, want)
+	}
+	if !loaded.ProfileState().Shareable() {
+		t.Error("an enabled profile with a valid id and name must be shareable")
+	}
+	if !loaded.StartOnLoginEnabled() {
+		t.Error("saving the profile dropped start-on-login")
+	}
+	if got := loaded.SitePort("/root/sites"); got != 12345 {
+		t.Errorf("saving the profile dropped the remembered port, got %d", got)
+	}
+}
+
+func TestProfileIDShape(t *testing.T) {
+	first, err := NewProfileID()
+	if err != nil {
+		t.Fatalf("mint error: %v", err)
+	}
+	if len(first) != 22 {
+		t.Errorf("id %q is %d characters, want 22", first, len(first))
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`).MatchString(first) {
+		t.Errorf("id %q is not 22 unpadded base64url characters", first)
+	}
+	second, err := NewProfileID()
+	if err != nil {
+		t.Fatalf("second mint error: %v", err)
+	}
+	if second == first {
+		t.Errorf("two mints returned the same id %q", first)
+	}
+}
+
+// The name rules are ClayJS's, so a name this app accepts is never silently
+// replaced by the browser's own prompt. The length limit counts UTF-16 code
+// units, not runes or bytes, because that is what the client measures.
+func TestProfileNameRules(t *testing.T) {
+	accepted := []struct {
+		in   string
+		want string
+	}{
+		{"Ada", "Ada"},
+		{"Zoë O'Brien", "Zoë O'Brien"},
+		{strings.Repeat("a", 120), strings.Repeat("a", 120)},
+	}
+	for _, c := range accepted {
+		got, err := CleanProfileName(c.in)
+		if err != nil {
+			t.Errorf("CleanProfileName(%q) errored: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("CleanProfileName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	rejected := []struct {
+		in   string
+		want error
+	}{
+		{"", ErrProfileNameEmpty},
+		{"   ", ErrProfileNameEmpty},
+		{"ada@example.com", ErrProfileNameEmail},
+		{strings.Repeat("a", 121), ErrProfileNameLong},
+		{strings.Repeat("😀", 61), ErrProfileNameLong},
+	}
+	for _, c := range rejected {
+		if got, err := CleanProfileName(c.in); err != c.want {
+			t.Errorf("CleanProfileName(%q) = %q, %v; want error %v", c.in, got, err, c.want)
+		}
+	}
+}
+
+// Go's whitespace set and JavaScript's differ at both ends: Go splits on U+0085 (NEL),
+// which ClayJS keeps, and keeps U+FEFF, which ClayJS trims away. A name only one of the
+// two accepts is a name the document silently replaces with the browser's own prompt, so
+// the app must use ClayJS's set exactly.
+func TestProfileNameWhitespaceMatchesClayJS(t *testing.T) {
+	rejected := []string{"\ufeff", " \u00a0\u3000 ", "\u2000\u200a"}
+	for _, in := range rejected {
+		if got, err := CleanProfileName(in); err != ErrProfileNameEmpty {
+			t.Errorf("CleanProfileName(%q) = %q, %v; want %v", in, got, err, ErrProfileNameEmpty)
+		}
+	}
+
+	accepted := []struct {
+		in   string
+		want string
+	}{
+		{"Ada\ufeffChen", "Ada Chen"},
+		{"Ada\u200bChen", "Ada\u200bChen"},
+		{"Ada\u0085Chen", "Ada\u0085Chen"},
+	}
+	for _, c := range accepted {
+		got, err := CleanProfileName(c.in)
+		if err != nil {
+			t.Errorf("CleanProfileName(%q) errored: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("CleanProfileName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A record already on disk that fails the rules must still be switchable off. Sharing
+// used to be stoppable only by writing a record the setter re-validated, so a damaged id
+// or name left the person unable to turn it off at all.
+func TestProfileDamagedRecordCanBeTurnedOff(t *testing.T) {
+	baseDir := t.TempDir()
+	writeConfigJSON(t, baseDir, `{"profile":{"enabled":true,"id":"abc","name":"ada@example.com"}}`)
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	damaged := Profile{Enabled: true, ID: "abc", Name: "ada@example.com"}
+	if got := cfg.ProfileState(); got != damaged {
+		t.Fatalf("loaded profile is %+v, want the damaged record %+v", got, damaged)
+	}
+	if _, _, ok := cfg.SharedPerson(); ok {
+		t.Error("a damaged record was shared")
+	}
+
+	off := Profile{Enabled: false, ID: "abc", Name: "ada@example.com"}
+	if err := cfg.UpdateProfile(off); err != nil {
+		t.Fatalf("turning a damaged profile off failed: %v", err)
+	}
+	if got := cfg.ProfileState(); got != off {
+		t.Errorf("state after turning off is %+v, want %+v", got, off)
+	}
+	if _, _, ok := cfg.SharedPerson(); ok {
+		t.Error("a profile that was turned off was shared")
+	}
+	if got := readProfileOnDisk(t, baseDir); got != off {
+		t.Errorf("on disk after turning off is %+v, want %+v", got, off)
+	}
+}
+
+// Turning sharing back on is where a damaged record has to be caught: it is the one
+// direction that makes the person's identity visible to documents.
+func TestProfileTurningOnStillValidates(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		body string
+		want error
+	}{
+		{"a damaged name", `{"profile":{"enabled":false,"id":"abc","name":"ada@example.com"}}`, ErrProfileNameEmail},
+		{"a damaged id", `{"profile":{"enabled":false,"id":"abc","name":"Ada"}}`, ErrProfileIDMalformed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			baseDir := t.TempDir()
+			writeConfigJSON(t, baseDir, c.body)
+			cfg, _, err := LoadFrom(baseDir, noIdentity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := cfg.ProfileState()
+			on := before
+			on.Enabled = true
+			if err := cfg.UpdateProfile(on); err != c.want {
+				t.Errorf("enabling a record with %s returned %v, want %v", c.name, err, c.want)
+			}
+			if got := cfg.ProfileState(); got != before {
+				t.Errorf("a rejected update changed the state to %+v, want %+v", got, before)
+			}
+		})
+	}
+}
+
+// The id is the person, so renaming and turning sharing off and on again must
+// never mint a new one: a new id would orphan everything already attributed.
+func TestProfileRenameAndToggleKeepID(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := NewProfileID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.UpdateProfile(Profile{Enabled: true, ID: id, Name: "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, next := range []Profile{
+		{Enabled: true, ID: id, Name: "Grace"},
+		{Enabled: false, ID: id, Name: "Grace"},
+		{Enabled: true, ID: id, Name: "Grace"},
+	} {
+		if err := cfg.UpdateProfile(next); err != nil {
+			t.Fatalf("update error: %v", err)
+		}
+		if got := cfg.ProfileState(); got != next {
+			t.Errorf("state after update is %+v, want %+v", got, next)
+		}
+	}
+	if got := cfg.ProfileState().ID; got != id {
+		t.Errorf("the id changed to %q, want %q", got, id)
+	}
+}
+
+func TestProfileIncompleteOrDamaged(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := NewProfileID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := Profile{Enabled: true, ID: id, Name: "Ada"}
+	if err := cfg.UpdateProfile(good); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cfg.UpdateProfile(Profile{Enabled: true, Name: "Ada"}); err != ErrProfileIncomplete {
+		t.Errorf("enabling with no id returned %v, want %v", err, ErrProfileIncomplete)
+	}
+	if got := cfg.ProfileState(); got != good {
+		t.Errorf("a rejected incomplete profile changed the state to %+v", got)
+	}
+	if err := cfg.UpdateProfile(Profile{Enabled: true, ID: "bad id!", Name: "Ada"}); err != ErrProfileIDMalformed {
+		t.Errorf("a damaged id returned %v, want %v", err, ErrProfileIDMalformed)
+	}
+	if got := cfg.ProfileState(); got != good {
+		t.Errorf("a rejected damaged id changed the state to %+v", got)
+	}
+}
+
+// A profile update is a promise about what is on disk. A write that fails must
+// leave both the memory and the file at the previous record rather than a state
+// the user never agreed to and that no reload will reproduce.
+func TestProfileFailedWriteKeepsOldRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod does not deny writes on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can write to a read-only directory")
+	}
+
+	baseDir := t.TempDir()
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := NewProfileID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := Profile{Enabled: true, ID: id, Name: "Ada"}
+	if err := cfg.UpdateProfile(good); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := DirFrom(baseDir)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+
+	if err := cfg.UpdateProfile(Profile{Enabled: true, ID: id, Name: "Grace"}); err == nil {
+		t.Fatal("UpdateProfile reported success with an unwritable config directory")
+	}
+	if got := cfg.ProfileState(); got != good {
+		t.Errorf("in memory after a failed write: %+v, want %+v", got, good)
+	}
+	if got := readProfileOnDisk(t, baseDir); got != good {
+		t.Errorf("on disk after a failed write: %+v, want %+v", got, good)
+	}
+}
+
+// Readers run on the serving path while the tray writes. Under -race this is the
+// test that catches a torn profile: a reader must never see a half-updated id or
+// name, because a document would then stamp someone who does not exist.
+func TestProfileConcurrentReads(t *testing.T) {
+	baseDir := t.TempDir()
+	cfg, _, err := LoadFrom(baseDir, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := NewProfileID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.UpdateProfile(Profile{Enabled: true, ID: id, Name: "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+
+	names := []string{"Ada", "Grace"}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			if err := cfg.UpdateProfile(Profile{Enabled: true, ID: id, Name: names[i%2]}); err != nil {
+				t.Errorf("update %d failed: %v", i, err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			got := cfg.ProfileState()
+			if !got.Enabled || got.ID != id || (got.Name != names[0] && got.Name != names[1]) {
+				t.Errorf("read %d saw an incomplete profile: %+v", i, got)
+				return
+			}
+		}
+	}()
+	wg.Wait()
 }

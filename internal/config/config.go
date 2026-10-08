@@ -1,13 +1,19 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 )
 
 type Config struct {
@@ -52,7 +58,10 @@ type Config struct {
 	HelperDecisions []HelperDecision `json:"helperDecisions,omitempty"`
 	// AIEdit is the built-in AI editing helper's setting. Nil, or a nil Enabled,
 	// reads as on: AI editing is on unless the person turned it off.
-	AIEdit  *AIEditSettings `json:"aiEdit,omitempty"`
+	AIEdit *AIEditSettings `json:"aiEdit,omitempty"`
+	// Profile is the person HTML Clay names in files it serves, when Enabled. Nil
+	// means never set up, which reads as off. The id survives renames and toggles.
+	Profile *Profile `json:"profile,omitempty"`
 	baseDir string
 }
 
@@ -391,6 +400,136 @@ func (c *Config) AIEditEngines() (string, map[string][]string) {
 	return c.AIEdit.Default, engines
 }
 
+// Profile is the app-wide person for files opened with HTML Clay: a random id and a
+// display name, shared with documents only while Enabled.
+type Profile struct {
+	Enabled bool   `json:"enabled"`
+	ID      string `json:"id,omitempty"`
+	Name    string `json:"name,omitempty"`
+}
+
+var (
+	profileIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+	emailPattern     = regexp.MustCompile(`\S+@\S+\.\S+`)
+)
+
+// The same rules ClayJS applies to a host's person, so a name the app accepts is
+// never silently replaced by the browser's own prompt.
+const maxProfileName = 120
+
+var (
+	ErrProfileNameEmpty   = errors.New("Enter a name.")
+	ErrProfileNameLong    = errors.New("Use a name of 120 characters or fewer.")
+	ErrProfileNameEmail   = errors.New("Use a name, not an email address.")
+	ErrProfileIncomplete  = errors.New("A profile needs an id and a name before it can be used.")
+	ErrProfileIDMalformed = errors.New("The profile id is damaged.")
+)
+
+// isJSSpace is JavaScript's whitespace set (String.prototype.trim and \s), so a name
+// HTML Clay accepts is one ClayJS accepts too.
+func isJSSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ',
+		0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
+		return true
+	}
+	return r >= 0x2000 && r <= 0x200a
+}
+
+// CleanProfileName trims and collapses whitespace and checks the result.
+func CleanProfileName(name string) (string, error) {
+	clean := strings.Join(strings.FieldsFunc(name, isJSSpace), " ")
+	switch {
+	case clean == "":
+		return "", ErrProfileNameEmpty
+	case len(utf16.Encode([]rune(clean))) > maxProfileName:
+		return "", ErrProfileNameLong
+	case emailPattern.MatchString(clean):
+		return "", ErrProfileNameEmail
+	}
+	return clean, nil
+}
+
+// ValidProfileID reports whether id has the shape ClayJS accepts for a person.
+func ValidProfileID(id string) bool {
+	return profileIDPattern.MatchString(id)
+}
+
+// NewProfileID mints a person id: 16 random bytes as unpadded base64url.
+func NewProfileID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// Shareable reports whether this profile may be given to documents: on, with an id
+// and a name that pass the same checks the setter applies.
+func (p Profile) Shareable() bool {
+	if !p.Enabled || !profileIDPattern.MatchString(p.ID) {
+		return false
+	}
+	name, err := CleanProfileName(p.Name)
+	return err == nil && name == p.Name
+}
+
+// ProfileState returns a copy of the profile under the lock; the zero value when
+// none was ever set up.
+func (c *Config) ProfileState() Profile {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Profile == nil {
+		return Profile{}
+	}
+	return *c.Profile
+}
+
+// SharedPerson is the person documents see: ok only while sharing is on and the
+// stored record passes the same checks the setter applies.
+func (c *Config) SharedPerson() (id, name string, ok bool) {
+	p := c.ProfileState()
+	if !p.Shareable() {
+		return "", "", false
+	}
+	return p.ID, p.Name, true
+}
+
+// UpdateProfile validates next, writes it to disk, and only then lets readers see it. A
+// field the change leaves as it is stored is not re-checked, so a damaged record can
+// always be turned off. Turning sharing on needs a sound id and name. A failed write
+// leaves the previous profile in memory and on disk.
+func (c *Config) UpdateProfile(next Profile) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var current Profile
+	if c.Profile != nil {
+		current = *c.Profile
+	}
+	if next.Name != current.Name || (next.Enabled && !current.Enabled) {
+		if next.Name != "" || next.Enabled {
+			name, err := CleanProfileName(next.Name)
+			if err != nil {
+				return err
+			}
+			next.Name = name
+		}
+	}
+	if (next.ID != current.ID || (next.Enabled && !current.Enabled)) && next.ID != "" && !ValidProfileID(next.ID) {
+		return ErrProfileIDMalformed
+	}
+	if next.Enabled && (next.ID == "" || next.Name == "") {
+		return ErrProfileIncomplete
+	}
+	previous := c.Profile
+	c.Profile = &next
+	if err := c.saveLocked(); err != nil {
+		c.Profile = previous
+		return err
+	}
+	return nil
+}
+
 func defaultConfigDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
@@ -512,6 +651,11 @@ func (c *Config) Save() error {
 	// temp-rename races from resurrecting a just-removed entry.
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.saveLocked()
+}
+
+// saveLocked writes the config. The caller holds c.mu.
+func (c *Config) saveLocked() error {
 	dir := DirFrom(c.baseDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err

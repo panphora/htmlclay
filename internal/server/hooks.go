@@ -71,6 +71,12 @@ type Hooks struct {
 	// AIEditEngines returns the default engine name ("" for claude) and the
 	// user-defined engines. Nil means the built-ins only.
 	AIEditEngines func() (string, map[string][]string)
+
+	// Profile reports the person documents may see (spec §9 People). Nil means this
+	// server offers no People at all: no extension and no block. ok false means the
+	// person turned sharing off, and documents get `me: null`. Read on every
+	// document-scoped discovery, so a change in the app reaches open files.
+	Profile func() (id, name string, ok bool)
 }
 
 // SetHooks wires the app behind this server. Call once, before Start.

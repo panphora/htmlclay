@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -200,6 +201,43 @@ type documentMeta struct {
 	// The pre-spec spelling, same value, for the same reason it survives at the top
 	// level and on the root element itself.
 	LegacyDocumentID string `json:"htmlclayid,omitempty"`
+	// §9 People: who is asking. Present only on a host that offers People; `me` is
+	// null while the person has sharing turned off. Never `members`: an app profile
+	// is one person, not a directory.
+	People *peopleMeta `json:"people,omitempty"`
+}
+
+type peopleMeta struct {
+	Me *personMeta `json:"me"`
+}
+
+type personMeta struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// extensions is hostExtensions plus what this server's hooks add. A fresh slice, so
+// the package-level list is never appended to in place.
+func (s *Server) extensions() []string {
+	if s.hooks.Profile == nil {
+		return hostExtensions
+	}
+	out := append([]string(nil), hostExtensions...)
+	out = append(out, "people")
+	sort.Strings(out)
+	return out
+}
+
+// people is this document's People block, or nil on a host without People.
+func (s *Server) people() *peopleMeta {
+	if s.hooks.Profile == nil {
+		return nil
+	}
+	id, name, ok := s.hooks.Profile()
+	if !ok {
+		return &peopleMeta{}
+	}
+	return &peopleMeta{Me: &personMeta{ID: id, Name: name}}
 }
 
 type uploadMeta struct {
@@ -1207,7 +1245,7 @@ func (s *Server) handleHostMeta(w http.ResponseWriter, r *http.Request) {
 	noStoreJSON(w)
 	json.NewEncoder(w).Encode(hostMeta{
 		Spec:       specVersion,
-		Extensions: hostExtensions,
+		Extensions: s.extensions(),
 	})
 }
 
@@ -1270,7 +1308,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 
 	meta := fileMeta{
 		Spec:       specVersion,
-		Extensions: hostExtensions,
+		Extensions: s.extensions(),
 		// RelPath comes from filepath.Rel, so on Windows it arrives with
 		// backslashes; `path` is the field a client builds a URL from, and the URL
 		// this same document is served at is forward-slashed. AbsolutePath stays
@@ -1305,8 +1343,13 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	meta.Document.WireMode, meta.Document.Helpers = s.helperDiscovery(f.AbsPath)
+	meta.Document.People = s.people()
 
 	noStoreJSON(w)
+	if meta.Document.People != nil {
+		// Names a person: never kept by a shared cache.
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
 	json.NewEncoder(w).Encode(meta)
 }
 

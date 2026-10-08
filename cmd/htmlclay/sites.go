@@ -227,6 +227,7 @@ func (a *app) buildSite(anchor string, trusted bool) (*site, error) {
 		TrustRequest:   a.trustFromPage,
 		AIEditEnabled:  a.rt.cfg.AIEditEnabled,
 		AIEditEngines:  a.rt.cfg.AIEditEngines,
+		Profile:        a.rt.cfg.SharedPerson,
 	})
 	s.srv = srv
 	return s, nil
