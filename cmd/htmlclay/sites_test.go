@@ -2525,6 +2525,7 @@ func TestGuardRefusesASymlinkedUploadsLibraryByBothSpellings(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	// The library does not exist yet, which is the state the guard is built in on
 	// a first run. Resolving only what already exists leaves the guard holding the

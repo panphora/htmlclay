@@ -77,7 +77,9 @@ func attachmentProgram(t *testing.T, label string) (path, marker string) {
 	if runtime.GOOS == "windows" {
 		path += ".exe"
 	}
-	if err := os.Link(self, path); err != nil {
+	// Windows will not delete a hard link to a running image, so TempDir cleanup
+	// would fail on the link to this test binary: copy there instead.
+	if runtime.GOOS == "windows" || os.Link(self, path) != nil {
 		source, err := os.Open(self)
 		if err != nil {
 			t.Fatal(err)

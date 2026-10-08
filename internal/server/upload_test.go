@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -889,7 +890,8 @@ func TestUploadNamesAreKeyedNotPublicHashes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("library key: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	// Windows has no permission bits: the key inherits the profile folder's ACL.
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("library key mode = %o, want 600", perm)
 	}
 	if info.Size() != libraryKeyLen {
@@ -1158,6 +1160,7 @@ func TestSymlinkedLibraryIsNeverServedAsAPage(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
 
 			if existed {
 				if err := os.MkdirAll(filepath.Join(linked, "uploads", "assets-test"), 0o755); err != nil {
