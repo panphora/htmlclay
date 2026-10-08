@@ -413,6 +413,9 @@ func (a *app) run(updateCh <-chan tray.UpdateInfo) {
 		Documents: a.helperDocumentRows,
 		Document:  a.configureHelperDocument,
 		AIEditOff: a.cancelAIEdits,
+	}, &tray.ExportHooks{
+		Documents: a.exportDocumentRows,
+		Export:    a.exportDocument,
 	}, a.dialogAdvice)
 	a.rt.logger.Printf("Tray exited")
 }

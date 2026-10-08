@@ -80,6 +80,13 @@ type HelperHooks struct {
 	AIEditOff func()
 }
 
+// ExportHooks drive the Export as Zip submenu: Documents lists the open
+// documents, Export zips one (by row Path) and returns the fresh list.
+type ExportHooks struct {
+	Documents func() []Row
+	Export    func(path string) []Row
+}
+
 // slotCount is how many submenu rows exist before any list is rendered. The pool
 // grows from there as entries need places to sit.
 //
@@ -113,13 +120,14 @@ type Tray struct {
 	helpers             *HelperHooks
 	helpersMenu         *listMenu
 	helperDocumentsMenu *listMenu
+	export              *ExportHooks
 
 	// notice is a permanent row for something about this machine that HTML Clay
 	// cannot fix and the user can. Empty means there is nothing to say.
 	notice string
 }
 
-func Run(cfg *config.Config, version string, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, helpers *HelperHooks, notice string) {
+func Run(cfg *config.Config, version string, onOpenExample func(), onOpenBackups func(), onQuit func(), updateCh <-chan UpdateInfo, trusted *TrustedFolderHooks, helpers *HelperHooks, export *ExportHooks, notice string) {
 	t := &Tray{
 		cfg:           cfg,
 		version:       version,
@@ -129,6 +137,7 @@ func Run(cfg *config.Config, version string, onOpenExample func(), onOpenBackups
 		updateCh:      updateCh,
 		trusted:       trusted,
 		helpers:       helpers,
+		export:        export,
 		notice:        notice,
 	}
 	systray.Run(t.onReady, t.onExit)
@@ -303,6 +312,12 @@ func (t *Tray) onReady() {
 
 	exampleItem := systray.AddMenuItem("Open Example File", "Create and open a sample self-saving HTML file")
 	backupsItem := systray.AddMenuItem("Backups", "Open the folder holding every saved version of your files")
+	if t.export != nil {
+		em, _ := newListMenu("Export as Zip", "Save an open file and its attachments as one zip in Downloads", "No files open", "", "")
+		em.rowTooltip = "Click to save this file and its attachments as a zip in Downloads"
+		em.render(t.export.Documents())
+		em.watch(t.export.Export, t.export.Documents)
+	}
 	systray.AddSeparator()
 
 	addTrustedItem := t.buildTrustedMenu()
