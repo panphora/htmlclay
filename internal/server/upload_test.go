@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/session"
 )
 
@@ -411,5 +412,119 @@ func TestRefusedUploadClassifiesByTypeNotJustExtension(t *testing.T) {
 		if got := refusedUpload(tc.ext); got != tc.want {
 			t.Errorf("refusedUpload(%q) = %v, want %v", tc.ext, got, tc.want)
 		}
+	}
+}
+
+// The cap the meta route advertises is a cap on the FILE. Counting the multipart
+// framing as part of the file refused a file of exactly the advertised size,
+// which is the one size a client that read maxBytes will send.
+func TestUploadAcceptsAFileExactlyAtTheCap(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	exact := bytes.Repeat([]byte("x"), maxUploadSize)
+	res := decodeUpload(t, postUpload(t, srv, f.Token, "big.bin", exact))
+	if len(res.Uploads) != 1 {
+		t.Fatalf("a file of exactly maxUploadSize was refused: %s", res.Code)
+	}
+	if res.Uploads[0].Bytes != maxUploadSize {
+		t.Errorf("bytes = %d, want %d", res.Uploads[0].Bytes, maxUploadSize)
+	}
+
+	w := postUpload(t, srv, f.Token, "big.bin", append(exact, 'x'))
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("one byte over the cap: expected 413, got %d", w.Code)
+	}
+	if code := decodeUpload(t, w).Code; code != "too-large" {
+		t.Errorf("one byte over the cap: code = %q, want too-large", code)
+	}
+}
+
+// The upload token is this route's whole credential, as it is for save, and the
+// access log is a plain file on disk. The path is logged; the secret is not.
+func TestUploadTokenDoesNotReachTheAccessLog(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+	logPath := filepath.Join(t.TempDir(), "access.log")
+	logger, err := logging.New(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.logger = logger
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, _ := mw.CreateFormFile("file", "cover.png")
+	part.Write([]byte("PNGDATA"))
+	mw.Close()
+
+	req := httptest.NewRequest("POST", "/_/upload/"+f.Token, &body)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	// The route is guarded at registration; the guard is not what is under test.
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	logger.Close()
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(logged), f.Token) {
+		t.Fatalf("upload token reached the access log: %s", logged)
+	}
+	if !strings.Contains(string(logged), "/_/upload/<redacted>") {
+		t.Fatalf("access log does not name the upload route: %s", logged)
+	}
+}
+
+// A symlinked assets folder is the whole reason the write path uses an *os.Root:
+// MkdirAll and OpenFile on the joined path would follow the link and drop the
+// file outside the document's folder, where the read root does not cover it.
+func TestUploadRefusesASymlinkedAssetsFolder(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	outside := t.TempDir()
+	dir, _ := assetsDirFor(f.AbsPath)
+	if err := os.Symlink(outside, dir); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	w := postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for a symlinked assets folder, got %d: %s", w.Code, w.Body.String())
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the write followed the symlink out of the document's folder: %v", entries)
+	}
+}
+
+// The publish is a hard link from a hidden temp file. The temp file is the one
+// name that must never survive, or the asset lane (which skips hidden
+// components) would hold an invisible leak per upload.
+func TestUploadLeavesNoTempFileBehind(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
+	postUpload(t, srv, f.Token, "cover.png", []byte("PNGDATA"))
+
+	entries, err := os.ReadDir(assetsDir(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".upload-") {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 published file, got %d", len(entries))
 	}
 }

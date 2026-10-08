@@ -263,7 +263,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 // never written to the log file or stderr.
 func redactPath(p string) string {
 	for _, prefix := range []string{
-		"/_/save/", "/_/read/", "/_/meta/",
+		"/_/save/", "/_/read/", "/_/meta/", "/_/upload/",
 		"/_/versions/", "/_/version/", "/_/restore/",
 		"/_/workspace-request/",
 	} {

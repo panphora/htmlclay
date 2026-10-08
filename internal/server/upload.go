@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -27,6 +30,11 @@ import (
 // same path it refuses saves.
 
 const maxUploadSize = 25 << 20
+
+// The multipart framing around the one file part: boundaries, part headers and
+// a long filename. The body may exceed the advertised cap by this much, so a
+// file of exactly maxBytes is accepted; the file's own bytes are capped below.
+const maxUploadEnvelope = 64 << 10
 
 // Refused by type. A document or a script stored beside a document and served
 // from the same origin is stored XSS: the file the person just uploaded would
@@ -123,39 +131,99 @@ func splitUploadName(filename string) (stem, ext string) {
 	return stem, ext
 }
 
-// storeUpload writes the bytes under a content-derived name. The hash is what
-// removes the race, not a lock: two uploads of DIFFERENT bytes get different
-// names and never contend, and two uploads of the SAME bytes converge on one
-// file, with whichever loses the exclusive create reading back what the winner
-// wrote and agreeing with it. The tail lengthens only on a real hash-prefix
-// collision between different content.
-func storeUpload(dir, stem, ext string, data []byte) (string, error) {
+// storeUpload writes the bytes under a content-derived name inside folder,
+// beneath the document's own directory. Every filesystem call goes through an
+// *os.Root held on that directory, so a symlinked assets folder (or a ..
+// smuggled into a name) can never send the write anywhere else; the folder
+// itself must be a real directory, not a link.
+//
+// The bytes go to a hidden temp file first and are published with an exclusive
+// hard link, so the final name never exists half-written and never replaces a
+// file already there. The hash is what removes the race, not a lock: two
+// uploads of DIFFERENT bytes get different names and never contend, and two
+// uploads of the SAME bytes converge on one file, with whichever loses the link
+// reading back what the winner published and agreeing with it. The tail
+// lengthens only on a real hash-prefix collision between different content.
+func storeUpload(parentDir, folder, stem, ext string, data []byte) (string, error) {
+	parent, err := os.OpenRoot(parentDir)
+	if err != nil {
+		return "", err
+	}
+	defer parent.Close()
+	if err := parent.Mkdir(folder, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	info, err := parent.Lstat(folder)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a folder", folder)
+	}
+	dir, err := parent.OpenRoot(folder)
+	if err != nil {
+		return "", err
+	}
+	defer dir.Close()
+
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	tmp := ".upload-" + hex.EncodeToString(nonce[:]) + ".tmp"
+	fh, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", err
+	}
+	defer dir.Remove(tmp)
+	_, writeErr := fh.Write(data)
+	syncErr := fh.Sync()
+	closeErr := fh.Close()
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		return "", err
+	}
+
 	sum := sha256.Sum256(data)
 	digest := hex.EncodeToString(sum[:])
 	for n := 6; n <= 32; n += 2 {
 		name := stem + "-" + digest[:n] + ext
-		path := filepath.Join(dir, name)
-		// O_EXCL: create or fail, never truncate. A plain write here would let a
-		// second upload silently destroy the first.
-		fh, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		err := dir.Link(tmp, name)
+		if err == nil {
+			return name, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			// exFAT drives and many network shares have no hard links. There the
+			// final name is created exclusively and written in place, which still
+			// never replaces a file but can be seen half-written.
+			return storeInPlace(dir, stem, digest, ext, data)
+		}
+		existing, readErr := dir.ReadFile(name)
+		if readErr == nil && bytes.Equal(existing, data) {
+			return name, nil
+		}
+	}
+	return "", errors.New("no free name for that file")
+}
+
+func storeInPlace(dir *os.Root, stem, digest, ext string, data []byte) (string, error) {
+	for n := 6; n <= 32; n += 2 {
+		name := stem + "-" + digest[:n] + ext
+		fh, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
 			if !errors.Is(err, os.ErrExist) {
 				return "", err
 			}
-			existing, readErr := os.ReadFile(path)
-			if readErr == nil && string(existing) == string(data) {
+			existing, readErr := dir.ReadFile(name)
+			if readErr == nil && bytes.Equal(existing, data) {
 				return name, nil
 			}
 			continue
 		}
 		_, writeErr := fh.Write(data)
 		closeErr := fh.Close()
-		if writeErr != nil {
-			os.Remove(path)
-			return "", writeErr
-		}
-		if closeErr != nil {
-			return "", closeErr
+		if err := errors.Join(writeErr, closeErr); err != nil {
+			dir.Remove(name)
+			return "", err
 		}
 		return name, nil
 	}
@@ -172,7 +240,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize+maxUploadEnvelope)
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
@@ -191,7 +259,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, maxUploadSize+1))
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
@@ -201,14 +269,20 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		uploadError(w, http.StatusBadRequest, "bad-request", "Could not read the upload")
 		return
 	}
+	if len(data) > maxUploadSize {
+		uploadError(w, http.StatusRequestEntityTooLarge, "too-large", "File too large (max 25MB)")
+		return
+	}
 	if len(data) == 0 {
 		uploadError(w, http.StatusBadRequest, "bad-request", "Empty file")
 		return
 	}
 
 	dir, folder := assetsDirFor(f.AbsPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		s.logger.Printf("Error creating assets dir %s: %v", dir, err)
+
+	name, err := storeUpload(filepath.Dir(f.AbsPath), folder, stem, ext, data)
+	if err != nil {
+		s.logger.Printf("Error storing upload in %s: %v", dir, err)
 		uploadError(w, http.StatusInternalServerError, "error", "Could not store the file")
 		return
 	}
@@ -220,13 +294,6 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// without this grant its uploads would store fine and 404 on the way back.
 	if err := s.sessions.GrantReadRoot(dir); err != nil {
 		s.logger.Printf("Could not grant read access to %s: %v", dir, err)
-	}
-
-	name, err := storeUpload(dir, stem, ext, data)
-	if err != nil {
-		s.logger.Printf("Error storing upload in %s: %v", dir, err)
-		uploadError(w, http.StatusInternalServerError, "error", "Could not store the file")
-		return
 	}
 
 	// Percent-encoded per segment, while the stored name keeps its own
