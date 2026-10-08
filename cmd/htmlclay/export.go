@@ -55,7 +55,11 @@ func (a *app) exportDocument(path string) []tray.Row {
 	if err := os.MkdirAll(downloads, 0o755); err != nil {
 		return a.exportDocumentFailed(path, err)
 	}
-	out, err := server.ExportDocumentZip(path, downloads)
+	uploadsDir, err := server.UploadsLibraryDir()
+	if err != nil {
+		uploadsDir = ""
+	}
+	out, err := server.ExportDocumentZip(path, downloads, uploadsDir)
 	if err != nil {
 		return a.exportDocumentFailed(path, err)
 	}

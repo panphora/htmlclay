@@ -64,11 +64,11 @@ type Server struct {
 	autoRegistered int
 }
 
-// uploadsLibraryDir is the one folder on this computer every upload lands in,
+// UploadsLibraryDir is the one folder on this computer every upload lands in,
 // ~/htmlclay/uploads, beside the examples folder the app already keeps there.
 // A document links its files as /_/uploads/<folder>/<name>, which every site
 // server answers from here, so the document can move anywhere and keep them.
-func uploadsLibraryDir() (string, error) {
+func UploadsLibraryDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -114,7 +114,7 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	}
 	// Not fatal: a server with no home directory still serves every document, it
 	// just cannot store or answer an upload.
-	s.uploadsDir, _ = uploadsLibraryDir()
+	s.uploadsDir, _ = UploadsLibraryDir()
 
 	mux := http.NewServeMux()
 
