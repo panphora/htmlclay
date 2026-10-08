@@ -915,8 +915,8 @@
 
         <article class="point">
           <span class="point-tag">Files together</span>
-          <h3>Images stay beside the document</h3>
-          <p>An editable page can upload a file to a folder beside it, such as <code>assets-notes/</code>. The page receives a relative URL. An upload can be up to 25 MB, and HTML Clay stores it once by content hash rather than repeating it as base64 inside every save and version.</p>
+          <h3>Images live in one uploads folder</h3>
+          <p>An editable page can upload a file into <code>~/htmlclay/uploads/</code>, in a folder named after the document, such as <code>assets-notes/</code>. The page receives a link that keeps working when you rename or move the document. An upload can be up to 25 MB, and HTML Clay stores it once by content hash rather than repeating it as base64 inside every save and version.</p>
           <div class="mini-list">
             <div><b>Files with different bytes get different names.</b></div>
             <div><b>HTML and JavaScript uploads are refused.</b></div>

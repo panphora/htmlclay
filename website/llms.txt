@@ -321,7 +321,8 @@ platform convention.
 | `GET` | `/{path}` | serve a file, with `savetoken` injected on document navigations |
 | `GET` | `/_/read/{token}` | raw file contents |
 | `POST` | `/_/save/{token}` | write the document back to disk, atomically |
-| `POST` | `/_/upload/{token}` | store a file beside the document |
+| `POST` | `/_/upload/{token}` | store a file in the uploads library |
+| `GET` | `/_/uploads/{folder}/{name}` | serve a stored upload, no token needed |
 | `GET` | `/_/meta` | what this host supports, no token needed |
 | `GET` | `/_/meta/{token}` | the same, plus metadata for one file |
 | `GET` | `/_/versions/{token}` | list saved versions |
@@ -470,15 +471,24 @@ copy cannot be made, the restore is refused with
 
 ```json
 {"ok": true, "msg": "Uploaded", "msgType": "success",
- "uploads": [{"name": "photo-a3f19c.jpg", "url": "assets-notes/photo-a3f19c.jpg", "bytes": 84210}]}
+ "uploads": [{"name": "photo-a3f19c0d5e7b2a914c6f08d1e3b7a522.jpg", "url": "/_/uploads/assets-notes/photo-a3f19c0d5e7b2a914c6f08d1e3b7a522.jpg", "bytes": 84210}]}
 ```
 
-The file lands in a folder beside the document named `assets-<document stem>`, so
-`notes.htmlclay` uploads into `assets-notes/`. The stored name is the submitted stem, a dash,
-the first 6 hex characters of the content's SHA-256, and the extension. That tail lengthens only
-on a real collision between different content, so identical bytes reuse one file and different
-bytes never overwrite each other. The returned `url` is relative and percent-encoded per
-segment.
+The file lands in the computer's uploads library, `~/htmlclay/uploads/`, in a folder named
+after the document, so `notes.htmlclay` uploads into `~/htmlclay/uploads/assets-notes/`. The
+folder name is the document's stem lowercased, with every run of other characters turned into
+one dash. The stored name is the submitted stem, a dash, at least the first 32 hex characters of
+the content's SHA-256, and the extension. That tail lengthens only on a real collision between
+different content, so identical bytes reuse one file and different bytes never overwrite each
+other.
+
+The returned `url` is a host path, percent-encoded per segment. Every HTML Clay port answers
+`GET /_/uploads/...` from the library, so the link keeps working when the document is renamed or
+moved, and Hyperclay Local and hyperclay.com use the same form. The route serves stored files
+only, never a folder listing, and needs no token, so any page on this computer can read an
+upload whose name it knows; the long hash tail is what keeps names unguessable. A document opened
+straight from disk shows these files broken. Export as zip packages every linked upload and
+rewrites the links to `uploads/...` in the zipped copy.
 
 Limit 25 MB (`413`, `code: "too-large"`). Active content is refused with `415` and
 `code: "unsupported-type"`: `.html`, `.htm`, `.xhtml`, `.htmlclay`, `.js`, `.mjs`, `.cjs`,
