@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -390,6 +391,34 @@ func TestUploadAcceptsUnknownTypesAndServesThemAsDownloads(t *testing.T) {
 		}
 		if xcto := w.Header().Get("X-Content-Type-Options"); xcto != "nosniff" {
 			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", name, xcto)
+		}
+	}
+}
+
+// Any +xml type under any top-level type is an XML document to a browser, and
+// the ecmascript types are scripts, so the pattern cannot be limited to
+// application/….+xml. SVG stays accepted: refusedUpload answers for it before
+// the pattern runs, and the asset lane serves it inert.
+func TestRefusedUploadCoversEveryXMLAndScriptFamily(t *testing.T) {
+	// refusedUpload judges by the MIME type, so a machine whose table lacks these
+	// would classify them as unknown downloads instead.
+	for ext, ctype := range map[string]string{".x3d": "model/x3d+xml", ".dae": "model/vnd.collada+xml"} {
+		if mime.TypeByExtension(ext) != "" {
+			continue
+		}
+		if err := mime.AddExtensionType(ext, ctype); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, ext := range []string{".x3d", ".dae", ".ecma"} {
+		if !refusedUpload(ext) {
+			t.Errorf("refusedUpload(%q) = false, want true", ext)
+		}
+	}
+	for _, ext := range []string{".svg", ".png", ".pdf", ""} {
+		if refusedUpload(ext) {
+			t.Errorf("refusedUpload(%q) = true, want false", ext)
 		}
 	}
 }

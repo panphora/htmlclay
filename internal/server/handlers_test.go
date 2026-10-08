@@ -788,3 +788,98 @@ func TestServeAssetPageInsideUploadsFolderIsADownload(t *testing.T) {
 		t.Errorf("X-Content-Type-Options = %q, want nosniff", xcto)
 	}
 }
+
+// On a case-insensitive disk "Assets-doc" and "assets-doc" are the same folder,
+// so the uploads check has to read the descriptor's real path rather than the
+// spelling the request used. Judged on the request spelling, one of the two
+// names downloads the stored file and the other serves it inline as a page.
+func TestServeAssetUploadsFolderCaseInsensitive(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	dir := registerSubdirPage(t, srv, "site")
+	if err := os.MkdirAll(filepath.Join(dir, "assets-doc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	stored := filepath.Join(dir, "assets-doc", "legacy-abc123.shtml")
+	if err := os.WriteFile(stored, []byte("<html><script>alert(1)</script></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Assets-doc", "legacy-abc123.shtml")); err != nil {
+		t.Skipf("the test's temp dir is case-sensitive, so this case has no meaning here: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/site/Assets-doc/legacy-abc123.shtml", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("path", "site/Assets-doc/legacy-abc123.shtml")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != "attachment" {
+		t.Errorf("Content-Disposition = %q, want attachment: the request spelled the uploads folder in another case", cd)
+	}
+}
+
+// Uploads land directly inside the uploads folder and nowhere else, so an
+// "assets-" name further up the path is somebody's own folder and says nothing
+// about provenance. A page there is still a page.
+func TestServeAssetPageInAssetsNamedFolderRenders(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	dir := registerSubdirPage(t, srv, "assets-2024/site")
+	if err := os.WriteFile(filepath.Join(dir, "about.html"), []byte("<!DOCTYPE html>\n<html><body>about</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/assets-2024/site/about.html", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("path", "assets-2024/site/about.html")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != "" {
+		t.Errorf("Content-Disposition = %q, want it unset for a page in an assets-named folder", cd)
+	}
+}
+
+// The banner offer runs before the attachment rule, so a stored document would
+// otherwise come back as a page: buffered, nonce-bearing, and rendered. A
+// refused type inside an uploads folder is a download whatever the request
+// looks like.
+func TestServeAssetHTMLClayInUploadsFolderIsADownload(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	dir := registerSubdirPage(t, srv, "site")
+	if err := os.MkdirAll(filepath.Join(dir, "assets-doc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets-doc", "saved.htmlclay"), []byte("<html><body>saved</body></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srv.SetHooks(Hooks{
+		TrustRequest: func(string, bool) (string, bool) { return "", false },
+	})
+
+	req := httptest.NewRequest("GET", "/site/assets-doc/saved.htmlclay", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	req.SetPathValue("path", "site/assets-doc/saved.htmlclay")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != "attachment" {
+		t.Errorf("Content-Disposition = %q, want attachment for a refused type in an uploads folder", cd)
+	}
+	if strings.Contains(w.Body.String(), "htmlclay-banner") {
+		t.Error("a stored upload was served as the read-only banner page")
+	}
+}

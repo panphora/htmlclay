@@ -51,9 +51,10 @@ var refusedUploadExt = map[string]bool{
 	".xml": true, ".xsl": true, ".xslt": true, ".mathml": true, ".mml": true,
 	".rss": true, ".atom": true, ".rdf": true,
 	".js": true, ".mjs": true, ".cjs": true,
+	".ecma": true,
 }
 
-var documentMimeType = regexp.MustCompile(`^(?i)(text/html|application/xhtml\+xml|text/xml|application/xml|application/[a-z0-9.+-]*\+xml|text/mathml|text/javascript|application/javascript)$`)
+var documentMimeType = regexp.MustCompile(`^(?i)(text/html|application/xhtml\+xml|text/xml|application/xml|[a-z0-9.-]+/[a-z0-9.+-]*\+xml|text/mathml|text/javascript|application/javascript|application/x-javascript|application/ecmascript|text/ecmascript)$`)
 
 // refusedUpload reports whether an upload with this extension could be served
 // as a page or a script. An empty or unknown extension is not refused: the
@@ -73,14 +74,12 @@ func refusedUpload(ext string) bool {
 	return documentMimeType.MatchString(strings.TrimSpace(ctype))
 }
 
-// inAssetsFolder reports whether a path sits inside a document's uploads folder.
-func inAssetsFolder(absPath string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(absPath)), "/") {
-		if strings.HasPrefix(part, "assets-") {
-			return true
-		}
-	}
-	return false
+// inAssetsFolder reports whether a file sits directly inside a document's
+// uploads folder, which is where every upload is stored. Called with the real
+// path of the open file, compared without case: on a case-insensitive disk
+// "Assets-doc" names the same folder.
+func inAssetsFolder(realPath string) bool {
+	return strings.HasPrefix(strings.ToLower(filepath.Base(filepath.Dir(realPath))), "assets-")
 }
 
 var documentExt = map[string]bool{

@@ -630,10 +630,12 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 		return
 	}
 
+	uploaded := refusedUpload(strings.ToLower(filepath.Ext(real))) && inAssetsFolder(real)
+
 	// A read-only HTML Clay document reached by a real user navigation forks to
 	// the bannered path: buffered, nonce-bearing, uncacheable. Everything else
 	// (assets, fetches, iframes, non-.htmlclay pages) streams below unchanged.
-	if s.shouldOfferOpen(r, real) {
+	if !uploaded && s.shouldOfferOpen(r, real) {
 		s.serveReadOnlyWithBanner(w, file, real)
 		return
 	}
@@ -667,7 +669,7 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	w.Header().Set("Content-Type", ctype)
 	// A page type inside an uploads folder is something that arrived as an
 	// attachment before this check existed: hand it over as a download.
-	if refusedUpload(ext) && inAssetsFolder(absPath) {
+	if uploaded {
 		w.Header().Set("Content-Disposition", "attachment")
 	}
 
