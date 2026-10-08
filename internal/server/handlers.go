@@ -646,9 +646,29 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	// makes that decision safe. Unconditional, because provenance is not knowable
 	// here: a file that arrived through /_/upload and one the person saved into
 	// the folder themselves look identical at serve time.
-	if ext := strings.ToLower(filepath.Ext(name)); ext == ".svg" || ext == ".svgz" {
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == ".svg" || ext == ".svgz" {
 		w.Header().Set("Content-Disposition", "attachment")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
+	}
+	// Never sniff. http.ServeContent guesses a type from the bytes when none is
+	// set, and a file with no extension or an unknown one that holds HTML would
+	// come back as a page that runs script on this origin. An unknown type is a
+	// download.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	ctype := mime.TypeByExtension(ext)
+	if ext == ".htmlclay" {
+		// Not in any MIME table, and it was only ever served as a page because
+		// the bytes were sniffed. Say so explicitly instead.
+		ctype = "text/html; charset=utf-8"
+	}
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	// A page type inside an uploads folder is something that arrived as an
+	// attachment before this check existed: hand it over as a download.
+	if refusedUpload(ext) && inAssetsFolder(absPath) {
+		w.Header().Set("Content-Disposition", "attachment")
 	}
 
 	// B8: assets always revalidate. Detailed failure causes go in the log; the

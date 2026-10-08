@@ -340,3 +340,76 @@ func TestUploadRouteIsGuardedAtRegistration(t *testing.T) {
 		t.Error("a cross-origin upload created the assets folder")
 	}
 }
+
+// The refusal has to cover the whole page-and-script set, not the three
+// extensions the map used to enumerate: .shtml, .rss, .atom and .mml all serve
+// as text/html or an XML document from this origin just as .html does.
+func TestUploadRefusesEveryPageAndScriptType(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	for _, name := range []string{"x.shtml", "x.rss", "x.atom", "x.mml", "x.HTML"} {
+		w := postUpload(t, srv, f.Token, name, []byte("<script>alert(1)</script>"))
+		if w.Code != http.StatusUnsupportedMediaType {
+			t.Errorf("%s: expected 415, got %d", name, w.Code)
+		}
+		if code := decodeUpload(t, w).Code; code != "unsupported-type" {
+			t.Errorf("%s: code = %q", name, code)
+		}
+	}
+	if _, err := os.Stat(assetsDir(f)); err == nil {
+		t.Error("a refused upload created the assets folder")
+	}
+}
+
+// An empty or unknown extension cannot be served as a page, so it is accepted.
+// The asset lane is what makes that safe: it types the file application/octet-
+// stream with nosniff, which a browser downloads instead of running.
+func TestUploadAcceptsUnknownTypesAndServesThemAsDownloads(t *testing.T) {
+	srv, f, _ := setupHandlerTest(t)
+
+	payload := []byte("<html><script>alert(1)</script></html>")
+	for _, name := range []string{"note", "note.foo"} {
+		res := decodeUpload(t, postUpload(t, srv, f.Token, name, payload))
+		if len(res.Uploads) != 1 {
+			t.Fatalf("%s: expected one upload, got %d", name, len(res.Uploads))
+		}
+		rel := res.Uploads[0].URL
+
+		req := httptest.NewRequest("GET", "/"+rel, nil)
+		req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+		req.SetPathValue("path", rel)
+		w := httptest.NewRecorder()
+		srv.handleServeFile(w, req)
+
+		if w.Code != 200 {
+			t.Fatalf("%s: expected 200, got %d", name, w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/octet-stream" {
+			t.Errorf("%s: Content-Type = %q, want application/octet-stream", name, ct)
+		}
+		if xcto := w.Header().Get("X-Content-Type-Options"); xcto != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", name, xcto)
+		}
+	}
+}
+
+func TestRefusedUploadClassifiesByTypeNotJustExtension(t *testing.T) {
+	for _, tc := range []struct {
+		ext  string
+		want bool
+	}{
+		{".svg", false},
+		{".svgz", false},
+		{"", false},
+		{".png", false},
+		{".pdf", false},
+		{".zip", false},
+		{".shtml", true},
+		{".xhtml", true},
+		{".js", true},
+	} {
+		if got := refusedUpload(tc.ext); got != tc.want {
+			t.Errorf("refusedUpload(%q) = %v, want %v", tc.ext, got, tc.want)
+		}
+	}
+}

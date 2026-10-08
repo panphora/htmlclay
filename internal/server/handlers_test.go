@@ -733,3 +733,58 @@ func TestMetaPathIsURLForm(t *testing.T) {
 		t.Errorf("meta absolutePath = %q, want the OS-native %q", meta.AbsolutePath, page)
 	}
 }
+
+// HTML Clay serves sibling pages, so a page a person keeps in their folder is
+// still served as text/html. Only uploads refuse that type.
+func TestServeAssetSiblingHTMLPageKeepsItsType(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	dir := registerSubdirPage(t, srv, "site")
+	os.WriteFile(filepath.Join(dir, "sibling.html"), []byte("<!DOCTYPE html>\n<html><body>sibling</body></html>"), 0644)
+
+	req := httptest.NewRequest("GET", "/site/sibling.html", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("path", "site/sibling.html")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if xcto := w.Header().Get("X-Content-Type-Options"); xcto != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", xcto)
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != "" {
+		t.Errorf("Content-Disposition = %q, want it unset for a sibling page", cd)
+	}
+}
+
+// A page type sitting inside an uploads folder arrived as an attachment, before
+// the upload check existed. It is handed over as a download, not executed.
+func TestServeAssetPageInsideUploadsFolderIsADownload(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	dir := registerSubdirPage(t, srv, "site")
+	os.MkdirAll(filepath.Join(dir, "assets-doc"), 0755)
+	os.WriteFile(filepath.Join(dir, "assets-doc", "hand.html"), []byte("<html><script>alert(1)</script></html>"), 0644)
+
+	req := httptest.NewRequest("GET", "/site/assets-doc/hand.html", nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	req.SetPathValue("path", "site/assets-doc/hand.html")
+	w := httptest.NewRecorder()
+	srv.handleServeFile(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != "attachment" {
+		t.Errorf("Content-Disposition = %q, want attachment", cd)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if xcto := w.Header().Get("X-Content-Type-Options"); xcto != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", xcto)
+	}
+}

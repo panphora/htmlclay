@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -26,18 +28,51 @@ import (
 
 const maxUploadSize = 25 << 20
 
-// Refused by extension. A document or a script stored beside a document and
-// served from the same origin is stored XSS: the file the person just uploaded
-// would execute with the document's own authority.
+// Refused by type. A document or a script stored beside a document and served
+// from the same origin is stored XSS: the file the person just uploaded would
+// execute with the document's own authority. The enumerated set mirrors
+// hyperclay.com's DOCUMENT_UPLOAD_EXTENSIONS; documentMimeType is the belt for
+// anything the set misses.
 //
 // SVG is deliberately absent. It is accepted and served inert instead (see the
 // Content-Disposition on the asset lane), because refusing it would break a
 // legitimate and very common kind of image for a threat that serving already
 // answers.
 var refusedUploadExt = map[string]bool{
-	".html": true, ".htm": true, ".xhtml": true, ".htmlclay": true,
+	".html": true, ".htm": true, ".shtml": true, ".xhtml": true, ".xht": true, ".htmlclay": true,
+	".xml": true, ".xsl": true, ".xslt": true, ".mathml": true, ".mml": true,
+	".rss": true, ".atom": true, ".rdf": true,
 	".js": true, ".mjs": true, ".cjs": true,
-	".xml": true, ".xht": true, ".xsl": true, ".xslt": true,
+}
+
+var documentMimeType = regexp.MustCompile(`^(?i)(text/html|application/xhtml\+xml|text/xml|application/xml|application/[a-z0-9.+-]*\+xml|text/mathml|text/javascript|application/javascript)$`)
+
+// refusedUpload reports whether an upload with this extension could be served
+// as a page or a script. An empty or unknown extension is not refused: the
+// asset lane serves it as application/octet-stream, which a browser downloads.
+func refusedUpload(ext string) bool {
+	ext = strings.ToLower(ext)
+	if ext == ".svg" || ext == ".svgz" {
+		return false
+	}
+	if refusedUploadExt[ext] {
+		return true
+	}
+	if ext == "" {
+		return false
+	}
+	ctype, _, _ := strings.Cut(mime.TypeByExtension(ext), ";")
+	return documentMimeType.MatchString(strings.TrimSpace(ctype))
+}
+
+// inAssetsFolder reports whether a path sits inside a document's uploads folder.
+func inAssetsFolder(absPath string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(absPath)), "/") {
+		if strings.HasPrefix(part, "assets-") {
+			return true
+		}
+	}
+	return false
 }
 
 var documentExt = map[string]bool{
@@ -151,7 +186,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	stem, ext := splitUploadName(header.Filename)
-	if refusedUploadExt[strings.ToLower(ext)] {
+	if refusedUpload(ext) {
 		uploadError(w, http.StatusUnsupportedMediaType, "unsupported-type", "That kind of file cannot be uploaded")
 		return
 	}
