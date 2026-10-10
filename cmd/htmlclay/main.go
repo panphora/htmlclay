@@ -152,6 +152,8 @@ func main() {
 		os.Exit(code)
 	}
 
+	releaseOwnConsole()
+
 	noTray := flag.Bool("no-tray", false, "Run without system tray (signal-based shutdown)")
 	unregister := flag.Bool("unregister", false, "Remove the file associations and the Start on Login entry, then exit")
 	flag.Parse()
