@@ -533,3 +533,11 @@ func (a *app) notifyUser(title, message string) error {
 	}
 	return platform.Notify(title, message)
 }
+
+// informUser is notifyUser for good news: the same seam, a non-urgent notice.
+func (a *app) informUser(title, message string) error {
+	if a.rt.notify != nil {
+		return a.rt.notify(title, message)
+	}
+	return platform.Inform(title, message)
+}

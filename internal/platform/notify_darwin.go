@@ -14,6 +14,10 @@ func notify(title, message string) error {
 	return exec.Command("osascript", "-e", script).Run()
 }
 
+func inform(title, message string) error {
+	return notify(title, message)
+}
+
 func appleScriptString(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
 }

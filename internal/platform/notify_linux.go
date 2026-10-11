@@ -9,3 +9,7 @@ import "os/exec"
 func notify(title, message string) error {
 	return exec.Command("notify-send", "--urgency=critical", title, message).Run()
 }
+
+func inform(title, message string) error {
+	return exec.Command("notify-send", "--urgency=normal", title, message).Run()
+}

@@ -7,3 +7,10 @@ package platform
 func Notify(title, message string) error {
 	return notify(title, message)
 }
+
+// Inform shows a best-effort native notice that something worked, for the rare
+// case where nothing else on screen confirms it. Unlike Notify it is not urgent:
+// it fades on its own where the platform allows, and carries no error icon.
+func Inform(title, message string) error {
+	return inform(title, message)
+}
