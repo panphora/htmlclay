@@ -2,8 +2,15 @@
 
 package browser
 
-import "os/exec"
+import (
+	"os/exec"
+	"syscall"
+
+	"golang.org/x/sys/windows"
+)
 
 func OpenURL(url string) error {
-	return exec.Command("cmd", "/c", "start", "", url).Run()
+	cmd := exec.Command("cmd", "/c", "start", "", url)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	return cmd.Run()
 }

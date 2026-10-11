@@ -327,6 +327,7 @@ func writeSeqHighWater(path string, v int64) {
 		os.Remove(tmpPath)
 		return
 	}
+	hideFile(tmpPath)
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 	}

@@ -28,6 +28,7 @@ func selectFolder(prompt string) (string, bool, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	noConsoleWindow(cmd)
 	cmd.Env = append(cmd.Environ(), "HTMLCLAY_DIALOG_PROMPT="+prompt)
 	out, err := cmd.Output()
 	if err != nil {

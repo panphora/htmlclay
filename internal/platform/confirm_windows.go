@@ -52,6 +52,7 @@ func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, 
 	// -STA because WinForms needs a single-threaded apartment. powershell.exe
 	// defaults to it, but pwsh does not, and being explicit costs nothing.
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", confirmFormScript(labels.Later != ""))
+	noConsoleWindow(cmd)
 	cmd.Env = append(os.Environ(),
 		"HTMLCLAY_DIALOG_TITLE="+title,
 		"HTMLCLAY_DIALOG_MESSAGE="+message,
@@ -173,6 +174,7 @@ func confirmDialogMessageBox(title, message string, labels ConfirmLabels) (Confi
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	noConsoleWindow(cmd)
 	cmd.Env = append(os.Environ(),
 		"HTMLCLAY_DIALOG_TITLE="+title,
 		"HTMLCLAY_DIALOG_MESSAGE="+message,
@@ -208,6 +210,7 @@ func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	noConsoleWindow(cmd)
 	cmd.Env = append(os.Environ(),
 		"HTMLCLAY_DIALOG_TITLE="+title,
 		"HTMLCLAY_DIALOG_MESSAGE="+message+"\n\nYes = "+allowLabel+"\nNo = Deny",

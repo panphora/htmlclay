@@ -35,6 +35,7 @@ func manageProgram(p ProgramSummary) (ManageChoice, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", script)
+	noConsoleWindow(cmd)
 	cmd.Env = append(cmd.Environ(),
 		"HTMLCLAY_DIALOG_TITLE=Manage "+p.Name,
 		"HTMLCLAY_DIALOG_MESSAGE="+manageProgramMessage(p),

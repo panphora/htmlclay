@@ -17,15 +17,16 @@ func promptName(title, message, initial string) (string, bool, error) {
 		"$f.Text = $env:HTMLCLAY_DIALOG_TITLE; " +
 		"$f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; " +
 		"$f.StartPosition = 'CenterScreen'; $f.TopMost = $true; " +
-		"$f.ClientSize = New-Object System.Drawing.Size(460, 150); " +
 		"$l = New-Object System.Windows.Forms.Label; $l.Text = $env:HTMLCLAY_DIALOG_MESSAGE; " +
-		"$l.SetBounds(16, 16, 428, 42); $f.Controls.Add($l); " +
+		"$h = $l.GetPreferredSize((New-Object System.Drawing.Size(428, 0))).Height; " +
+		"$l.SetBounds(16, 16, 428, $h); $f.Controls.Add($l); $y = 16 + $h + 12; " +
 		"$box = New-Object System.Windows.Forms.TextBox; $box.Text = $env:HTMLCLAY_DIALOG_INITIAL; " +
-		"$box.SetBounds(16, 62, 428, 24); $f.Controls.Add($box); " +
+		"$box.SetBounds(16, $y, 428, 24); $f.Controls.Add($box); " +
 		"$cancel = New-Object System.Windows.Forms.Button; $cancel.Text = 'Cancel'; " +
-		"$cancel.SetBounds(244, 102, 96, 32); $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; " +
+		"$cancel.SetBounds(244, ($y + 40), 96, 32); $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; " +
 		"$ok = New-Object System.Windows.Forms.Button; $ok.Text = 'OK'; " +
-		"$ok.SetBounds(348, 102, 96, 32); $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK; " +
+		"$ok.SetBounds(348, ($y + 40), 96, 32); $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK; " +
+		"$f.ClientSize = New-Object System.Drawing.Size(460, ($y + 88)); " +
 		"$f.Controls.AddRange(@($cancel, $ok)); $f.AcceptButton = $ok; $f.CancelButton = $cancel; " +
 		"$f.ActiveControl = $box; $box.SelectAll(); " +
 		"if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output ('OK:' + $box.Text) }"
@@ -34,6 +35,7 @@ func promptName(title, message, initial string) (string, bool, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", script)
+	noConsoleWindow(cmd)
 	cmd.Env = append(cmd.Environ(),
 		"HTMLCLAY_DIALOG_TITLE="+title,
 		"HTMLCLAY_DIALOG_MESSAGE="+message,
