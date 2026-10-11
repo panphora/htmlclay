@@ -10,7 +10,7 @@ import (
 )
 
 // The three shapes this host answered in its own older form while announcing the
-// Malleable HTML File protocol. None of them stopped the conformance gate passing,
+// Malleable Document protocol. None of them stopped the conformance gate passing,
 // which says more about the gate than about the host: it checks the shapes it was
 // built to check, and an error body, the layout of a discovery answer, and the
 // channel's header were not among them.

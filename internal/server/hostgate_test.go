@@ -16,7 +16,7 @@ import (
 	"github.com/panphora/htmlclay/internal/versions"
 )
 
-// The Malleable HTML File conformance page, run against a real listener.
+// The Malleable Document conformance page, run against a real listener.
 //
 // It is a browser test and cannot be anything else. The spec requires exact origin
 // validation on every save, so a save can only be proven from the origin that will be

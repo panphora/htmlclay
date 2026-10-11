@@ -23,7 +23,7 @@ the end.
 
 Three names get confused, so fix them once and never rotate them:
 
-- **malleable HTML file** is the format. Its real extension is `.html`, its specification is at
+- **malleable document** is the format. Its real extension is `.html`, its specification is at
   https://malleablehtmlfile.com, and several programs can host one.
 - **HTML Clay** is this app, one host of that format.
 - **`.htmlclay`** is an operating system convention that tells the OS to open the file with
@@ -39,7 +39,7 @@ notes.htmlclay  ->  notes.html          it opens unchanged in any browser
 Renaming is only an association. It does not invent an editor: a file with no save-aware code
 in it, normally ClayJS, gains nothing from the extension. And a `.htmlclay` file renamed back
 to `.html` keeps its content and its JavaScript, but no ordinary browser can write later
-changes back to disk unless some malleable HTML file host is serving it.
+changes back to disk unless some malleable document host is serving it.
 
 ## If you are the agent on the other end of the wire
 
@@ -1530,7 +1530,7 @@ identifier `LicenseRef-First-Million-Stays-Yours-1.0`, becoming `MIT` after the 
   submitted.
 
 **ClayJS and the page layer are MIT-0, forever.** Everything that runs inside or alongside your
-HTML files is MIT No Attribution, never fenced. **The malleable HTML file specification is CC0.**
+HTML files is MIT No Attribution, never fenced. **The malleable document specification is CC0.**
 
 Plain answers and payment: https://hyperclay.com/host-program. Questions: license@hyperclay.com.
 The binding text is `LICENSE` in the repository; the standing commitments are `STABILITY.md`.

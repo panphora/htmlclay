@@ -1,7 +1,7 @@
 #!/bin/bash
 # Headless mode (--no-tray) on a file in a trusted folder: the app must hand the
 # browser a 127.0.0.1 URL, the wire must agree on the origin, the Host gate must
-# refuse a foreign Host, and the Malleable HTML File conformance page must pass a
+# refuse a foreign Host, and the Malleable Document conformance page must pass a
 # real save round trip in a real browser from that origin.
 source "$(dirname "$0")/lib.sh"
 command -v node >/dev/null || fail "node is required (the conformance runner is a Playwright script)"

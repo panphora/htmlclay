@@ -1,4 +1,4 @@
-# The Malleable HTML File
+# The Malleable Document
 
 A single HTML file is the simplest way to distribute small personal software. No install, no runtime, no dependencies. Double-click and it runs on any OS, any browser.
 
