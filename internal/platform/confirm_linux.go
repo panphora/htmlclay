@@ -92,9 +92,9 @@ func kdialogConfirmArgs(title, message string, labels ConfirmLabels) []string {
 // confirmTwoButtons shows a two-button prompt via zenity, falling back to
 // kdialog (whose --yes-label/--no-label make it a full two-button dialog, so
 // nothing degrades here). With neither tool present it fails closed.
-// --default-cancel keeps Return on Deny, as the contract says; without it
-// zenity focuses the affirmative button and Return accepted it.
-func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+// --default-cancel keeps Return on the refusing button, as the contract says;
+// without it zenity focuses the affirmative button and Return accepted it.
+func confirmTwoButtons(title, message, allowLabel, refuseLabel string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dialogTimeout)
 	defer cancel()
 
@@ -105,21 +105,25 @@ func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 			"--title", title,
 			"--text", message,
 			"--ok-label", allowLabel,
-			"--cancel-label", confirmDenyLabel,
+			"--cancel-label", refuseLabel,
 			"--default-cancel",
 		).Run()
 		return err == nil, nil
 	}
 
-	// Return always lands on kdialog's Yes, so Yes is Deny here and the
+	// Return always lands on kdialog's Yes, so Yes is the refusal here and the
 	// affirmative is No: exit 1 is the only answer that allows. Escape goes to
 	// Cancel, which exits 2.
+	kdialogCancel := "Cancel"
+	if refuseLabel == kdialogCancel {
+		kdialogCancel = "Close"
+	}
 	if bin, err := exec.LookPath("kdialog"); err == nil {
 		err := exec.CommandContext(ctx, bin,
 			"--title", title,
-			"--yes-label", confirmDenyLabel,
+			"--yes-label", refuseLabel,
 			"--no-label", allowLabel,
-			"--cancel-label", "Cancel",
+			"--cancel-label", kdialogCancel,
 			"--warningyesnocancel", message,
 		).Run()
 		return exitCode(err) == 1, nil

@@ -402,6 +402,16 @@ func (a *app) confirmTrustRequest(title, message, affirmative string) (bool, err
 	return platform.ConfirmWithButtons(title, message, affirmative)
 }
 
+// confirmTrayChange is confirmTrustRequest for a change the user started from
+// the tray, so the refusing button says Cancel rather than Deny. It shares the
+// confirmTrust seam: the tests that drive it answer the dialog, not its labels.
+func (a *app) confirmTrayChange(title, message, affirmative string) (bool, error) {
+	if a.rt.confirmTrust != nil {
+		return a.rt.confirmTrust(title, message, affirmative)
+	}
+	return platform.ConfirmChange(title, message, affirmative)
+}
+
 // reportTrustRefused tells the user why a folder was not remembered. Staying
 // silent is its own bug: they asked for something durable and got something that
 // lasts until they quit, so without this the folder simply starts asking again
@@ -494,7 +504,7 @@ func (a *app) pickAndTrustFolder() []tray.Row {
 	canonical, cErr := a.rt.policy.Canonical(dir)
 	if cErr == nil && a.rt.policy.IsPersonal(canonical) {
 		msg := fmt.Sprintf("%s is one of your main personal folders.\n\nTrusting it makes every HTML Clay file anywhere inside it editable with no prompts, and lets any of them change any other. Most people want a single project folder instead.", canonical)
-		proceed, cfErr := a.confirmTrustRequest("HTML Clay", msg, "Trust Folder")
+		proceed, cfErr := a.confirmTrayChange("HTML Clay", msg, "Trust Folder")
 		if cfErr != nil || !proceed {
 			return a.trustedFolderRows()
 		}
@@ -536,7 +546,7 @@ func (a *app) removeTrustedFolder(dir string) []tray.Row {
 		}
 		affirmative = "Remove"
 	}
-	proceed, err := a.confirmTrustRequest("HTML Clay", msg, affirmative)
+	proceed, err := a.confirmTrayChange("HTML Clay", msg, affirmative)
 	if err != nil || !proceed {
 		return a.trustedFolderRows()
 	}

@@ -67,11 +67,20 @@ func messageBox(title, message string, icon uintptr) error {
 func raiseBox(title *uint16, owner uint32, done <-chan struct{}) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	if box := findDialog(title, owner, done); box != 0 {
+		bringToFront(box)
+	}
+}
+
+// findDialog waits up to two seconds for the dialog window (class #32770) with
+// this title that thread owner is opening, and returns 0 if it never appears or
+// done closes first.
+func findDialog(title *uint16, owner uint32, done <-chan struct{}) uintptr {
 	class, _ := windows.UTF16PtrFromString("#32770")
 	for range 100 {
 		select {
 		case <-done:
-			return
+			return 0
 		case <-time.After(20 * time.Millisecond):
 		}
 		var box uintptr
@@ -81,11 +90,11 @@ func raiseBox(title *uint16, owner uint32, done <-chan struct{}) {
 				break
 			}
 			if tid, _ := windows.GetWindowThreadProcessId(windows.HWND(box), nil); tid == owner {
-				bringToFront(box)
-				return
+				return box
 			}
 		}
 	}
+	return 0
 }
 
 // bringToFront makes h the foreground window. SetForegroundWindow from a

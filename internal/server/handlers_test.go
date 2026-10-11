@@ -373,6 +373,46 @@ func TestServeAssetOutsideOpenedDirs(t *testing.T) {
 	}
 }
 
+func TestServeAssetOutsideOpenedDirsTypedNavigation(t *testing.T) {
+	homeDir, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(homeDir, "site"), 0755)
+	os.MkdirAll(filepath.Join(homeDir, "other"), 0755)
+	pagePath := filepath.Join(homeDir, "site", "page.htmlclay")
+	os.WriteFile(pagePath, []byte("<!DOCTYPE html>\n<html><body>hi</body></html>"), 0644)
+	os.WriteFile(filepath.Join(homeDir, "other", "doc.htmlclay"), []byte("<!DOCTYPE html>\n<html><body>secret</body></html>"), 0644)
+
+	mgr := newTestManager(t, homeDir)
+	if _, err := mgr.Register(pagePath, session.ViaOsOpen); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	srv := New(ln, mgr, logging.NewStdout(), versions.New(t.TempDir()))
+	srv.broker.confirm = failIfPrompted(t)
+
+	for _, name := range []string{"doc.htmlclay", "missing.htmlclay"} {
+		req := httptest.NewRequest("GET", "/other/"+name, nil)
+		req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+		req.Header.Set("Sec-Fetch-Site", "none")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-User", "?1")
+		req.SetPathValue("path", "other/"+name)
+		w := httptest.NewRecorder()
+		srv.handleServeFile(w, req)
+
+		if w.Code != 403 || w.Header().Get("X-HTMLClay-Error") != "outside-folder" {
+			t.Errorf("%s: got %d %q, want 403 outside-folder", name, w.Code, w.Header().Get("X-HTMLClay-Error"))
+		}
+		if strings.Contains(w.Body.String(), "secret") {
+			t.Errorf("%s: the out-of-scope file was served", name)
+		}
+	}
+}
+
 func TestServeAssetDirectoryRequest(t *testing.T) {
 	srv, _, _ := setupHandlerTest(t)
 	dir := registerSubdirPage(t, srv, "site")

@@ -63,15 +63,16 @@ func osascriptButton(out string) string {
 
 // confirmTwoButtons is confirmDialog's two-button variant, sharing its
 // foregrounding and its 120s give-up (which self-dismisses to deny).
-func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+func confirmTwoButtons(title, message, allowLabel, refuseLabel string) (bool, error) {
 	dialog := "display dialog " + appleScriptString(message) +
 		" with title " + appleScriptString(title) +
-		" buttons {\"Deny\", " + appleScriptString(allowLabel) + `} default button "Deny" with icon caution giving up after 120`
+		" buttons {" + appleScriptString(refuseLabel) + ", " + appleScriptString(allowLabel) + "} default button " +
+		appleScriptString(refuseLabel) + " with icon caution giving up after 120"
 	out, err := exec.Command("osascript", "-e", "activate me", "-e", dialog).CombinedOutput()
 	if err != nil {
 		return false, err
 	}
-	// "button returned:Deny" and "gave up:true" both read as no.
+	// The refusing button and "gave up:true" both read as no.
 	return allowLabel != "" && osascriptButton(string(out)) == allowLabel, nil
 }
 

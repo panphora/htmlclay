@@ -63,11 +63,11 @@ func TestConfirmDarwinMatchesTheClickedButtonExactly(t *testing.T) {
 func TestConfirmWithButtonsDarwinMatchesTheClickedButtonExactly(t *testing.T) {
 	installFakeOSAScript(t)
 	fakeOSAScriptResult(t, "button returned:Make Executable, gave up:false\n", 0)
-	if ok, err := confirmTwoButtons("Title", "Make Executable is quoted here too", "Make Executable"); err != nil || !ok {
+	if ok, err := confirmTwoButtons("Title", "Make Executable is quoted here too", "Make Executable", confirmDenyLabel); err != nil || !ok {
 		t.Fatalf("confirmTwoButtons() = (%v, %v), want true", ok, err)
 	}
 	fakeOSAScriptResult(t, "button returned:Deny, gave up:false\nMake Executable\n", 0)
-	if ok, err := confirmTwoButtons("Title", "message", "Make Executable"); err != nil || ok {
+	if ok, err := confirmTwoButtons("Title", "message", "Make Executable", confirmDenyLabel); err != nil || ok {
 		t.Fatalf("a refusal followed by the label in the output = (%v, %v), want false", ok, err)
 	}
 }

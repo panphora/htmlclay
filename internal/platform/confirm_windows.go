@@ -57,6 +57,7 @@ func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, 
 		"HTMLCLAY_DIALOG_TITLE="+title,
 		"HTMLCLAY_DIALOG_MESSAGE="+message,
 		"HTMLCLAY_DIALOG_HEIGHT="+strconv.Itoa(confirmFormHeight(message)),
+		"HTMLCLAY_DIALOG_DENY="+confirmDenyLabel,
 		"HTMLCLAY_DIALOG_ALLOW="+labels.Allow,
 		"HTMLCLAY_DIALOG_ALWAYS="+labels.Always,
 		"HTMLCLAY_DIALOG_LATER="+labels.Later,
@@ -108,7 +109,7 @@ func confirmFormScript(later bool) string {
 		"$row.FlowDirection = 'RightToLeft'; $row.Dock = 'Bottom'; $row.Height = 52; " +
 		"$row.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8); " +
 		"$deny = New-Object System.Windows.Forms.Button; " +
-		"$deny.Text = 'Deny'; " +
+		"$deny.Text = $env:HTMLCLAY_DIALOG_DENY; " +
 		"$deny.DialogResult = [System.Windows.Forms.DialogResult]::No; " +
 		"$allow = New-Object System.Windows.Forms.Button; " +
 		"$allow.Text = $env:HTMLCLAY_DIALOG_ALLOW; " +
@@ -197,10 +198,11 @@ func confirmDialogMessageBox(title, message string, labels ConfirmLabels) (Confi
 }
 
 // confirmTwoButtons shows the confirm form with two buttons, allowLabel and
-// Deny, Deny the keyboard default. The form is topmost, so a prompt raised by a
-// click in the browser does not open behind it. Close, timeout, and any error
-// fail closed; a form that will not run falls back to a message box.
-func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+// refuseLabel, refuseLabel the keyboard default. The form is topmost, so a
+// prompt raised by a click in the browser does not open behind it. Close,
+// timeout, and any error fail closed; a form that will not run falls back to a
+// message box.
+func confirmTwoButtons(title, message, allowLabel, refuseLabel string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dialogTimeout)
 	defer cancel()
 
@@ -210,6 +212,7 @@ func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 		"HTMLCLAY_DIALOG_TITLE="+title,
 		"HTMLCLAY_DIALOG_MESSAGE="+message,
 		"HTMLCLAY_DIALOG_HEIGHT="+strconv.Itoa(confirmFormHeight(message)),
+		"HTMLCLAY_DIALOG_DENY="+refuseLabel,
 		"HTMLCLAY_DIALOG_ALLOW="+allowLabel,
 		"HTMLCLAY_DIALOG_ALWAYS=",
 		"HTMLCLAY_DIALOG_LATER=",
@@ -219,7 +222,7 @@ func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return confirmTwoButtonsMessageBox(title, message, allowLabel)
+		return confirmTwoButtonsMessageBox(title, message, allowLabel, refuseLabel)
 	}
 	return choiceFromDialogResult(string(out)) == ConfirmAllowOnce, nil
 }
@@ -228,7 +231,7 @@ func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
 // will not run. MessageBox cannot relabel its buttons, so the affirmative label
 // is folded into the message text and Yes stands in for it. Button2 makes No
 // the keyboard default. No, close, timeout, and any error all fail closed.
-func confirmTwoButtonsMessageBox(title, message, allowLabel string) (bool, error) {
+func confirmTwoButtonsMessageBox(title, message, allowLabel, refuseLabel string) (bool, error) {
 	const script = "$ErrorActionPreference = 'Stop'; " +
 		"Add-Type -AssemblyName System.Windows.Forms; " +
 		"$r = [System.Windows.Forms.MessageBox]::Show(" +
@@ -242,7 +245,7 @@ func confirmTwoButtonsMessageBox(title, message, allowLabel string) (bool, error
 	noConsoleWindow(cmd)
 	cmd.Env = append(os.Environ(),
 		"HTMLCLAY_DIALOG_TITLE="+title,
-		"HTMLCLAY_DIALOG_MESSAGE="+message+"\n\nYes = "+allowLabel+"\nNo = Deny",
+		"HTMLCLAY_DIALOG_MESSAGE="+message+"\n\nYes = "+allowLabel+"\nNo = "+refuseLabel,
 	)
 	out, err := cmd.Output()
 	if err != nil {

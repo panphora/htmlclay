@@ -47,6 +47,11 @@ func (c ConfirmChoice) String() string {
 // confirmDenyLabel is the one button label this package fixes.
 const confirmDenyLabel = "Deny"
 
+// confirmCancelLabel refuses a change the user started themselves, where
+// nothing is asking for permission and "Deny" would read as a refusal of
+// someone else's request.
+const confirmCancelLabel = "Cancel"
+
 // ConfirmLabels names the two affirmative buttons of the three-button dialog.
 // Every caller supplies its own, because one dialog shape now backs two
 // unrelated grants, and a button that describes the other one is worse than no
@@ -85,7 +90,14 @@ func Confirm(title, message string, labels ConfirmLabels) (ConfirmChoice, error)
 // buttons (Windows) fold the label into the message and map their affirmative
 // button to it, which degrades wording, never safety.
 func ConfirmWithButtons(title, message, allowLabel string) (bool, error) {
-	return confirmTwoButtons(title, message, allowLabel)
+	return confirmTwoButtons(title, message, allowLabel, confirmDenyLabel)
+}
+
+// ConfirmChange is ConfirmWithButtons for a change the user started from the
+// tray, such as removing a trusted folder: the refusing button says Cancel
+// instead of Deny and is still the keyboard default.
+func ConfirmChange(title, message, actionLabel string) (bool, error) {
+	return confirmTwoButtons(title, message, actionLabel, confirmCancelLabel)
 }
 
 // MissingDialogAdvice returns a sentence naming what to install when this

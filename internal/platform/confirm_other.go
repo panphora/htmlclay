@@ -11,7 +11,7 @@ func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, 
 	return ConfirmDismissed, errors.New("native confirm dialog not implemented on this platform")
 }
 
-func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+func confirmTwoButtons(title, message, allowLabel, refuseLabel string) (bool, error) {
 	return false, errors.New("native confirm dialog not implemented on this platform")
 }
 

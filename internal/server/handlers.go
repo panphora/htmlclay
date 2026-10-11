@@ -572,6 +572,15 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	// granularity: a missing folder would 403 instantly while a present one held
 	// until the user answered.
 	if _, _, inScope := s.sessions.AssetRoot(absPath); !inScope {
+		// A navigation the browser started itself (the address bar, a bookmark, a
+		// link from another app) is not this page asking to read anything, so a
+		// prompt naming the page would blame it for the user's own request.
+		// Serving the file anyway would run it on this folder's origin with this
+		// folder's read access, so refuse and say where it opens instead.
+		if browserNavigation(r) {
+			writeOutsideFolder(w)
+			return
+		}
 		// Hold the request open and ask the user to widen reads; on Allow the same
 		// request resumes with no reload, on Deny a fixed 403.
 		rc := http.NewResponseController(w)
@@ -751,6 +760,32 @@ func write403(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusForbidden)
 	w.Write([]byte(`{"type":"about:blank","title":"Read access required","status":403,` +
 		`"detail":"This page requested a file outside its permitted folder; access was not granted."}`))
+}
+
+// browserNavigation reports a top-level navigation no page started: Fetch
+// Metadata sends Sec-Fetch-Site: none only for the address bar, bookmarks and
+// links opened from outside the browser, and a page cannot forge it.
+func browserNavigation(r *http.Request) bool {
+	return r.Method == http.MethodGet &&
+		r.Header.Get("Sec-Fetch-Site") == "none" &&
+		r.Header.Get("Sec-Fetch-Mode") == "navigate" &&
+		r.Header.Get("Sec-Fetch-Dest") == "document"
+}
+
+// writeOutsideFolder answers browserNavigation for a path outside this site's
+// folder. Like write403 it is the same response whether or not anything is at
+// that path.
+func writeOutsideFolder(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-HTMLClay-Error", "outside-folder")
+	w.WriteHeader(http.StatusForbidden)
+	w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Outside this folder</title></head>` +
+		`<body style="font-family:system-ui,sans-serif;max-width:36em;margin:4em auto;padding:0 1em;line-height:1.5">` +
+		`<h1 style="font-size:1.3em">This file is outside this folder</h1>` +
+		`<p>HTML Clay serves each folder at its own address, and this address only serves the folder it was opened for. ` +
+		`To view the file, open it from your file manager.</p></body></html>`))
 }
 
 // maxETagHashSize bounds the bytes hashed to build a content ETag. Above it the
