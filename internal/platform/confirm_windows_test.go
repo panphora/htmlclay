@@ -57,3 +57,14 @@ func TestConfirmFormHeightGrowsWithTheMessageAndStaysOnScreen(t *testing.T) {
 		t.Errorf("long message height = %d, want more than %d and at most 640", long, short)
 	}
 }
+
+func TestConfirmFormDropsButtonsWithNoLabel(t *testing.T) {
+	for _, later := range []bool{false, true} {
+		script := confirmFormScript(later)
+		drop := strings.Index(script, "$order = @($order | Where-Object { $_.Text }); ")
+		layout := strings.Index(script, "foreach ($b in $order)")
+		if drop < 0 || layout < 0 || drop > layout {
+			t.Errorf("confirmFormScript(%v) must drop unlabeled buttons before laying them out", later)
+		}
+	}
+}

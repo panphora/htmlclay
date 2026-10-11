@@ -123,6 +123,7 @@ func confirmFormScript(later bool) string {
 			"$order = @($later, $deny, $allow, $always); "
 	}
 	return script +
+		"$order = @($order | Where-Object { $_.Text }); " +
 		"foreach ($b in $order) { $b.AutoSize = $true; " +
 		"$b.AutoSizeMode = 'GrowAndShrink'; " +
 		"$b.MinimumSize = New-Object System.Drawing.Size(96, 32); " +
@@ -193,13 +194,39 @@ func confirmDialogMessageBox(title, message string, labels ConfirmLabels) (Confi
 	return ConfirmDismissed, nil
 }
 
-// confirmTwoButtons shows a YesNo WinForms message box. MessageBox cannot
-// relabel its buttons, so the affirmative label is folded into the message text
-// and Yes stands in for it — wording degrades, the two-choice shape does not.
-// Button2 makes No the keyboard default, as the contract says Deny is.
-// No, close, timeout, and any error all fail closed. Text passes through env
-// vars for the same quoting-immunity reason as confirmDialog above.
+// confirmTwoButtons shows the confirm form with two buttons, allowLabel and
+// Deny, Deny the keyboard default. The form is topmost, so a prompt raised by a
+// click in the browser does not open behind it. Close, timeout, and any error
+// fail closed; a form that will not run falls back to a message box.
 func confirmTwoButtons(title, message, allowLabel string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dialogTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", confirmFormScript(false))
+	noConsoleWindow(cmd)
+	cmd.Env = append(os.Environ(),
+		"HTMLCLAY_DIALOG_TITLE="+title,
+		"HTMLCLAY_DIALOG_MESSAGE="+message,
+		"HTMLCLAY_DIALOG_HEIGHT="+strconv.Itoa(confirmFormHeight(message)),
+		"HTMLCLAY_DIALOG_ALLOW="+allowLabel,
+		"HTMLCLAY_DIALOG_ALWAYS=",
+		"HTMLCLAY_DIALOG_LATER=",
+	)
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return false, nil
+	}
+	if err != nil {
+		return confirmTwoButtonsMessageBox(title, message, allowLabel)
+	}
+	return choiceFromDialogResult(string(out)) == ConfirmAllowOnce, nil
+}
+
+// confirmTwoButtonsMessageBox is the fallback for a machine where the form
+// will not run. MessageBox cannot relabel its buttons, so the affirmative label
+// is folded into the message text and Yes stands in for it. Button2 makes No
+// the keyboard default. No, close, timeout, and any error all fail closed.
+func confirmTwoButtonsMessageBox(title, message, allowLabel string) (bool, error) {
 	const script = "$ErrorActionPreference = 'Stop'; " +
 		"Add-Type -AssemblyName System.Windows.Forms; " +
 		"$r = [System.Windows.Forms.MessageBox]::Show(" +

@@ -17,6 +17,8 @@ import (
 
 const mutexName = `Local\htmlclay-single-instance`
 
+var procAllowSetForegroundWindow = windows.NewLazySystemDLL("user32.dll").NewProc("AllowSetForegroundWindow")
+
 type tcpSingleInstance struct {
 	configDir   string
 	addrFile    string
@@ -109,6 +111,10 @@ func (s *tcpSingleInstance) SendFilePath(path string) error {
 	if !verifyBanner(conn) {
 		return fmt.Errorf("peer on %s is not an htmlclay instance", addr)
 	}
+	// Explorer lets this launch take the foreground, and the running instance
+	// cannot; pass the right on, or its dialogs for this file open behind
+	// every window. ASFW_ANY is (DWORD)-1.
+	procAllowSetForegroundWindow.Call(uintptr(^uint32(0)))
 	_, err = conn.Write([]byte(path))
 	return err
 }
