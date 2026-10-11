@@ -40,9 +40,10 @@ func (a *app) exportDocumentRows() []tray.Row {
 	return rows
 }
 
-// exportDocument zips one open document into ~/Downloads, opens that folder and
-// says so in a notification. A document closed since the menu was drawn is
-// refused with a notification instead.
+// exportDocument zips one open document into ~/Downloads and opens that folder,
+// which is the confirmation. It notifies only when the folder cannot be opened,
+// since notifications are for errors (a red error box on Windows). A document
+// closed since the menu was drawn is refused with a notification instead.
 func (a *app) exportDocument(path string) []tray.Row {
 	a.mu.Lock()
 	open := a.helperDocumentOpenLocked(path)
@@ -65,8 +66,8 @@ func (a *app) exportDocument(path string) []tray.Row {
 	}
 	if err := browser.OpenURL(downloads); err != nil {
 		a.rt.logger.Printf("Error opening the Downloads folder: %v", err)
+		a.notifyExport("Saved " + filepath.Base(out) + " in Downloads.")
 	}
-	a.notifyExport("Saved " + filepath.Base(out) + " in Downloads.")
 	return a.exportDocumentRows()
 }
 
