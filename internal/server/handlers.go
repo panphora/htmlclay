@@ -1189,14 +1189,24 @@ func isJSONContentType(ct string) bool {
 // fails with "Access is denied" and the user is told their save did not work.
 // The read itself lasts microseconds, so the first backoff clears it in practice.
 //
+// The rename goes through os.Root because on Windows that is a POSIX-semantics
+// rename (FILE_RENAME_POSIX_SEMANTICS), which replaces a file another program
+// holds open with FILE_SHARE_DELETE. os.Rename is MoveFileEx, which refuses any
+// open target, so before this a file merely open in another program could not be
+// saved at all. A handle without FILE_SHARE_DELETE still blocks both.
+//
 // On POSIX the first attempt always succeeds and this never sleeps.
 func replaceFile(tmpPath, targetPath string) error {
-	var err error
+	root, err := os.OpenRoot(filepath.Dir(targetPath))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	for _, backoff := range []time.Duration{0, 5, 15, 40, 100} {
 		if backoff > 0 {
 			time.Sleep(backoff * time.Millisecond)
 		}
-		if err = os.Rename(tmpPath, targetPath); err == nil {
+		if err = root.Rename(filepath.Base(tmpPath), filepath.Base(targetPath)); err == nil {
 			return nil
 		}
 	}
