@@ -91,6 +91,7 @@ func confirmFormScript(later bool) string {
 	script := "$ErrorActionPreference = 'Stop'; " +
 		"Add-Type -AssemblyName System.Windows.Forms; " +
 		"Add-Type -AssemblyName System.Drawing; " +
+		frontType +
 		"$f = New-Object System.Windows.Forms.Form; " +
 		"$f.Text = $env:HTMLCLAY_DIALOG_TITLE; " +
 		"$f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; " +
@@ -132,6 +133,7 @@ func confirmFormScript(later bool) string {
 		"for ($i = 0; $i -lt $order.Count; $i++) { $order[$i].TabIndex = $i }; " +
 		"$f.Controls.AddRange(@($p, $row)); " +
 		"$f.CancelButton = $order[0]; $f.AcceptButton = $order[0]; " +
+		frontOnShown +
 		"Write-Output $f.ShowDialog()"
 }
 

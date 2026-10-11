@@ -12,6 +12,7 @@ func manageProgram(p ProgramSummary) (ManageChoice, error) {
 	const script = "$ErrorActionPreference = 'Stop'; " +
 		"Add-Type -AssemblyName System.Windows.Forms; " +
 		"Add-Type -AssemblyName System.Drawing; " +
+		frontType +
 		"$f = New-Object System.Windows.Forms.Form; " +
 		"$f.Text = $env:HTMLCLAY_DIALOG_TITLE; " +
 		"$f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; " +
@@ -28,6 +29,7 @@ func manageProgram(p ProgramSummary) (ManageChoice, error) {
 		"$apply = New-Object System.Windows.Forms.Button; $apply.Text = 'Apply'; " +
 		"$apply.SetBounds(408, 246, 96, 34); $apply.DialogResult = [System.Windows.Forms.DialogResult]::OK; " +
 		"$f.Controls.AddRange(@($cancel, $apply)); $f.AcceptButton = $apply; $f.CancelButton = $cancel; " +
+		frontOnShown +
 		"$r = $f.ShowDialog(); if ($r -eq [System.Windows.Forms.DialogResult]::OK) { " +
 		"switch ($list.SelectedIndex) { 0 { Write-Output 'toggle' } 1 { Write-Output 'forget' } 2 { Write-Output 'remove' } } }"
 

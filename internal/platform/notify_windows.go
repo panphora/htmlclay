@@ -3,14 +3,20 @@
 package platform
 
 import (
+	"runtime"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 var (
-	user32          = windows.NewLazySystemDLL("user32.dll")
-	procMessageBoxW = user32.NewProc("MessageBoxW")
+	user32                  = windows.NewLazySystemDLL("user32.dll")
+	procMessageBoxW         = user32.NewProc("MessageBoxW")
+	procFindWindowExW       = user32.NewProc("FindWindowExW")
+	procAttachThreadInput   = user32.NewProc("AttachThreadInput")
+	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
+	procSetWindowPos        = user32.NewProc("SetWindowPos")
 )
 
 // notify shows a modal error dialog via user32!MessageBoxW. A toast would need
@@ -37,10 +43,73 @@ func messageBox(title, message string, icon uintptr) error {
 	if err != nil {
 		return err
 	}
+	// The box belongs to the thread that calls MessageBoxW, so pin it: raiseBox
+	// looks the box up by that thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	done := make(chan struct{})
+	defer close(done)
+	go raiseBox(t, windows.GetCurrentThreadId(), done)
+
 	const mbSetForeground = 0x10000
+	const mbTopmost = 0x40000
 	procMessageBoxW.Call(0,
 		uintptr(unsafe.Pointer(m)),
 		uintptr(unsafe.Pointer(t)),
-		icon|mbSetForeground)
+		icon|mbSetForeground|mbTopmost)
 	return nil
+}
+
+// raiseBox brings the message box that thread owner is opening to the front.
+// HTML Clay is rarely the foreground process when it reports something, and
+// Windows then ignores MB_SETFOREGROUND and MB_TOPMOST alike: the box opens
+// behind the browser and only its taskbar button flashes.
+func raiseBox(title *uint16, owner uint32, done <-chan struct{}) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	class, _ := windows.UTF16PtrFromString("#32770")
+	for range 100 {
+		select {
+		case <-done:
+			return
+		case <-time.After(20 * time.Millisecond):
+		}
+		var box uintptr
+		for {
+			box, _, _ = procFindWindowExW.Call(0, box, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)))
+			if box == 0 {
+				break
+			}
+			if tid, _ := windows.GetWindowThreadProcessId(windows.HWND(box), nil); tid == owner {
+				bringToFront(box)
+				return
+			}
+		}
+	}
+}
+
+// bringToFront makes h the foreground window. SetForegroundWindow from a
+// background process is refused unless the caller shares the foreground
+// thread's input, so attach to it for the call. Even attached, a process with
+// no console of its own stays behind the browser until the box is made
+// topmost first.
+func bringToFront(h uintptr) {
+	fg, _ := windows.GetWindowThreadProcessId(windows.GetForegroundWindow(), nil)
+	me := windows.GetCurrentThreadId()
+	attached := false
+	if fg != 0 && fg != me {
+		r, _, _ := procAttachThreadInput.Call(uintptr(me), uintptr(fg), 1)
+		attached = r != 0
+	}
+	const (
+		swpNoSize     = 0x1
+		swpNoMove     = 0x2
+		swpShowWindow = 0x40
+	)
+	hwndTopmost := ^uintptr(0)
+	procSetWindowPos.Call(h, hwndTopmost, 0, 0, 0, 0, swpNoSize|swpNoMove|swpShowWindow)
+	procSetForegroundWindow.Call(h)
+	if attached {
+		procAttachThreadInput.Call(uintptr(me), uintptr(fg), 0)
+	}
 }

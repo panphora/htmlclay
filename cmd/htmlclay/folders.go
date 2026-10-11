@@ -525,7 +525,15 @@ func (a *app) removeTrustedFolder(dir string) []tray.Row {
 	msg := fmt.Sprintf("Stop trusting this folder?\n\n%s\n\nFiles in it will stop opening editable, and any of its pages you have open now will need to be opened again.", dir)
 	affirmative := "Stop Trusting"
 	if outer, ok := a.shadowedBy(dir); ok {
+		a.mu.Lock()
+		ownSite := a.siteAtLocked(dir) != nil
+		a.mu.Unlock()
 		msg = fmt.Sprintf("Remove this folder from your trusted list?\n\n%s\n\nIt sits inside %s, which you also trust, so its files stay editable and its pages stay open. Removing it here takes effect if you stop trusting that folder too.", dir, outer)
+		if ownSite {
+			// Trusted before the outer folder, so it still has its own address
+			// this run, and untrustFolder closes it.
+			msg = fmt.Sprintf("Remove this folder from your trusted list?\n\n%s\n\nIt sits inside %s, which you also trust, so its files stay editable. Pages you have open from it now use this folder's own address, which closes, so they will need to be opened again.", dir, outer)
+		}
 		affirmative = "Remove"
 	}
 	proceed, err := a.confirmTrustRequest("HTML Clay", msg, affirmative)

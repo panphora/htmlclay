@@ -13,6 +13,7 @@ func promptName(title, message, initial string) (string, bool, error) {
 	const script = "$ErrorActionPreference = 'Stop'; " +
 		"Add-Type -AssemblyName System.Windows.Forms; " +
 		"Add-Type -AssemblyName System.Drawing; " +
+		frontType +
 		"$f = New-Object System.Windows.Forms.Form; " +
 		"$f.Text = $env:HTMLCLAY_DIALOG_TITLE; " +
 		"$f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; " +
@@ -29,6 +30,7 @@ func promptName(title, message, initial string) (string, bool, error) {
 		"$f.ClientSize = New-Object System.Drawing.Size(460, ($y + 88)); " +
 		"$f.Controls.AddRange(@($cancel, $ok)); $f.AcceptButton = $ok; $f.CancelButton = $cancel; " +
 		"$f.ActiveControl = $box; $box.SelectAll(); " +
+		frontOnShown +
 		"if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output ('OK:' + $box.Text) }"
 
 	ctx, cancel := context.WithTimeout(context.Background(), promptNameTimeout)

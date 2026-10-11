@@ -68,3 +68,16 @@ func TestConfirmFormDropsButtonsWithNoLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestConfirmFormTakesForeground(t *testing.T) {
+	for _, later := range []bool{false, true} {
+		script := confirmFormScript(later)
+		compile := strings.Index(script, "Add-Type -Namespace HtmlClayUI -Name Front")
+		form := strings.Index(script, "$f = New-Object System.Windows.Forms.Form")
+		shown := strings.Index(script, "[HtmlClayUI.Front]::Window($f.Handle)")
+		show := strings.Index(script, "$f.ShowDialog()")
+		if compile < 0 || form < 0 || shown < 0 || show < 0 || compile > form || shown > show {
+			t.Errorf("confirmFormScript(%v) must compile the foreground helper before the form and hook it before ShowDialog", later)
+		}
+	}
+}
