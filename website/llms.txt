@@ -1051,9 +1051,14 @@ curl 'http://notes-3f2a.localhost:24190/_/api/notes.htmlclay'
 ```
 
 Replace `notes-3f2a` with the hostname in your tab's address bar; the port is the same for every
-folder. On Linux, `curl` resolves `*.localhost` only with systemd-resolved's `nss-myhostname`, so
-send `Host: notes-3f2a.localhost:24190` to `127.0.0.1:24190` instead, or pass `--resolve`
-`notes-3f2a.localhost:24190:127.0.0.1`. Browsers resolve `*.localhost` themselves.
+folder. Browsers and `curl` resolve `*.localhost` to loopback by themselves. Other programs ask
+the system resolver, which macOS answers, Linux answers with systemd-resolved, and Windows usually
+does not (PowerShell's `Invoke-RestMethod` fails with "remote name could not be resolved"). Sending
+the request to `127.0.0.1:24190` with the hostname in the `Host` header works everywhere:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:24190/_/api/notes.htmlclay -Headers @{Host='notes-3f2a.localhost:24190'}
+```
 
 The second reads a tag the page publishes:
 
