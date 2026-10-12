@@ -57,7 +57,7 @@ func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, 
 		"HTMLCLAY_DIALOG_TITLE="+title,
 		"HTMLCLAY_DIALOG_MESSAGE="+message,
 		"HTMLCLAY_DIALOG_HEIGHT="+strconv.Itoa(confirmFormHeight(message)),
-		"HTMLCLAY_DIALOG_DENY="+confirmDenyLabel,
+		"HTMLCLAY_DIALOG_DENY="+labels.denyLabel(),
 		"HTMLCLAY_DIALOG_ALLOW="+labels.Allow,
 		"HTMLCLAY_DIALOG_ALWAYS="+labels.Always,
 		"HTMLCLAY_DIALOG_LATER="+labels.Later,
@@ -159,10 +159,15 @@ func confirmFormHeight(message string) int {
 // MessageBox cannot relabel its buttons, so the labels are appended to the
 // message text instead. Without them the user is asked to say Yes to a grant
 // this dialog never names.
+//
+// It has no third button, so the wider grant is dropped here: for the port
+// dialog that means Yes is the caller's Allow label, No is its Deny label, and
+// the retry the form would offer as Always has no button at all. Cancel is
+// still Later when the caller has one.
 func confirmDialogMessageBox(title, message string, labels ConfirmLabels) (ConfirmChoice, error) {
 	defaultButton := "Button2"
 	if labels.Allow != "" {
-		message += "\n\nYes: " + labels.Allow + "\nNo: Deny"
+		message += "\n\nYes: " + labels.Allow + "\nNo: " + labels.denyLabel()
 	}
 	if labels.Later != "" {
 		defaultButton = "Button3"

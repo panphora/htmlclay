@@ -33,9 +33,9 @@ func confirmDialog(title, message string, labels ConfirmLabels) (ConfirmChoice, 
 func confirmDialogScript(title, message string, labels ConfirmLabels) string {
 	script := "display dialog " + appleScriptString(message) +
 		" with title " + appleScriptString(title) +
-		" buttons {" + appleScriptString(confirmDenyLabel) + ", " + appleScriptString(labels.Allow) + ", " + appleScriptString(labels.Always) + "}"
+		" buttons {" + appleScriptString(labels.denyLabel()) + ", " + appleScriptString(labels.Allow) + ", " + appleScriptString(labels.Always) + "}"
 	if labels.Later == "" {
-		script += " default button " + appleScriptString(confirmDenyLabel)
+		script += " default button " + appleScriptString(labels.denyLabel())
 	}
 	return script + " with icon caution giving up after 120"
 }

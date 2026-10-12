@@ -71,6 +71,17 @@ type ConfirmLabels struct {
 	// Deny is the keyboard default, which suits only a refusal that is not
 	// stored. Either way no keyboard default ever grants.
 	Later string
+	// Deny relabels the refusing button. Empty keeps "Deny". The port dialog uses it,
+	// because there the refusal is "Quit HTML Clay" and a button that says Deny would
+	// describe nothing.
+	Deny string
+}
+
+func (l ConfirmLabels) denyLabel() string {
+	if l.Deny != "" {
+		return l.Deny
+	}
+	return confirmDenyLabel
 }
 
 // Confirm shows a modal, foreground native dialog for a permission grant and
@@ -128,7 +139,7 @@ func choiceFromOSAScript(button string, labels ConfirmLabels) ConfirmChoice {
 	switch {
 	case button == "":
 		return ConfirmDismissed
-	case button == confirmDenyLabel:
+	case button == labels.denyLabel():
 		return ConfirmDeny
 	case button == labels.Always:
 		return ConfirmAllowAlways
@@ -151,7 +162,7 @@ func choiceFromZenity(out string, exit int, labels ConfirmLabels) ConfirmChoice 
 		return ConfirmAllowOnce
 	case exit != 1:
 		return ConfirmDismissed
-	case answer == confirmDenyLabel:
+	case answer == labels.denyLabel():
 		return ConfirmDeny
 	case answer != "" && answer == labels.Always:
 		return ConfirmAllowAlways

@@ -109,3 +109,19 @@ func TestChoiceFromDialogResultStoresOnlyAClickOnDeny(t *testing.T) {
 		}
 	}
 }
+
+func TestDenyLabelOverrideIsHonoured(t *testing.T) {
+	labels := ConfirmLabels{Allow: "Use a New Port", Always: "Quit It and Retry", Deny: "Quit HTML Clay"}
+	if got := choiceFromOSAScript("Quit HTML Clay", labels); got != ConfirmDeny {
+		t.Fatalf("osascript: %v, want deny", got)
+	}
+	if got := choiceFromOSAScript("Deny", labels); got != ConfirmDismissed {
+		t.Fatalf("osascript: the default label must not match once overridden, got %v", got)
+	}
+	if got := choiceFromZenity("Quit HTML Clay\n", 1, labels); got != ConfirmDeny {
+		t.Fatalf("zenity: %v, want deny", got)
+	}
+	if (ConfirmLabels{}).denyLabel() != "Deny" {
+		t.Fatal("no override must keep Deny")
+	}
+}

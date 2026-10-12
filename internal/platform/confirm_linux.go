@@ -72,9 +72,9 @@ func zenityConfirmArgs(title, message string, labels ConfirmLabels) []string {
 		"--extra-button", labels.Always,
 	}
 	if labels.Later == "" {
-		return append(args, "--cancel-label", confirmDenyLabel, "--default-cancel")
+		return append(args, "--cancel-label", labels.denyLabel(), "--default-cancel")
 	}
-	return append(args, "--extra-button", confirmDenyLabel, "--cancel-label", labels.Later, "--default-cancel")
+	return append(args, "--extra-button", labels.denyLabel(), "--cancel-label", labels.Later, "--default-cancel")
 }
 
 func kdialogConfirmArgs(title, message string, labels ConfirmLabels) []string {
@@ -83,7 +83,7 @@ func kdialogConfirmArgs(title, message string, labels ConfirmLabels) []string {
 		args = append(args, "later", labels.Later, "off")
 	}
 	return append(args,
-		"deny", confirmDenyLabel, "off",
+		"deny", labels.denyLabel(), "off",
 		"once", labels.Allow, "off",
 		"always", labels.Always, "off",
 	)
