@@ -65,6 +65,9 @@ type appRuntime struct {
 	// portOwner and quitProcess override the port-owner lookup and the quit request.
 	portOwner   func(port int) (pid int, name string, ok bool)
 	quitProcess func(pid int, force bool) error
+	// afterLookup, when set, runs in the router between finding a live site and arming it.
+	// Tests use it to change state inside that window.
+	afterLookup func(*site)
 	guard       func(dir string) bool
 	// policy holds the rules about which folders may be trusted, and on whose
 	// say-so. Pure functions; see package trust.

@@ -587,8 +587,8 @@ and exits 1. It always takes the handler role, so it has no `--handler` flag.
 `--origin <url>` names an HTML Clay site's address as the browser shows it, such as
 `http://notes-3f2a.localhost:24190`. Use it to reach a file whose folder HTML Clay remembers no
 origin for, such as a file loose in your home directory: copy the address out of the page's own
-address bar. `--port <n>` names a Hyperclay Local origin, which has no hostname; passing both is a
-usage error. Otherwise the CLI discovers the origin from `siteSlugs` in `config.json`, trying
+address bar. `--port <n>` names a Hyperclay Local origin, which has no hostname; HTML Clay's own port (24190)
+looks the file's hostname up on that port instead. Passing both is a usage error. Otherwise the CLI discovers the origin from `siteSlugs` in `config.json`, trying
 ancestor anchors first, shortest first, then any legacy per-folder port the config still remembers.
 
 `listen` is an observer unless you pass `--handler`. The handler slot is exclusive, one program
@@ -1053,12 +1053,16 @@ curl 'http://notes-3f2a.localhost:24190/_/api/notes.htmlclay'
 Replace `notes-3f2a` with the hostname in your tab's address bar; the port is the same for every
 folder. Browsers and `curl` resolve `*.localhost` to loopback by themselves. Other programs ask
 the system resolver, which macOS answers, Linux answers with systemd-resolved, and Windows usually
-does not (PowerShell's `Invoke-RestMethod` fails with "remote name could not be resolved"). Sending
-the request to `127.0.0.1:24190` with the hostname in the `Host` header works everywhere:
+does not (PowerShell's `Invoke-RestMethod` fails with "remote name could not be resolved"). A
+program can skip the hostname entirely: `127.0.0.1:24190/_/api/<path>` reaches whichever open folder
+serves that file, for any caller that is not a browser (no `Origin`, no `Sec-Fetch-Site`):
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:24190/_/api/notes.htmlclay -Headers @{Host='notes-3f2a.localhost:24190'}
+Invoke-RestMethod http://127.0.0.1:24190/_/api/Documents/notes/notes.htmlclay
 ```
+
+The path is relative to your home folder, the same path the address bar shows. If no open folder
+contains the file, the answer is a 404 `No open folder`; open the file in HTML Clay first.
 
 The second reads a tag the page publishes:
 

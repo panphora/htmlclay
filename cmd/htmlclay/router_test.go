@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -251,5 +252,114 @@ func TestStartListenerTriesCandidatesInOrder(t *testing.T) {
 	}
 	if log := read(); !strings.Contains(log, fmt.Sprintf("Port %d is not available", taken)) {
 		t.Fatalf("the log should name the port it could not take:\n%s", log)
+	}
+}
+
+// The bare host is how a program that cannot resolve *.localhost reaches a folder:
+// a /_/api/ request with neither Origin nor Sec-Fetch-Site is a local process, and it
+// is routed to whichever live site serves the file. A browser page is not, and keeps
+// getting the index page.
+func TestBareHostServesAScriptsDataAPIRequestFromTheFolderThatServesIt(t *testing.T) {
+	home, _ := resolveSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	notes := filepath.Join(proj, "notes.htmlclay")
+	writeTestFile(t, notes, `<!DOCTYPE html>
+<html><head><script type="application/json" data-rules-name="api" data-rules-version="1">{t:"h1"}</script></head>
+<body><h1>REVIEW_CANARY</h1></body></html>
+`)
+
+	a := newTestApp(t, home)
+	if err := a.trustFolder(proj); err != nil {
+		t.Fatal(err)
+	}
+	liveSite(t, a, proj)
+	bare := "127.0.0.1:" + strconv.Itoa(a.rt.port)
+
+	api := func(target string, mutate func(*http.Request)) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Host = bare
+		if mutate != nil {
+			mutate(req)
+		}
+		rec := httptest.NewRecorder()
+		a.serveHost(rec, req)
+		return rec
+	}
+
+	script := api("/_/api/proj/notes.htmlclay", nil)
+	if script.Code != http.StatusOK || !strings.Contains(script.Body.String(), "REVIEW_CANARY") {
+		t.Fatalf("a local process's data API request on the bare host = %d %q", script.Code, script.Body.String())
+	}
+
+	crossSite := api("/_/api/proj/notes.htmlclay", func(r *http.Request) {
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+	})
+	if crossSite.Code == http.StatusOK && strings.Contains(crossSite.Body.String(), "REVIEW_CANARY") {
+		t.Fatalf("a cross-site request was answered with the data: %d %q", crossSite.Code, crossSite.Body.String())
+	}
+
+	fromElsewhere := api("/_/api/proj/notes.htmlclay", func(r *http.Request) {
+		r.Header.Set("Origin", "http://localhost:3000")
+	})
+	if strings.Contains(fromElsewhere.Body.String(), "REVIEW_CANARY") {
+		t.Fatalf("a browser on another origin was answered with the data: %d %q",
+			fromElsewhere.Code, fromElsewhere.Body.String())
+	}
+
+	noSite := api("/_/api/elsewhere/x.htmlclay", nil)
+	if noSite.Code != http.StatusNotFound || !strings.Contains(noSite.Body.String(), "No open folder") {
+		t.Fatalf("a file no live site serves = %d %q, want 404 No open folder", noSite.Code, noSite.Body.String())
+	}
+
+	escape := api("/_/api/proj/notes.htmlclay", func(r *http.Request) {
+		r.URL.Path = "/_/api/../../etc/x.htmlclay"
+	})
+	if escape.Code != http.StatusNotFound || !strings.Contains(escape.Body.String(), "No open folder") {
+		t.Fatalf("a path that escapes home = %d %q, want 404 No open folder", escape.Code, escape.Body.String())
+	}
+}
+
+// The router looks a site up and dispatches to it in two steps, and a folder untrusted
+// between them must not be served. afterLookup is the seam that reaches that window.
+func TestRouterRefusesASiteClosedBetweenLookupAndArm(t *testing.T) {
+	home, _ := resolveSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	page := filepath.Join(proj, "index.htmlclay")
+	writeTestFile(t, page, "<html><body>REVIEW_CANARY</body></html>")
+
+	a := newTestApp(t, home)
+	if err := a.trustFolder(proj); err != nil {
+		t.Fatal(err)
+	}
+	s := liveSite(t, a, proj)
+
+	a.rt.afterLookup = func(*site) {
+		a.rt.afterLookup = nil
+		if err := a.untrustFolder(proj); err != nil {
+			t.Error(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/proj/index.htmlclay", nil)
+	req.Host = s.host
+	req.Header.Set("Sec-Fetch-Site", "none")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	a.serveHost(rec, req)
+
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "REVIEW_CANARY") {
+		t.Fatalf("a site closed inside the lookup window served the page: %d %q", rec.Code, rec.Body.String())
+	}
+	// The router's own answer, not the closed site's: the site would refuse this request
+	// with a bare 403 on its own, so only the retired page shows that the window was
+	// handled here.
+	if rec.Code != http.StatusNotFound || rec.Body.String() != string(recoveryPage) {
+		t.Fatalf("a site closed inside the lookup window answered %d %q, want the retired page",
+			rec.Code, rec.Body.String())
+	}
+	if !s.closed.Load() {
+		t.Fatal("the folder was untrusted inside the window, but the site is not closed")
 	}
 }

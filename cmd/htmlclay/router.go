@@ -5,10 +5,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/panphora/htmlclay/internal/server"
+	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/trust"
 )
 
@@ -28,6 +30,14 @@ func (a *app) serveHost(w http.ResponseWriter, r *http.Request) {
 	}
 	name = strings.ToLower(name)
 	if name == "localhost" || name == "127.0.0.1" || name == "::1" {
+		if apiPath, ok := scriptAPIPath(r); ok {
+			if s := a.siteServingPath(apiPath); s != nil {
+				a.dispatch(w, r, s, "")
+				return
+			}
+			writeNoFolder(w)
+			return
+		}
 		recoveryHeaders(w)
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -43,24 +53,99 @@ func (a *app) serveHost(w http.ResponseWriter, r *http.Request) {
 	a.hostMu.RLock()
 	s := a.bySlug[slug]
 	a.hostMu.RUnlock()
-	if s != nil && !s.closed.Load() {
-		s.armOnce.Do(s.arm)
-		if s.closed.Load() {
-			// Closed between the lookup and the arm: the session manager already refused
-			// the arm (ErrRevoked), and the retired answer is the only honest one.
-			a.serveRetired(w, r, slug)
-			return
-		}
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-		stop := context.AfterFunc(s.ctx, cancel)
-		defer stop()
-		r = r.WithContext(ctx)
-		r.Host = s.host
-		s.srv.ServeHTTP(w, r)
+	if s == nil {
+		a.serveRetired(w, r, slug)
 		return
 	}
-	a.serveRetired(w, r, slug)
+	a.dispatch(w, r, s, slug)
+}
+
+// dispatch hands r to a live site: it arms the site on its first request, ties the
+// request's context to the site's so closing the site ends it, and rewrites Host to the
+// site's own so its gate and same-origin checks see the hostname the site answers. slug is
+// the hostname label the request named, used for the retired answer when the site closed
+// between the lookup and the arm; empty when the request reached the site through the bare
+// host, which then gets the no-folder answer instead.
+func (a *app) dispatch(w http.ResponseWriter, r *http.Request, s *site, slug string) {
+	if a.rt.afterLookup != nil {
+		a.rt.afterLookup(s)
+	}
+	if !s.closed.Load() {
+		s.armOnce.Do(s.arm)
+	}
+	if s.closed.Load() {
+		// Closed between the lookup and the arm, or before it: the session manager refuses
+		// the arm (ErrRevoked), and the retired answer is the only honest one.
+		if slug == "" {
+			writeNoFolder(w)
+			return
+		}
+		a.serveRetired(w, r, slug)
+		return
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	stop := context.AfterFunc(s.ctx, cancel)
+	defer stop()
+	r = r.WithContext(ctx)
+	r.Host = s.host
+	s.srv.ServeHTTP(w, r)
+}
+
+// scriptAPIPath reports the home-relative file path of a data API request from a program
+// rather than a browser: a /_/api/<path> request with neither Origin nor Sec-Fetch-Site,
+// the classifier the wire uses. Only those reach a site through the bare host, so a
+// script needs no folder hostname, and a browser page still cannot drive the data API of
+// an origin it is not on.
+func scriptAPIPath(r *http.Request) (string, bool) {
+	if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" {
+		return "", false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		return "", false
+	}
+	rel, ok := strings.CutPrefix(r.URL.Path, "/_/api/")
+	if !ok || strings.Trim(rel, "/") == "" {
+		return "", false
+	}
+	return rel, true
+}
+
+// siteServingPath picks the live site that serves the home-relative path rel: the site
+// keyed by the file itself (a file loose in home), else the live site with the longest
+// anchor containing the file. It is lexical and takes only hostMu, like the rest of the
+// router, so a stalled disk cannot block it.
+func (a *app) siteServingPath(rel string) *site {
+	abs := filepath.Join(a.rt.home, filepath.FromSlash(rel))
+	if !session.EqualOrUnder(abs, a.rt.home) {
+		return nil
+	}
+	a.hostMu.RLock()
+	defer a.hostMu.RUnlock()
+	var best *site
+	for _, s := range a.bySlug {
+		if s.closed.Load() {
+			continue
+		}
+		if s.key == abs {
+			return s
+		}
+		if s.anchor == a.rt.home || !session.EqualOrUnder(abs, s.anchor) {
+			continue
+		}
+		if best == nil || len(s.anchor) > len(best.anchor) {
+			best = s
+		}
+	}
+	return best
+}
+
+// writeNoFolder answers a bare-host data API request no live site serves.
+func writeNoFolder(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNotFound)
+	w.Write([]byte(`{"error":"No open folder","message":"No folder HTML Clay is serving right now contains this file. Open the file in HTML Clay first, or send the request to its folder's address, which htmlclay wire where <file> prints."}` + "\n"))
 }
 
 func recoveryHeaders(w http.ResponseWriter) {

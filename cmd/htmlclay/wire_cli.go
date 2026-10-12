@@ -531,6 +531,20 @@ func wireResolveCandidates(env *wireEnv, file string, port int, origin string) (
 		return []wireCandidate{c}, nil
 	}
 	if port > 0 {
+		// HTML Clay's own port names no folder by itself: every folder lives on it under its
+		// own hostname, and the bare host answers only an index page. Look the file's
+		// hostname up on that port instead of probing the bare host.
+		if cfg := wireReadConfig(env.configPath); cfg.Port > 0 && port == cfg.Port {
+			var on []wireCandidate
+			for _, c := range wireCandidates(cfg, file) {
+				if c.port == port && c.host != "" {
+					on = append(on, c)
+				}
+			}
+			if len(on) > 0 {
+				return on, nil
+			}
+		}
 		return []wireCandidate{{anchor: "--port", port: port, ancestor: true}}, nil
 	}
 	return wireAllCandidates(wireReadConfig(env.configPath), wireLocalRoots(env.localRootsPath), file), nil

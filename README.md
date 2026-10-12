@@ -228,12 +228,16 @@ curl 'http://notes-3f2a.localhost:24190/_/api/notes.htmlclay'
 Replace `notes-3f2a` with the hostname in your tab's address bar; the port is the same for every
 folder. Browsers and `curl` resolve `*.localhost` to loopback by themselves. Other programs ask
 the system resolver, which macOS answers, Linux answers with systemd-resolved, and Windows usually
-does not (PowerShell's `Invoke-RestMethod` fails with "remote name could not be resolved"). Sending
-the request to `127.0.0.1:24190` with the hostname in the `Host` header works everywhere:
+does not (PowerShell's `Invoke-RestMethod` fails with "remote name could not be resolved"). A
+program can skip the hostname entirely: `127.0.0.1:24190/_/api/<path>` reaches whichever open folder
+serves that file, for any caller that is not a browser (no `Origin`, no `Sec-Fetch-Site`):
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:24190/_/api/notes.htmlclay -Headers @{Host='notes-3f2a.localhost:24190'}
+Invoke-RestMethod http://127.0.0.1:24190/_/api/Documents/notes/notes.htmlclay
 ```
+
+The path is relative to your home folder, the same path the address bar shows. If no open folder
+contains the file, the answer is a 404 `No open folder`; open the file in HTML Clay first.
 
 The second reads a tag the page publishes:
 

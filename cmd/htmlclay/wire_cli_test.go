@@ -498,13 +498,16 @@ func TestWireAmbiguousFileAsksForPort(t *testing.T) {
 	}
 }
 
+// The port given here is HTML Clay's own, so it reaches the file by its hostname
+// rather than as the bare loopback address. Either way it names one origin outright,
+// which is what skips the ambiguity check.
 func TestWirePortFlagSkipsTheAmbiguityCheck(t *testing.T) {
 	h, file, htmlclayPort, _, _ := ambiguousWirePair(t)
 
 	if code := h.run("where", file, "--port", strconv.Itoa(htmlclayPort)); code != wireExitOK {
 		t.Fatalf("where --port exited %d; stderr:\n%s", code, h.errs.String())
 	}
-	if want := fmt.Sprintf("127.0.0.1:%d", htmlclayPort); !strings.Contains(h.out.String(), want) {
+	if want := fmt.Sprintf("proj-0001.localhost:%d", htmlclayPort); !strings.Contains(h.out.String(), want) {
 		t.Fatalf("where printed %q, want the origin it was given (%s)", h.out.String(), want)
 	}
 }
@@ -920,6 +923,34 @@ func TestWirePortFlagReachesAHyperclayLocalRoot(t *testing.T) {
 		t.Fatalf("where with --port exited %d; stderr:\n%s", code, h.errs.String())
 	}
 	if want := fmt.Sprintf("http://127.0.0.1:%d", port); !strings.Contains(h.out.String(), want) {
+		t.Errorf("where printed %q, want %s", h.out.String(), want)
+	}
+}
+
+// HTML Clay's own port is not any one folder's address: every folder lives on it under
+// its own hostname, and the bare host answers only an index page. So --port with the
+// app's own port must look the file's hostname up on that port instead of probing the
+// bare host and reporting the app as not running.
+func TestWirePortOfTheAppItselfLooksTheHostnameUp(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	file := filepath.Join(home, "proj", "index.htmlclay")
+	writeTestFile(t, file, "<html><body>appport</body></html>")
+	cfgBase := t.TempDir()
+
+	port := fakeWireOrigin(t, file, nil, "proj-0001.localhost")
+
+	a := buildTestApp(t, home, cfgBase)
+	a.rt.cfg.SetPort(port)
+	a.rt.cfg.RememberSiteSlug(filepath.Dir(file), "proj-0001")
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newWireHarness(t, cfgBase)
+	if code := h.run("where", file, "--port", strconv.Itoa(port)); code != wireExitOK {
+		t.Fatalf("where --port exited %d; stderr:\n%s", code, h.errs.String())
+	}
+	if want := fmt.Sprintf("proj-0001.localhost:%d", port); !strings.Contains(h.out.String(), want) {
 		t.Errorf("where printed %q, want %s", h.out.String(), want)
 	}
 }
