@@ -26,12 +26,26 @@ type Config struct {
 	// directly. Lock order is a.mu -> cfg.mu (nothing takes cfg.mu then a.mu).
 	mu           sync.Mutex
 	StartOnLogin bool `json:"startOnLogin"`
-	// SitePorts remembers the loopback port each origin was served on.
-	// Browser storage (localStorage, IndexedDB, cookies) is scoped to an origin,
-	// and the port is part of the origin, so handing a tree a fresh random port
-	// on every launch silently orphans whatever the page stored last time.
-	// Keyed by the origin's anchor: a trusted folder, or an ordinary directory
-	// for a file opened outside every trusted folder.
+	// ListenPort is the one loopback port every site is served on, held on 127.0.0.1 and
+	// ::1 for as long as the app runs. 0 until the first launch chooses one. The port is
+	// part of the browser origin, so a change here resets every page's browser storage,
+	// which is why the app asks before moving it. Read through Port().
+	ListenPort int `json:"port,omitempty"`
+	// SiteSlugs maps an origin key to the label it is served under, <label>.localhost:<port>.
+	// The key is the site's anchor (a trusted folder, or the folder a loose file was opened
+	// from), or the file's own path for a file loose in the home directory, which can
+	// install no read root and so shares its anchor with every other such file. A slug is
+	// chosen once and never changes, so a bookmark survives restarts. Trusted folders'
+	// entries are never evicted; the rest are capped like SitePorts.
+	SiteSlugs map[string]string `json:"siteSlugs,omitempty"`
+	// RetiredSlugs are labels that were once issued and then forgotten (the folder was
+	// untrusted, or the entry was evicted). They are never issued again, so no folder can
+	// inherit another's browser storage, and their addresses answer the recovery page.
+	RetiredSlugs []string `json:"retiredSlugs,omitempty"`
+	// SitePorts is the pre-hostname record of the loopback port each origin was served on.
+	// Kept so an old bookmark can be redirected: startup binds each remembered port that is
+	// still free with a redirect to the folder's hostname, and drops the entry the first
+	// time the port is found taken. Nothing new is ever written here.
 	SitePorts map[string]int `json:"sitePorts,omitempty"`
 	// TrustedFolders are folders the user declared theirs. HTML Clay files under
 	// one open editable with no prompts, including files added later, and any
@@ -317,6 +331,166 @@ func (c *Config) SitePortList() map[string]int {
 		out[k] = v
 	}
 	return out
+}
+
+// siteSlugCap bounds the slug map the way sitePortCap bounds the legacy one; a slug
+// costs no socket, so the cap is only about config size. retiredSlugCap bounds the
+// list of labels that must never be reissued.
+const (
+	siteSlugCap    = 64
+	retiredSlugCap = 256
+)
+
+// Port returns the remembered port, 0 when none has been chosen.
+func (c *Config) Port() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ListenPort
+}
+
+// SetPort records the port the app is serving on.
+func (c *Config) SetPort(port int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ListenPort = port
+}
+
+// SiteSlug returns the slug remembered for key, or "" if there is none.
+func (c *Config) SiteSlug(key string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.SiteSlugs[key]
+}
+
+// SiteKeyForSlug is the reverse lookup the router needs for a hostname with no live site.
+// A retired slug has no key.
+func (c *Config) SiteKeyForSlug(slug string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, s := range c.SiteSlugs {
+		if s == slug {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+// SlugInUse reports whether slug is issued or retired, so an allocator never reissues it.
+func (c *Config) SlugInUse(slug string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.SiteSlugs {
+		if s == slug {
+			return true
+		}
+	}
+	for _, s := range c.RetiredSlugs {
+		if s == slug {
+			return true
+		}
+	}
+	return false
+}
+
+// RememberSiteSlug records key's slug. The caller has checked SlugInUse.
+func (c *Config) RememberSiteSlug(key, slug string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.SiteSlugs == nil {
+		c.SiteSlugs = make(map[string]string)
+	}
+	c.SiteSlugs[key] = slug
+}
+
+// ForgetSiteSlug drops key's slug, retires it, and returns it so a caller whose change
+// fails to reach disk can RestoreSiteSlug. Untrusting a folder forgets its slug for the
+// reason ForgetSitePort gives: the re-homed survivors must land on a new origin.
+func (c *Config) ForgetSiteSlug(key string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	slug := c.SiteSlugs[key]
+	delete(c.SiteSlugs, key)
+	if slug != "" {
+		c.retireLocked(slug)
+	}
+	return slug
+}
+
+// RestoreSiteSlug undoes ForgetSiteSlug after a failed save.
+func (c *Config) RestoreSiteSlug(key, slug string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.SiteSlugs == nil {
+		c.SiteSlugs = make(map[string]string)
+	}
+	c.SiteSlugs[key] = slug
+	kept := c.RetiredSlugs[:0]
+	for _, s := range c.RetiredSlugs {
+		if s != slug {
+			kept = append(kept, s)
+		}
+	}
+	c.RetiredSlugs = kept
+}
+
+// SiteSlugList returns a copy of the slug map.
+func (c *Config) SiteSlugList() map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]string, len(c.SiteSlugs))
+	for k, v := range c.SiteSlugs {
+		out[k] = v
+	}
+	return out
+}
+
+// retireLocked appends slug to RetiredSlugs once, dropping the oldest past the cap.
+func (c *Config) retireLocked(slug string) {
+	for _, s := range c.RetiredSlugs {
+		if s == slug {
+			return
+		}
+	}
+	c.RetiredSlugs = append(c.RetiredSlugs, slug)
+	if n := len(c.RetiredSlugs); n > retiredSlugCap {
+		c.RetiredSlugs = c.RetiredSlugs[n-retiredSlugCap:]
+	}
+}
+
+// capSiteSlugs enforces siteSlugCap with capSitePorts's rules: trusted folders are never
+// evicted, and among the rest, keys that no longer stat go first. A key may be a file
+// (a loose file in home), so the stat is for existence, not for a directory. Evicted
+// slugs are retired.
+func (c *Config) capSiteSlugs() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.SiteSlugs) <= siteSlugCap {
+		return
+	}
+	protected := make(map[string]bool, len(c.TrustedFolders))
+	for _, w := range c.TrustedFolders {
+		protected[w.Path] = true
+	}
+	var missing, present []string
+	for key := range c.SiteSlugs {
+		if protected[key] {
+			continue
+		}
+		if _, err := os.Stat(key); err != nil {
+			missing = append(missing, key)
+		} else {
+			present = append(present, key)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(present)
+	for _, key := range append(missing, present...) {
+		if len(c.SiteSlugs) <= siteSlugCap {
+			return
+		}
+		c.retireLocked(c.SiteSlugs[key])
+		delete(c.SiteSlugs, key)
+	}
 }
 
 // capSitePorts enforces sitePortCap. See the constant for why eviction is
@@ -641,6 +815,7 @@ func LoadFrom(baseDir string, identity func(string) string) (*Config, Result, er
 	res.PinnedIdentities = cfg.backfillIdentities(identity)
 	res.DroppedHelperPrograms, res.DroppedHelperDecisions = cfg.normalizeHelpers()
 	cfg.capSitePorts()
+	cfg.capSiteSlugs()
 	return cfg, res, nil
 }
 

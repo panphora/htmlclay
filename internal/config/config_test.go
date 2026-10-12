@@ -568,6 +568,161 @@ func TestSitePortsAreCappedButTrustedFoldersSurvive(t *testing.T) {
 	}
 }
 
+// The remembered port and the slug map are the durable half of the hostname scheme:
+// the port is chosen once and every slug is chosen once, so a bookmark into a folder
+// keeps working across restarts.
+func TestPortAndSlugsRoundTrip(t *testing.T) {
+	base := t.TempDir()
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one := filepath.Join(base, "one")
+	two := filepath.Join(base, "two")
+	cfg.SetPort(24190)
+	cfg.RememberSiteSlug(one, "one")
+	cfg.RememberSiteSlug(two, "two")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Port(); got != 24190 {
+		t.Fatalf("remembered port = %d, want 24190", got)
+	}
+	for key, slug := range map[string]string{one: "one", two: "two"} {
+		got, ok := loaded.SiteKeyForSlug(slug)
+		if !ok || got != key {
+			t.Fatalf("SiteKeyForSlug(%q) = %q, %v; want %q, true", slug, got, ok, key)
+		}
+		if got := loaded.SiteSlug(key); got != slug {
+			t.Errorf("SiteSlug(%q) = %q, want %q", key, got, slug)
+		}
+	}
+
+	if got := loaded.ForgetSiteSlug(one); got != "one" {
+		t.Fatalf("ForgetSiteSlug returned %q, want %q", got, "one")
+	}
+	if !loaded.SlugInUse("one") {
+		t.Error("a forgotten slug must stay in use, or the next folder inherits its browser storage")
+	}
+	if _, ok := loaded.SiteKeyForSlug("one"); ok {
+		t.Error("a forgotten slug must have no key")
+	}
+
+	loaded.RestoreSiteSlug(one, "one")
+	if got, ok := loaded.SiteKeyForSlug("one"); !ok || got != one {
+		t.Errorf("after RestoreSiteSlug, SiteKeyForSlug(\"one\") = %q, %v; want %q, true", got, ok, one)
+	}
+	for _, s := range loaded.RetiredSlugs {
+		if s == "one" {
+			t.Error("a restored slug must not be retired")
+		}
+	}
+}
+
+// A slug costs no socket, so the cap is only about config size. A trusted folder's
+// slug is never evicted: losing it moves an origin the user has bookmarked. Evicted
+// slugs stay in use, so the next folder cannot inherit their browser storage.
+func TestSiteSlugsAreCappedButTrustedFoldersSurvive(t *testing.T) {
+	base := t.TempDir()
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trusted := t.TempDir()
+	cfg.AddTrustedFolder(trusted, "")
+	cfg.RememberSiteSlug(trusted, "trusted")
+	adHoc := map[string]string{}
+	for i := 0; i < 70; i++ {
+		key := filepath.Join(base, fmt.Sprintf("adhoc-%02d", i))
+		slug := fmt.Sprintf("adhoc-%02d", i)
+		adHoc[key] = slug
+		cfg.RememberSiteSlug(key, slug)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slugs := loaded.SiteSlugList()
+	if got := len(slugs); got != siteSlugCap {
+		t.Errorf("remembered slugs = %d, want %d", got, siteSlugCap)
+	}
+	if got := slugs[trusted]; got != "trusted" {
+		t.Errorf("a trusted folder's slug must never be evicted: got %q, want %q", got, "trusted")
+	}
+	for key, slug := range adHoc {
+		if _, kept := slugs[key]; kept {
+			continue
+		}
+		if !loaded.SlugInUse(slug) {
+			t.Errorf("evicted slug %q is free for another folder to inherit", slug)
+		}
+	}
+}
+
+// A retired slug must never be issued again, so no folder can inherit another's
+// browser storage, but the list cannot grow without bound either.
+func TestRetiredSlugsAreBounded(t *testing.T) {
+	base := t.TempDir()
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 300; i++ {
+		key := filepath.Join(base, fmt.Sprintf("site-%03d", i))
+		slug := fmt.Sprintf("slug-%03d", i)
+		cfg.RememberSiteSlug(key, slug)
+		if got := cfg.ForgetSiteSlug(key); got != slug {
+			t.Fatalf("ForgetSiteSlug(%q) returned %q, want %q", key, got, slug)
+		}
+	}
+	if got := len(cfg.RetiredSlugs); got != retiredSlugCap {
+		t.Errorf("retired slugs = %d, want %d", got, retiredSlugCap)
+	}
+	if got := cfg.RetiredSlugs[len(cfg.RetiredSlugs)-1]; got != "slug-299" {
+		t.Errorf("newest retired slug = %q, want %q", got, "slug-299")
+	}
+	if !cfg.SlugInUse("slug-299") {
+		t.Error("the newest retired slug must stay in use")
+	}
+	if cfg.SlugInUse("slug-000") {
+		t.Error("the oldest retired slug should have been dropped")
+	}
+}
+
+// A config written before the one-port scheme has no port, and the legacy port map
+// must still load: it is what an old bookmark is redirected from.
+func TestLegacyConfigWithOnlySitePortsLoadsWithPortZero(t *testing.T) {
+	base := t.TempDir()
+	dir := DirFrom(base)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"sitePorts":{"/x":51000}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Port(); got != 0 {
+		t.Errorf("Port() = %d, want 0 for a config that never chose one", got)
+	}
+	if got := cfg.SitePort("/x"); got != 51000 {
+		t.Errorf("the legacy port map was dropped: got %d, want 51000", got)
+	}
+}
+
 // A config that already holds one folder under two spellings is healed on load,
 // keeping the first entry and its pin.
 //
