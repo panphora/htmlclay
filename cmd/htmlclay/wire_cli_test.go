@@ -974,6 +974,7 @@ func TestWireOriginFlagRefusesBadInputWithoutProbing(t *testing.T) {
 	for _, origin := range []string{
 		"https://x.localhost:1",
 		"http://x.localhost",
+		"http://:24190",
 		"http://u:p@x.localhost:1",
 		"http://x.localhost:99999",
 	} {

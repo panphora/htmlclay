@@ -46,8 +46,9 @@ func siteHost(slug string, port int) string {
 // slugForLocked returns the label key is served under, allocating one the first time.
 // name is what the readable part is made from: the folder's base name, or the file's stem
 // for a file loose in home. The allocation is recorded in the config in memory only; the
-// caller saves when it publishes the site. Caller holds a.mu, so two allocations cannot
-// interleave between the uniqueness check and the record. A retired slug is never reused.
+// caller saves when it publishes the site, and drops it through discardPendingLocked when
+// it does not. Caller holds a.mu, so two allocations cannot interleave between the
+// uniqueness check and the record. A retired slug is never reused.
 func (a *app) slugForLocked(key, name string) string {
 	if slug := a.rt.cfg.SiteSlug(key); slug != "" {
 		return slug

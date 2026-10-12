@@ -189,10 +189,19 @@ func (a *app) announceHostnames(port int) {
 }
 
 func (a *app) lookupPortOwner(port int) (int, string, bool) {
+	var pid int
+	var name string
+	var known bool
 	if a.rt.portOwner != nil {
-		return a.rt.portOwner(port)
+		pid, name, known = a.rt.portOwner(port)
+	} else {
+		pid, name, known = platform.PortOwner(port)
 	}
-	return platform.PortOwner(port)
+	if known && (pid <= 1 || name == "systemd" || name == "launchd" || name == "init") {
+		a.rt.logger.Printf("Port %d is held by system process %s (PID %d); not offering to quit it", port, name, pid)
+		return pid, name, false
+	}
+	return pid, name, known
 }
 
 func (a *app) askPortTaken(port, pid int, name string, known bool) portDecision {

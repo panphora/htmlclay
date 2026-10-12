@@ -168,3 +168,18 @@ func TestQuitPortOwnerSkipsAFreedPort(t *testing.T) {
 		t.Fatalf("log = %q, want the came-free line", log())
 	}
 }
+
+// Quitting a system process would take down the user's service manager, so a lookup
+// that names one reports no owner at all and the dialog offers a plain Retry.
+func TestSystemProcessesAreNeverOfferedForQuitting(t *testing.T) {
+	a := buildTestApp(t, t.TempDir(), t.TempDir())
+	for _, sys := range []struct {
+		pid  int
+		name string
+	}{{1, "launchd"}, {812, "systemd"}} {
+		a.rt.portOwner = func(int) (int, string, bool) { return sys.pid, sys.name, true }
+		if pid, name, known := a.lookupPortOwner(24190); known {
+			t.Errorf("lookupPortOwner = (%d, %q, %v), want known false for %s", pid, name, known, sys.name)
+		}
+	}
+}

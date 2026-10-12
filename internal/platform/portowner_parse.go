@@ -6,14 +6,41 @@ import (
 	"strings"
 )
 
-// loopbackListener reports whether a listening socket's local address conflicts with a
-// bind on 127.0.0.1 or ::1.
-func loopbackListener(addr string) bool {
+// listenerRank orders a listening socket's local address by how surely it blocks a bind on
+// 127.0.0.1 or ::1: 2 for an exact loopback address, 1 for a wildcard (which on macOS can
+// coexist with an exact bind, so it is only blamed when nothing exact is listening), 0 for
+// anything else, which never conflicts.
+func listenerRank(addr string) int {
 	switch strings.Trim(addr, "[]") {
-	case "127.0.0.1", "::1", "0.0.0.0", "::", "*", "localhost":
-		return true
+	case "127.0.0.1", "::1", "localhost":
+		return 2
+	case "0.0.0.0", "::", "*":
+		return 1
 	}
-	return false
+	return 0
+}
+
+type listenerOwner struct {
+	pid  int
+	name string
+	rank int
+}
+
+// pickOwner returns the first owner with the highest nonzero rank.
+func pickOwner(owners []listenerOwner) (int, string, bool) {
+	best := listenerOwner{}
+	for _, o := range owners {
+		if o.rank > best.rank {
+			best = o
+		}
+	}
+	if best.rank == 0 {
+		return 0, "", false
+	}
+	if best.name == "" {
+		best.name = "PID " + strconv.Itoa(best.pid)
+	}
+	return best.pid, best.name, true
 }
 
 // parseLsof reads `lsof -nP -iTCP:<port> -sTCP:LISTEN -Fpcn`: one field per line,
@@ -21,6 +48,7 @@ func loopbackListener(addr string) bool {
 func parseLsof(out string, port int) (int, string, bool) {
 	suffix := ":" + strconv.Itoa(port)
 	pid, name := 0, ""
+	var owners []listenerOwner
 	for _, line := range strings.Split(out, "\n") {
 		if line == "" {
 			continue
@@ -33,15 +61,12 @@ func parseLsof(out string, port int) (int, string, bool) {
 			name = line[1:]
 		case 'n':
 			addr, ok := strings.CutSuffix(line[1:], suffix)
-			if ok && pid > 0 && loopbackListener(addr) {
-				if name == "" {
-					name = "PID " + strconv.Itoa(pid)
-				}
-				return pid, name, true
+			if ok && pid > 0 {
+				owners = append(owners, listenerOwner{pid, name, listenerRank(addr)})
 			}
 		}
 	}
-	return 0, "", false
+	return pickOwner(owners)
 }
 
 var ssUsers = regexp.MustCompile(`users:\(\("([^"]+)",pid=(\d+)`)
@@ -50,13 +75,14 @@ var ssUsers = regexp.MustCompile(`users:\(\("([^"]+)",pid=(\d+)`)
 // the fourth column, the owner in users:(("name",pid=N,fd=M)).
 func parseSS(out string, port int) (int, string, bool) {
 	suffix := ":" + strconv.Itoa(port)
+	var owners []listenerOwner
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 5 {
 			continue
 		}
 		addr, ok := strings.CutSuffix(f[3], suffix)
-		if !ok || !loopbackListener(addr) {
+		if !ok {
 			continue
 		}
 		m := ssUsers.FindStringSubmatch(line)
@@ -64,18 +90,19 @@ func parseSS(out string, port int) (int, string, bool) {
 			continue
 		}
 		if pid, _ := strconv.Atoi(m[2]); pid > 0 {
-			return pid, m[1], true
+			owners = append(owners, listenerOwner{pid, m[1], listenerRank(addr)})
 		}
 	}
-	return 0, "", false
+	return pickOwner(owners)
 }
 
 // parseNetTCP reads the PowerShell script's output: pid, process name and local address,
 // tab-separated, one listener per line.
 func parseNetTCP(out string) (int, string, bool) {
+	var owners []listenerOwner
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(line, "\r"), "\t")
-		if len(f) != 3 || !loopbackListener(strings.TrimSpace(f[2])) {
+		if len(f) != 3 {
 			continue
 		}
 		pid, _ := strconv.Atoi(strings.TrimSpace(f[0]))
@@ -83,10 +110,7 @@ func parseNetTCP(out string) (int, string, bool) {
 			continue
 		}
 		name := strings.TrimSpace(f[1])
-		if name == "" {
-			name = "PID " + strconv.Itoa(pid)
-		}
-		return pid, name, true
+		owners = append(owners, listenerOwner{pid, name, listenerRank(strings.TrimSpace(f[2]))})
 	}
-	return 0, "", false
+	return pickOwner(owners)
 }

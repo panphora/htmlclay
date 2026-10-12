@@ -671,7 +671,9 @@ func TestSiteSlugsAreCappedButTrustedFoldersSurvive(t *testing.T) {
 
 // A retired slug must never be issued again, so no folder can inherit another's
 // browser storage, but the list cannot grow without bound either.
-func TestRetiredSlugsAreBounded(t *testing.T) {
+// A retired slug must never be issued again, so no folder can inherit another's
+// browser storage, however many labels have been retired since.
+func TestRetiredSlugsAreNeverReissued(t *testing.T) {
 	base := t.TempDir()
 	cfg, _, err := LoadFrom(base, noIdentity)
 	if err != nil {
@@ -685,17 +687,13 @@ func TestRetiredSlugsAreBounded(t *testing.T) {
 			t.Fatalf("ForgetSiteSlug(%q) returned %q, want %q", key, got, slug)
 		}
 	}
-	if got := len(cfg.RetiredSlugs); got != retiredSlugCap {
-		t.Errorf("retired slugs = %d, want %d", got, retiredSlugCap)
+	if got := len(cfg.RetiredSlugs); got != 300 {
+		t.Errorf("retired slugs = %d, want 300", got)
 	}
-	if got := cfg.RetiredSlugs[len(cfg.RetiredSlugs)-1]; got != "slug-299" {
-		t.Errorf("newest retired slug = %q, want %q", got, "slug-299")
-	}
-	if !cfg.SlugInUse("slug-299") {
-		t.Error("the newest retired slug must stay in use")
-	}
-	if cfg.SlugInUse("slug-000") {
-		t.Error("the oldest retired slug should have been dropped")
+	for _, slug := range []string{"slug-000", "slug-299"} {
+		if !cfg.SlugInUse(slug) {
+			t.Errorf("%s must stay in use after 300 retirements", slug)
+		}
 	}
 }
 
@@ -1353,4 +1351,36 @@ func TestProfileConcurrentReads(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// Two keys sharing a slug would put two sites on one hostname; the trusted folder keeps it.
+func TestDuplicateSlugsKeepTheTrustedOwner(t *testing.T) {
+	base := t.TempDir()
+	alpha := filepath.Join(base, "alpha")
+	beta := filepath.Join(base, "beta")
+	gamma := filepath.Join(base, "gamma")
+	for _, dir := range []string{alpha, beta, gamma} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeConfigJSON(t, base, fmt.Sprintf(`{"workspaceFolders":[{"path":%q}],"siteSlugs":{%q:"dup-0001",%q:"dup-0001",%q:"gam-0002"}}`,
+		beta, alpha, beta, gamma))
+
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if got := cfg.SiteSlug(beta); got != "dup-0001" {
+		t.Errorf("trusted folder slug = %q, want dup-0001", got)
+	}
+	if got := cfg.SiteSlug(alpha); got != "" {
+		t.Errorf("the losing key kept its slug: %q, want none", got)
+	}
+	if got := cfg.SiteSlug(gamma); got != "gam-0002" {
+		t.Errorf("an unrelated key lost its slug: %q, want gam-0002", got)
+	}
+	if !cfg.SlugInUse("dup-0001") {
+		t.Error("the label is still issued, so it must stay in use")
+	}
 }

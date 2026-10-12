@@ -541,6 +541,29 @@ func TestFailedRegistrationLeavesNoSite(t *testing.T) {
 	}
 }
 
+// A slug is allocated in the config when the site is built, before the file is
+// registered. An open the session manager then refuses must leave no slug behind, or
+// config.json would record a hidden folder the user never served.
+func TestRefusedOpenRecordsNoSlug(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	private := filepath.Join(home, ".private")
+	hidden := filepath.Join(private, "x.htmlclay")
+	writeTestFile(t, hidden, "<html><body>hidden</body></html>")
+
+	a := newTestApp(t, home)
+	if _, _, ok := a.route(hidden, session.ViaOsOpen); ok {
+		t.Fatal("a file under a dot-directory must not register")
+	}
+	if got := a.rt.cfg.SiteSlug(private); got != "" {
+		t.Errorf("a refused open recorded slug %q for %s", got, private)
+	}
+	for key := range a.rt.cfg.SiteSlugList() {
+		if session.EqualOrUnder(key, private) {
+			t.Errorf("a refused open left %q in the slug map", key)
+		}
+	}
+}
+
 // When a broad read grant and a narrow opened root both cover a path, the
 // explicitly-opened site must win every time. Otherwise a page holding only a
 // read grant could end up hosting a newly opened file and lift its save token.

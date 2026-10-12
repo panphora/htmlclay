@@ -505,6 +505,9 @@ func wireOriginCandidate(origin string) (wireCandidate, error) {
 	if err != nil {
 		return wireCandidate{}, fmt.Errorf("--origin %q needs a port, like http://notes-3f2a.localhost:24190", origin)
 	}
+	if host == "" {
+		return wireCandidate{}, fmt.Errorf("--origin %q has no hostname, like http://notes-3f2a.localhost:24190", origin)
+	}
 	port, err := strconv.Atoi(p)
 	if err != nil || port <= 0 || port > 65535 {
 		return wireCandidate{}, fmt.Errorf("--origin %q: bad port %q", origin, p)

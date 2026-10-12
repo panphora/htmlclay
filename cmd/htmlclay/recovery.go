@@ -93,7 +93,9 @@ func (a *app) ownsOrigin(host string) bool {
 		label, ok := strings.CutSuffix(name, ".localhost")
 		return ok && server.ValidSlug(label)
 	}
-	if name != "localhost" && name != "127.0.0.1" {
+	// Legacy listeners bind only 127.0.0.1, so localhost:<legacy port> may be another
+	// program on ::1.
+	if name != "127.0.0.1" {
 		return false
 	}
 	a.mu.Lock()

@@ -334,12 +334,8 @@ func (c *Config) SitePortList() map[string]int {
 }
 
 // siteSlugCap bounds the slug map the way sitePortCap bounds the legacy one; a slug
-// costs no socket, so the cap is only about config size. retiredSlugCap bounds the
-// list of labels that must never be reissued.
-const (
-	siteSlugCap    = 64
-	retiredSlugCap = 256
-)
+// costs no socket, so the cap is only about config size.
+const siteSlugCap = 64
 
 // Port returns the remembered port, 0 when none has been chosen.
 func (c *Config) Port() int {
@@ -416,6 +412,14 @@ func (c *Config) ForgetSiteSlug(key string) string {
 	return slug
 }
 
+// DropSiteSlug removes key's slug without retiring it. It is for a label that was
+// allocated and never served: no page ever ran on it, so it has no storage to protect.
+func (c *Config) DropSiteSlug(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.SiteSlugs, key)
+}
+
 // RestoreSiteSlug undoes ForgetSiteSlug after a failed save.
 func (c *Config) RestoreSiteSlug(key, slug string) {
 	c.mu.Lock()
@@ -444,7 +448,9 @@ func (c *Config) SiteSlugList() map[string]string {
 	return out
 }
 
-// retireLocked appends slug to RetiredSlugs once, dropping the oldest past the cap.
+// retireLocked appends slug to RetiredSlugs once. The list is never trimmed: a label that
+// left it could be issued again, and the folder that got it would inherit the old origin's
+// browser storage.
 func (c *Config) retireLocked(slug string) {
 	for _, s := range c.RetiredSlugs {
 		if s == slug {
@@ -452,8 +458,37 @@ func (c *Config) retireLocked(slug string) {
 		}
 	}
 	c.RetiredSlugs = append(c.RetiredSlugs, slug)
-	if n := len(c.RetiredSlugs); n > retiredSlugCap {
-		c.RetiredSlugs = c.RetiredSlugs[n-retiredSlugCap:]
+}
+
+// dedupeSiteSlugs keeps one key per slug value. A trusted folder's entry wins, then the
+// lexically first key; the others are deleted, not retired, because the label is still in
+// use, and they get a fresh slug the next time they are opened. Two keys on one label would
+// put two sites on one hostname.
+func (c *Config) dedupeSiteSlugs() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	trusted := make(map[string]bool, len(c.TrustedFolders))
+	for _, w := range c.TrustedFolders {
+		trusted[w.Path] = true
+	}
+	keys := make([]string, 0, len(c.SiteSlugs))
+	for key := range c.SiteSlugs {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if trusted[keys[i]] != trusted[keys[j]] {
+			return trusted[keys[i]]
+		}
+		return keys[i] < keys[j]
+	})
+	owner := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		slug := c.SiteSlugs[key]
+		if owner[slug] {
+			delete(c.SiteSlugs, key)
+			continue
+		}
+		owner[slug] = true
 	}
 }
 
@@ -815,6 +850,7 @@ func LoadFrom(baseDir string, identity func(string) string) (*Config, Result, er
 	res.PinnedIdentities = cfg.backfillIdentities(identity)
 	res.DroppedHelperPrograms, res.DroppedHelperDecisions = cfg.normalizeHelpers()
 	cfg.capSitePorts()
+	cfg.dedupeSiteSlugs()
 	cfg.capSiteSlugs()
 	return cfg, res, nil
 }

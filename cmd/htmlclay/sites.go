@@ -42,12 +42,13 @@ type site struct {
 	anchor string
 	// key is what the slug is remembered under: the anchor, or the file itself for a file
 	// loose in home, where the anchor is shared.
-	key      string
-	slug     string
-	host     string
-	trusted  bool
-	sessions *session.Manager
-	srv      *server.Server
+	key       string
+	slug      string
+	freshSlug bool // the slug was allocated by this build and not yet published
+	host      string
+	trusted   bool
+	sessions  *session.Manager
+	srv       *server.Server
 	// arm opens the site's read root the first time a request is routed to it, rather than
 	// when the site is built. os.OpenRoot pins a directory against rename and delete on
 	// Windows (see close), so with Start on Login and every trusted folder built at launch,
@@ -158,18 +159,20 @@ func (a *app) trustedLive(absPath string) bool {
 // The slug is allocated here, in memory; the caller saves the config when it publishes.
 func (a *app) buildSite(anchor, key, name string, trusted bool) *site {
 	a.mu.Lock()
+	fresh := a.rt.cfg.SiteSlug(key) == ""
 	slug := a.slugForLocked(key, name)
 	a.mu.Unlock()
 	sessions := session.NewManagerWithHome(a.rt.home)
 	sessions.SetGuard(a.rt.guard)
 
 	s := &site{
-		anchor:   anchor,
-		key:      key,
-		slug:     slug,
-		host:     siteHost(slug, a.rt.port),
-		trusted:  trusted,
-		sessions: sessions,
+		anchor:    anchor,
+		key:       key,
+		slug:      slug,
+		freshSlug: fresh,
+		host:      siteHost(slug, a.rt.port),
+		trusted:   trusted,
+		sessions:  sessions,
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.arm = func() {
@@ -212,6 +215,14 @@ func (a *app) originKey(absPath, anchor string) (key, name string) {
 		return absPath, strings.TrimSuffix(base, filepath.Ext(base))
 	}
 	return anchor, filepath.Base(anchor)
+}
+
+// discardPendingLocked closes a site that was built and never published, and drops its
+// slug if this build allocated it, so a refused open records nothing. Caller holds a.mu.
+func (a *app) discardPendingLocked(s *site) {
+	if s.freshSlug {
+		a.rt.cfg.DropSiteSlug(s.key)
+	}
 }
 
 // lookupLocked finds the site where absPath is already registered. Caller holds a.mu.
@@ -322,6 +333,7 @@ func (a *app) route(absPath string, via session.Provenance) (*site, string, bool
 	a.mu.Lock()
 	// Another open may have produced a usable site while we were building.
 	if a.stopping {
+		a.discardPendingLocked(pending)
 		a.mu.Unlock()
 		pending.close()
 		return nil, "", false
@@ -331,12 +343,14 @@ func (a *app) route(absPath string, via session.Provenance) (*site, string, bool
 		// registered this file while we were building, and this call's
 		// provenance still has to land on it.
 		_, _ = a.registerLocked(s, absPath, via)
+		a.discardPendingLocked(pending)
 		a.mu.Unlock()
 		pending.close()
 		return s, rel, true
 	}
 	if s := a.siteForLocked(absPath); s != nil {
 		rel, ok := a.registerLocked(s, absPath, via)
+		a.discardPendingLocked(pending)
 		a.mu.Unlock()
 		pending.close()
 		return s, rel, ok
@@ -347,6 +361,7 @@ func (a *app) route(absPath string, via session.Provenance) (*site, string, bool
 	// write can never land after shutdown has returned.
 	rel, ok := a.registerLocked(pending, absPath, via)
 	if !ok {
+		a.discardPendingLocked(pending)
 		a.mu.Unlock()
 		pending.close()
 		return nil, "", false
