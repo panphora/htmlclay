@@ -16,6 +16,10 @@ import (
 // the user's home directory. Callers use it to surface a clear user-facing error.
 var ErrOutsideHome = errors.New("path is outside home directory")
 
+// ErrRevoked is returned by every capability-granting method after RevokeAll. A site
+// that has been closed must never serve again, however late a request arrives.
+var ErrRevoked = errors.New("session manager revoked")
+
 // Provenance records how a file's registration came to exist, as independent
 // accumulating flags rather than one value. A file can be more than one thing
 // at once — OS-opened AND covered by a trusted folder — and collapsing that
@@ -292,6 +296,8 @@ type Manager struct {
 	// read root (the config dir and the versions/backup dir). It is injected by
 	// the runtime, which knows those paths; the session manager does not.
 	guard func(dir string) bool
+	// revoked is set by RevokeAll and never cleared. Guarded by mu.
+	revoked bool
 }
 
 func NewManager() (*Manager, error) {
@@ -498,6 +504,10 @@ func (m *Manager) Register(absPath string, via Provenance) (*File, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.revoked {
+		return nil, ErrRevoked
+	}
+
 	if m.guard != nil && m.guard(cleaned) {
 		return nil, fmt.Errorf("path %q is in a forbidden location", cleaned)
 	}
@@ -624,6 +634,9 @@ func (m *Manager) Unregister(absPath string) bool {
 // and granted carries both. Returns an error only when a new root's handle cannot
 // be opened; an existing root never fails.
 func (m *Manager) installReadRoot(dir string, kind rootKind) error {
+	if m.revoked {
+		return ErrRevoked
+	}
 	if dir == m.homeDir {
 		return nil
 	}
@@ -906,6 +919,7 @@ func (m *Manager) RevokeAll() {
 			rr.root.Close()
 		}
 	}
+	m.revoked = true
 	m.byToken = make(map[string]*File)
 	m.byPath = make(map[string]string)
 	m.readRoots = make(map[string]*readRoot)

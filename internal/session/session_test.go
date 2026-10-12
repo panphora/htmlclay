@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -160,6 +161,27 @@ func TestRevokeAll(t *testing.T) {
 	_, ok := mgr.Lookup(f.Token)
 	if ok {
 		t.Error("Lookup should return false after RevokeAll")
+	}
+}
+
+func TestRevokedManagerGrantsNothing(t *testing.T) {
+	mgr, home := setupManager(t)
+	if err := os.MkdirAll(filepath.Join(home, "proj"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := createTestFile(t, filepath.Join(home, "proj"), "page.htmlclay")
+	mgr.RevokeAll()
+	if _, err := mgr.Register(path, ViaOsOpen); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("Register after RevokeAll = %v, want ErrRevoked", err)
+	}
+	if err := mgr.InstallTrustedRoot(filepath.Join(home, "proj")); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("InstallTrustedRoot after RevokeAll = %v, want ErrRevoked", err)
+	}
+	if err := mgr.GrantReadRoot(filepath.Join(home, "proj")); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("GrantReadRoot after RevokeAll = %v, want ErrRevoked", err)
+	}
+	if mgr.TrustedCovers(path) {
+		t.Fatal("a revoked manager reports a trusted root")
 	}
 }
 
