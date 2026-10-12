@@ -29,8 +29,7 @@ func TestTrustedFolderSurvivesADeviceRenumbering(t *testing.T) {
 		t.Fatalf("trust: %v", err)
 	}
 	s, rel := first.openForTest(t, page)
-	port := s.port
-	bookmark := fileURL(port, rel)
+	bookmark := s.url(rel)
 	first.shutdown()
 
 	info, err := os.Stat(proj)

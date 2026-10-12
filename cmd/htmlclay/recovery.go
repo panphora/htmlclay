@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,6 +68,29 @@ func (a *app) parkPortWith(anchor string, port int, page []byte) {
 	a.parkPortMode(anchor, port, page, recoveryDead)
 }
 
+// ownsOrigin is the app's OriginOwner (server.EligibleNavigation): every origin this
+// process answers on. Before hostnames that is each live site's two loopback spellings
+// and each parked port's.
+func (a *app) ownsOrigin(host string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, s := range a.sites {
+		for _, h := range server.LoopbackHosts(s.port) {
+			if h == host {
+				return true
+			}
+		}
+	}
+	for _, p := range a.parked {
+		for _, h := range server.LoopbackHosts(p.port) {
+			if h == host {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (a *app) parkPortMode(anchor string, port int, page []byte, kind recoveryKind) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -76,22 +100,26 @@ func (a *app) parkPortMode(anchor string, port int, page []byte, kind recoveryKi
 	p := &parked{anchor: anchor, port: port, ln: ln, kind: kind}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		if kind != recoveryRevoked {
-			if target, ok := a.recoveryTargetFor(anchor, port, r, kind == recoveryDead); ok {
+			if target, ok := a.recoveryTargetFor(anchor, r, kind == recoveryDead); ok {
+				// Origin only, never stripped: the hop this redirect causes is cross-site
+				// to the destination hostname, and the destination admits it only when the
+				// Referer names an origin we own (server.EligibleNavigation).
+				w.Header().Set("Referrer-Policy", "strict-origin")
 				w.Header().Set("Location", target)
 				w.WriteHeader(http.StatusFound)
 				return
 			}
 		}
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		w.Write(page)
 	})
 	p.srv = &http.Server{
-		Handler:           server.HostValidationMiddleware(handler, port),
+		Handler:           server.HostGate(handler, a.ownsOrigin, server.LoopbackHosts(port)...),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -131,27 +159,14 @@ func (a *app) parkPortMode(anchor string, port int, page []byte, kind recoveryKi
 	}
 }
 
-func recoveryNavigation(r *http.Request) bool {
-	if r.Method != http.MethodGet || r.Header.Get("Sec-Fetch-Mode") != "navigate" || r.Header.Get("Sec-Fetch-Dest") != "document" {
-		return false
-	}
-	switch r.Header.Get("Sec-Fetch-Site") {
-	case "none":
-		return true
-	case "same-origin":
-		return r.Header.Get("Sec-Fetch-User") == "?1"
-	default:
-		return false
-	}
-}
-
-func (a *app) recoveryTarget(anchor string, port int, r *http.Request) (string, bool) {
-	return a.recoveryTargetFor(anchor, port, r, false)
-}
-
 // Relocation registers nothing; the destination performs authorization and file lookup.
-func (a *app) recoveryTargetFor(anchor string, port int, r *http.Request, requireSource bool) (string, bool) {
-	if !recoveryNavigation(r) || !server.ValidateHost(r, port) {
+func (a *app) recoveryTargetFor(anchor string, r *http.Request, requireSource bool) (string, bool) {
+	if !server.EligibleNavigation(r, a.ownsOrigin) {
+		return "", false
+	}
+	_, portText, err := net.SplitHostPort(r.Host)
+	port, _ := strconv.Atoi(portText)
+	if err != nil || port == 0 {
 		return "", false
 	}
 	rel := strings.TrimPrefix(r.URL.Path, "/")
@@ -197,7 +212,7 @@ func (a *app) recoveryTargetFor(anchor string, port int, r *http.Request, requir
 			return "", false
 		}
 	}
-	target := fileURL(s.port, rel)
+	target := s.url(rel)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}

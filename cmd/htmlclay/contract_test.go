@@ -240,13 +240,13 @@ func postFrozenPageFrame(t *testing.T, s *site, file, body string) {
 	if !ok {
 		t.Fatalf("open file %s has no session", file)
 	}
-	origin := fmt.Sprintf("http://127.0.0.1:%d", s.port)
+	origin := "http://" + s.host
 	req, err := http.NewRequest(http.MethodPost, origin+"/_/wire/send", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Page-URL", fileURL(s.port, f.RelPath))
+	req.Header.Set("Page-URL", s.url(f.RelPath))
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Origin", origin)
 	resp, err := http.DefaultClient.Do(req)

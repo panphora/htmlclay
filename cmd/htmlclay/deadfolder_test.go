@@ -24,7 +24,7 @@ func TestDeadFolderNeverTakesALiveFoldersPort(t *testing.T) {
 	}
 	s, rel := first.openForTest(t, page)
 	livePort := s.port
-	bookmark := fileURL(livePort, rel)
+	bookmark := s.url(rel)
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
@@ -52,7 +52,7 @@ func TestDeadFolderUnderALiveOneExplainsItsOwnReapproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, rel := first.openForTest(t, page)
-	subBookmark := fileURL(s.port, rel)
+	subBookmark := s.url(rel)
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestUntrustingADeadFolderSwapsItsPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, rel := first.openForTest(t, page)
-	bookmark := fileURL(s.port, rel)
+	bookmark := s.url(rel)
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)

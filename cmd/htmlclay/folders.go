@@ -381,7 +381,7 @@ func (a *app) serveURL(absPath string) (string, bool) {
 	// Browser navigation restores stored permissions; only an explicit file
 	// open should ask the user to approve a new program.
 	a.applyHelperPlan(s, absPath, a.helpersForNavigation(absPath))
-	return fileURL(s.port, rel), true
+	return s.url(rel), true
 }
 
 // confirmTrustRequest raises a two-button dialog through its test seam,

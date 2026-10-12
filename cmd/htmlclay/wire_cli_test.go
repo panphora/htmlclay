@@ -498,7 +498,7 @@ func TestWireWhereFindsTheServingOrigin(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(h.out.String())), &got); err != nil {
 		t.Fatalf("where printed %q, which is not JSON: %v", h.out.String(), err)
 	}
-	if want := fmt.Sprintf("http://127.0.0.1:%d", s.port); got.Origin != want {
+	if want := "http://" + s.host; got.Origin != want {
 		t.Errorf("origin = %q, want %q", got.Origin, want)
 	}
 	if got.File != file {
@@ -850,7 +850,7 @@ func TestWirePortFlagReachesAnUnrememberedOrigin(t *testing.T) {
 	if code := empty.run("where", file, "--port", strconv.Itoa(s.port)); code != wireExitOK {
 		t.Fatalf("where with --port and no config exited %d; stderr:\n%s", code, empty.errs.String())
 	}
-	if !strings.Contains(empty.out.String(), fmt.Sprintf("127.0.0.1:%d", s.port)) {
+	if !strings.Contains(empty.out.String(), s.host) {
 		t.Errorf("where printed %q, which does not name the port it was given", empty.out.String())
 	}
 }
@@ -894,7 +894,7 @@ func TestWireWalksPastAStrangerOnARememberedPort(t *testing.T) {
 	}))
 	// Remembered under the home directory, which contains the file, so it sorts
 	// ahead of the file's own anchor.
-	a := newTestAppWithConfigDir(t, home, cfgBase)
+	a := buildTestApp(t, home, cfgBase)
 	a.rt.cfg.RememberSitePort(home, stranger)
 	if err := a.rt.cfg.Save(); err != nil {
 		t.Fatal(err)
@@ -905,7 +905,7 @@ func TestWireWalksPastAStrangerOnARememberedPort(t *testing.T) {
 		t.Fatalf("where exited %d, want 0; a stranger on a broader anchor hid the origin\nstderr:\n%s",
 			code, h.errs.String())
 	}
-	if !strings.Contains(h.out.String(), fmt.Sprintf("127.0.0.1:%d", s.port)) {
+	if !strings.Contains(h.out.String(), s.host) {
 		t.Errorf("where printed %q, want the real site on port %d", h.out.String(), s.port)
 	}
 }

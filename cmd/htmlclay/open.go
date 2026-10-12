@@ -49,7 +49,7 @@ func (a *app) openFile(filePath string) {
 	}
 	a.applyHelperPlan(s, absPath, helpers)
 
-	target := fileURL(s.port, rel)
+	target := s.url(rel)
 	a.rt.logger.Printf("Serving %s at %s", filepath.Base(absPath), target)
 	a.launchBrowser(target)
 }

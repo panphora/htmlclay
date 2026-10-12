@@ -64,7 +64,7 @@ func recordingHelperProgram(t *testing.T, dir, marker string) string {
 func wireHelperRequest(t *testing.T, s *site, token, id, document string) string {
 	t.Helper()
 	body := fmt.Sprintf(`{"v":1,"type":"wire/request","id":%q,"file":%q,"helper":"search","document":"none","payload":{"query":"clay"}}`, id, document)
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/_/wire/send", s.port), strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, "http://"+s.host+"/_/wire/send", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestHelperDocumentRowsComeFromBookmarkNavigationWithoutAnOsOpen(t *testing.
 		t.Fatal("the fixture registered the document before any navigation")
 	}
 
-	if status, body := fetchNav(t, fileURL(s.port, filepath.Join("proj", "page.htmlclay"))); status != 200 {
+	if status, body := fetchNav(t, s.url(filepath.Join("proj", "page.htmlclay"))); status != 200 {
 		t.Fatalf("bookmark navigation = %d: %s", status, body)
 	}
 	if _, ok := s.sessions.LookupByPath(document); !ok {
@@ -201,7 +201,7 @@ func TestHelperDocumentConfigureReusesAnExistingRegistration(t *testing.T) {
 		t.Fatalf("decisions = %+v", decisions)
 	}
 
-	restarted := newTestAppWithConfigDir(t, home, cfgBase)
+	restarted := buildTestApp(t, home, cfgBase)
 	resolution, found := restarted.rt.cfg.ResolveHelper(document, "search")
 	if !found || !resolution.Decided || !resolution.Allowed || resolution.Program.ID != program.ID {
 		t.Fatalf("resolution after a restart = %+v, %v", resolution, found)
@@ -745,7 +745,7 @@ func TestHelperDocumentConfigureRefusesADocumentThatChangedDuringTheDialog(t *te
 				t.Fatal(err)
 			}
 			s := liveSite(t, a, folder)
-			if status, body := fetchNav(t, fileURL(s.port, filepath.Join("proj", "page.htmlclay"))); status != 200 {
+			if status, body := fetchNav(t, s.url(filepath.Join("proj", "page.htmlclay"))); status != 200 {
 				t.Fatalf("bookmark navigation = %d: %s", status, body)
 			}
 			if _, ok := s.sessions.LookupByPath(document); !ok {

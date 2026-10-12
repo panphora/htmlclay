@@ -41,14 +41,18 @@ import (
 // them anchors at home) and a map write silently dropped the previous live site,
 // orphaning its listener and letting one file be registered twice.
 type site struct {
-	anchor   string
-	trusted  bool
-	ln       net.Listener
-	port     int
+	anchor  string
+	trusted bool
+	ln      net.Listener
+	port    int
+	// host is the Host header value the site answers to, and the authority of every URL it hands out.
+	host     string
 	sessions *session.Manager
 	srv      *server.Server
 	armOnce  sync.Once
 }
+
+func (s *site) url(rel string) string { return fileURL(s.host, rel) }
 
 func (s *site) start(logger *logging.Logger) {
 	logger.Printf("Server listening on 127.0.0.1:%d", s.port)
@@ -199,6 +203,7 @@ func (a *app) buildSite(anchor string, trusted bool) (*site, error) {
 		port:     ln.Addr().(*net.TCPAddr).Port,
 		sessions: sessions,
 	}
+	s.host = fmt.Sprintf("127.0.0.1:%d", s.port)
 	s.ln = &armingListener{Listener: ln, arm: func() {
 		s.armOnce.Do(func() {
 			// The parameter, deliberately, not s.trusted: this runs on an Accept
@@ -550,14 +555,14 @@ func (a *app) shutdown() {
 	}
 }
 
-func fileURL(port int, relPath string) string {
+func fileURL(host, relPath string) string {
 	// relPath is a decoded filesystem-relative path, so assigning it to Path
 	// escapes a literal percent exactly once. ToSlash is still needed on Windows,
 	// where filepath.Rel hands back backslashes: Path would encode those as %5C
 	// and every relative asset in the page would resolve against the server root.
 	return (&url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("127.0.0.1:%d", port),
+		Host:   host,
 		Path:   "/" + filepath.ToSlash(relPath),
 	}).String()
 }

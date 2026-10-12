@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -63,10 +65,18 @@ func newTestApp(t *testing.T, home string) *app {
 	return newTestAppWithConfigDir(t, home, t.TempDir())
 }
 
-// newTestAppWithConfigDir builds an app whose config lives in a caller-chosen
+// newTestAppWithConfigDir is buildTestApp plus a bound listener. A test that only reads
+// or edits config while another app on the same cfgBase is still running uses
+// buildTestApp, so it never contends for that app's port.
+func newTestAppWithConfigDir(t *testing.T, home, cfgBase string) *app {
+	t.Helper()
+	return buildTestApp(t, home, cfgBase)
+}
+
+// buildTestApp builds an app whose config lives in a caller-chosen
 // directory, so two app instances can share one config.json and a restart can
 // be simulated.
-func newTestAppWithConfigDir(t *testing.T, home, cfgBase string) *app {
+func buildTestApp(t *testing.T, home, cfgBase string) *app {
 	t.Helper()
 	logger := logging.NewStdout()
 	store := versions.New(t.TempDir())
@@ -120,6 +130,20 @@ func newTestAppWithConfigDir(t *testing.T, home, cfgBase string) *app {
 		}
 	})
 	return a
+}
+
+// loopbackTransport dials every host at 127.0.0.1 on the URL's port, so a test never
+// depends on how this machine resolves *.localhost. Installed as http.DefaultTransport by
+// TestMain, which covers http.Get, http.DefaultClient and every client literal that names
+// no Transport of its own (browserClient, the noRedirect clients).
+func loopbackTransport() *http.Transport {
+	return &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		_, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		return (&net.Dialer{}).DialContext(ctx, "tcp", "127.0.0.1:"+port)
+	}}
 }
 
 // hostOf returns the live site holding absPath. Untrusting a folder closes its
@@ -199,11 +223,11 @@ func TestUnrelatedTreesGetSeparateOrigins(t *testing.T) {
 	siteA, relA := a.openForTest(t, fileA)
 	siteB, relB := a.openForTest(t, fileB)
 
-	if siteA.port == siteB.port {
-		t.Fatalf("unrelated trees must not share a port (both on %d)", siteA.port)
+	if siteA.host == siteB.host {
+		t.Fatalf("unrelated trees must not share an origin (both on %s)", siteA.host)
 	}
 
-	code, body := fetch(t, fileURL(siteA.port, relA))
+	code, body := fetch(t, siteA.url(relA))
 	if code != 200 || !strings.Contains(body, "alpha") {
 		t.Errorf("site A should serve its own page: got %d, %q", code, body)
 	}
@@ -211,10 +235,10 @@ func TestUnrelatedTreesGetSeparateOrigins(t *testing.T) {
 		t.Error("served page should carry a save token")
 	}
 
-	if code, _ := fetch(t, fileURL(siteA.port, relB)); code == 200 {
+	if code, _ := fetch(t, siteA.url(relB)); code == 200 {
 		t.Error("site A must not serve site B's file")
 	}
-	if code, _ := fetch(t, fileURL(siteB.port, relA)); code == 200 {
+	if code, _ := fetch(t, siteB.url(relA)); code == 200 {
 		t.Error("site B must not serve site A's file")
 	}
 }
@@ -280,7 +304,7 @@ func TestGrantedCousinTokenUnreachableFromGrantingOrigin(t *testing.T) {
 	relCousin := filepath.Join("work", "review", "codex", "index.html")
 
 	// From the granting origin: readable via the grant, but token-free.
-	code, body := fetch(t, fileURL(granting.port, relCousin))
+	code, body := fetch(t, granting.url(relCousin))
 	if code != 200 {
 		t.Fatalf("granting origin should still read the cousin via the grant: got %d", code)
 	}
@@ -289,7 +313,7 @@ func TestGrantedCousinTokenUnreachableFromGrantingOrigin(t *testing.T) {
 	}
 
 	// From the cousin's own origin: served self-saving, with a token.
-	codeOwn, bodyOwn := fetch(t, fileURL(cousinSite.port, relCousin))
+	codeOwn, bodyOwn := fetch(t, cousinSite.url(relCousin))
 	if codeOwn != 200 || !strings.Contains(bodyOwn, "savetoken") {
 		t.Errorf("the cousin's own origin should serve it self-saving: got %d", codeOwn)
 	}
@@ -308,7 +332,7 @@ func TestGrantedAssetIsServedWithoutToken(t *testing.T) {
 	s, _ := a.openForTest(t, page)
 
 	relAsset := filepath.Join("work", "review", "redpen.js")
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code == 200 {
+	if code, _ := fetch(t, s.url(relAsset)); code == 200 {
 		t.Error("asset outside the opened folder should not be readable yet")
 	}
 
@@ -316,7 +340,7 @@ func TestGrantedAssetIsServedWithoutToken(t *testing.T) {
 		t.Fatalf("grant: %v", err)
 	}
 
-	code, body := fetch(t, fileURL(s.port, relAsset))
+	code, body := fetch(t, s.url(relAsset))
 	if code != 200 || !strings.Contains(body, "redpen") {
 		t.Fatalf("granted asset should be readable: got %d, %q", code, body)
 	}
@@ -340,7 +364,7 @@ func TestOutOfScopeAssetPromptsThenResumesOnAllow(t *testing.T) {
 	s, _ := a.openForTest(t, page)
 
 	relAsset := filepath.Join("work", "review", "shared", "redpen.js")
-	code, body := fetch(t, fileURL(s.port, relAsset))
+	code, body := fetch(t, s.url(relAsset))
 	if code != 200 || !strings.Contains(body, "redpen") {
 		t.Fatalf("an allowed out-of-scope asset should resume with 200: got %d, %q", code, body)
 	}
@@ -382,7 +406,7 @@ func TestPromptNamesTheFolderItGrants(t *testing.T) {
 	}
 	s, _ := a.openForTest(t, page)
 
-	if code, _ := fetch(t, fileURL(s.port, filepath.Join("alias", "notes.js"))); code != 200 {
+	if code, _ := fetch(t, s.url(filepath.Join("alias", "notes.js"))); code != 200 {
 		t.Fatalf("the aliased asset should resume with 200 after Allow, got %d", code)
 	}
 
@@ -434,7 +458,7 @@ func TestActiveGrantsListsAndRevokesRuntimeGrants(t *testing.T) {
 	s, _ := a.openForTest(t, page)
 
 	relAsset := filepath.Join("work", "review", "shared", "redpen.js")
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 200 {
+	if code, _ := fetch(t, s.url(relAsset)); code != 200 {
 		t.Fatalf("an allowed out-of-scope asset should resume 200, got %d", code)
 	}
 
@@ -449,7 +473,7 @@ func TestActiveGrantsListsAndRevokesRuntimeGrants(t *testing.T) {
 		t.Fatal("revoking the granted root should leave the asset uncovered")
 	}
 
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 403 {
+	if code, _ := fetch(t, s.url(relAsset)); code != 403 {
 		t.Errorf("a revoked grant must refuse the asset again, got %d", code)
 	}
 }
@@ -561,7 +585,7 @@ func TestConfigDirIsRefusedOnServePath(t *testing.T) {
 
 	for _, name := range []string{"config.json", "htmlclay.log"} {
 		rel := filepath.Join("Library", "Application Support", "htmlclay", name)
-		if code, _ := fetch(t, fileURL(s.port, rel)); code != 404 {
+		if code, _ := fetch(t, s.url(rel)); code != 404 {
 			t.Errorf("%s must be refused on the serve path, got %d", name, code)
 		}
 	}
@@ -646,13 +670,13 @@ func TestFileOpenedFromTrustedFolderServesTreeWithoutPrompt(t *testing.T) {
 
 	s, rel := a.openForTest(t, page)
 
-	codePage, bodyPage := fetch(t, fileURL(s.port, rel))
+	codePage, bodyPage := fetch(t, s.url(rel))
 	if codePage != 200 || !strings.Contains(bodyPage, "savetoken") {
 		t.Errorf("a file opened from a trusted folder should still self-save: got %d", codePage)
 	}
 
 	relAsset := filepath.Join("sites", "shared", "lib.js")
-	code, body := fetch(t, fileURL(s.port, relAsset))
+	code, body := fetch(t, s.url(relAsset))
 	if code != 200 || !strings.Contains(body, "lib") {
 		t.Fatalf("an asset anywhere in the trusted folder should serve with no prompt: got %d, %q", code, body)
 	}
@@ -683,7 +707,7 @@ func TestFileOpenedOutsideTrustedFoldersGetsNoTrustedReads(t *testing.T) {
 	s, _ := a.openForTest(t, page)
 
 	relTrusted := filepath.Join("sites", "secret.js")
-	if code, body := fetch(t, fileURL(s.port, relTrusted)); code == 200 {
+	if code, body := fetch(t, s.url(relTrusted)); code == 200 {
 		t.Errorf("a page opened outside every trusted folder must not silently read one: got 200, %q", body)
 	}
 }
@@ -709,7 +733,7 @@ func TestTrustFolderBelowOpenSiteGrantsImmediately(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 	nav := func() *http.Response {
-		req, _ := http.NewRequest("GET", fileURL(s.port, relNested), nil)
+		req, _ := http.NewRequest("GET", s.url(relNested), nil)
 		req.Header.Set("Sec-Fetch-Dest", "document")
 		req.Header.Set("Sec-Fetch-User", "?1")
 		resp, err := noRedirect.Do(req)
@@ -742,7 +766,7 @@ func TestTrustFolderBelowOpenSiteGrantsImmediately(t *testing.T) {
 	if loc == "" {
 		t.Fatal("the redirect carried no Location")
 	}
-	if strings.Contains(loc, fmt.Sprintf(":%d/", s.port)) {
+	if strings.Contains(loc, s.host+"/") {
 		t.Fatalf("the trusted folder must own its own origin, not the opening site's: %s", loc)
 	}
 	code, body := fetchNav(t, loc)
@@ -771,7 +795,7 @@ func TestUntrustFolderLiveRevokesFromOpenSite(t *testing.T) {
 		t.Fatalf("a file in a trusted folder should anchor there: got %q", s.anchor)
 	}
 
-	code, body := fetch(t, fileURL(s.port, rel))
+	code, body := fetch(t, s.url(rel))
 	if code != 200 {
 		t.Fatalf("the trusted page should serve: %d", code)
 	}
@@ -779,7 +803,7 @@ func TestUntrustFolderLiveRevokesFromOpenSite(t *testing.T) {
 	if tok == nil {
 		t.Fatal("no save token on the trusted page")
 	}
-	saveURL := fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1])
+	saveURL := "http://" + s.host + "/_/save/" + tok[1]
 	if code, out := postSameOrigin(t, saveURL, "text/html", "<html><body>edited</body></html>"); code != 200 {
 		t.Fatalf("save while trusted = %d: %s", code, out)
 	}
@@ -899,7 +923,7 @@ func TestPromptTrustChoiceRecordsAnOrdinaryFolder(t *testing.T) {
 	s, _ := a.openForTest(t, page)
 
 	relAsset := filepath.Join("work", "review", "shared", "redpen.js")
-	code, body := fetch(t, fileURL(s.port, relAsset))
+	code, body := fetch(t, s.url(relAsset))
 	if code != 200 || !strings.Contains(body, "redpen") {
 		t.Fatalf("a trusted out-of-scope asset should resume 200: got %d, %q", code, body)
 	}
@@ -937,7 +961,7 @@ func TestPromptTrustChoiceRefusesAPersonalFolder(t *testing.T) {
 	}
 	s, _ := a.openForTest(t, page)
 
-	code, body := fetch(t, fileURL(s.port, filepath.Join("Documents", "lib.js")))
+	code, body := fetch(t, s.url(filepath.Join("Documents", "lib.js")))
 	if code != 200 || !strings.Contains(body, "lib") {
 		t.Fatalf("the read itself should still resume: got %d, %q", code, body)
 	}
@@ -983,7 +1007,7 @@ func TestUntrustingAPromptTrustedFolderEndsTheRead(t *testing.T) {
 	s, _ := a.openForTest(t, page)
 
 	relAsset := filepath.Join("work", "review", "shared", "redpen.js")
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 200 {
+	if code, _ := fetch(t, s.url(relAsset)); code != 200 {
 		t.Fatalf("a trusted out-of-scope asset should resume 200, got %d", code)
 	}
 	shared := filepath.Join(home, "work", "review", "shared")
@@ -992,7 +1016,7 @@ func TestUntrustingAPromptTrustedFolderEndsTheRead(t *testing.T) {
 	if err := a.untrustFolder(shared); err != nil {
 		t.Fatalf("untrust: %v", err)
 	}
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code == 200 {
+	if code, _ := fetch(t, s.url(relAsset)); code == 200 {
 		t.Error("removing a folder from Trusted Folders must end the read access that same click granted")
 	}
 }
@@ -1021,7 +1045,7 @@ func TestServeAssetSymlinkIntoConfigTreeRefused(t *testing.T) {
 	}
 	s, _ := a.openForTest(t, page) // opened root ~/Library covers the config dir
 
-	code, body := fetch(t, fileURL(s.port, filepath.Join("Library", "sneak.js")))
+	code, body := fetch(t, s.url(filepath.Join("Library", "sneak.js")))
 	if code != 404 {
 		t.Errorf("a symlink into the config tree must be refused with 404, got %d", code)
 	}
@@ -1050,18 +1074,18 @@ func TestUntrustFolderClearsConfigAndRevokesServe(t *testing.T) {
 	s, rel := a.openForTest(t, page)
 
 	relAsset := filepath.Join("sites", "shared", "lib.js")
-	if code, _ := fetch(t, fileURL(s.port, relAsset)); code != 200 {
+	if code, _ := fetch(t, s.url(relAsset)); code != 200 {
 		t.Fatal("the trusted asset should serve while the folder is trusted")
 	}
 	if !hasFolder(a.rt.cfg.TrustedFolderList(), sitesDir) {
 		t.Fatalf("config should list the trusted folder before untrust: %v", a.rt.cfg.TrustedFolderList())
 	}
-	_, body := fetch(t, fileURL(s.port, rel))
+	_, body := fetch(t, s.url(rel))
 	tok := tokenAttrRe.FindStringSubmatch(body)
 	if tok == nil {
 		t.Fatal("no save token on the trusted page")
 	}
-	saveURL := fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1])
+	saveURL := "http://" + s.host + "/_/save/" + tok[1]
 
 	if err := a.untrustFolder(sitesDir); err != nil {
 		t.Fatalf("untrust: %v", err)
@@ -1107,8 +1131,8 @@ func TestOutOfScopeMissingAndPresentAreIndistinguishable(t *testing.T) {
 	a.rt.confirm = countingDenyConfirm(&prompts)
 	s, _ := a.openForTest(t, page)
 
-	codePresent, hdrPresent, bodyPresent := fetchFull(t, fileURL(s.port, filepath.Join("present-tree", "present.txt")))
-	codeMissing, hdrMissing, bodyMissing := fetchFull(t, fileURL(s.port, filepath.Join("missing-tree", "missing.txt")))
+	codePresent, hdrPresent, bodyPresent := fetchFull(t, s.url(filepath.Join("present-tree", "present.txt")))
+	codeMissing, hdrMissing, bodyMissing := fetchFull(t, s.url(filepath.Join("missing-tree", "missing.txt")))
 
 	if got := atomic.LoadInt32(&prompts); got != 2 {
 		t.Errorf("both out-of-scope reads must park and prompt, got %d prompts", got)
@@ -1142,7 +1166,7 @@ func TestInScopeMissingAssetIs404(t *testing.T) {
 	a.rt.confirm = countingDenyConfirm(&prompts)
 	s, _ := a.openForTest(t, page)
 
-	if code, _ := fetch(t, fileURL(s.port, filepath.Join("site", "missing.css"))); code != 404 {
+	if code, _ := fetch(t, s.url(filepath.Join("site", "missing.css"))); code != 404 {
 		t.Errorf("a missing in-scope asset must 404, got %d", code)
 	}
 	if got := atomic.LoadInt32(&prompts); got != 0 {
@@ -1177,7 +1201,7 @@ func TestInternalPathIs404WhetherPresentOrMissing(t *testing.T) {
 
 	base := filepath.Join("Library", "Application Support", "htmlclay")
 	for _, name := range []string{"config.json", "nothing-here.json"} {
-		code, body := fetch(t, fileURL(s.port, filepath.Join(base, name)))
+		code, body := fetch(t, s.url(filepath.Join(base, name)))
 		if code != 404 {
 			t.Errorf("%s must be refused with 404, got %d", name, code)
 		}
@@ -1216,9 +1240,7 @@ func TestEncodedTraversalIntoConfigTreeIs404NotAPrompt(t *testing.T) {
 
 	// Built by hand: fileURL runs url.JoinPath, which would collapse the traversal
 	// before it was ever sent.
-	target := fmt.Sprintf(
-		"http://127.0.0.1:%d/site/nothing.html/%%2e%%2e/%%2e%%2e/Library/Application%%20Support/htmlclay/config.json",
-		s.port)
+	target := "http://" + s.host + "/site/nothing.html/%2e%2e/%2e%2e/Library/Application%20Support/htmlclay/config.json"
 	code, body := fetch(t, target)
 	if code != 404 {
 		t.Errorf("a traversal into the config tree must be refused with 404, got %d", code)
@@ -1251,7 +1273,7 @@ func TestHiddenPathIs404WhetherPresentOrMissing(t *testing.T) {
 		filepath.Join("other", ".git", "config"), // present, hidden directory
 		filepath.Join("other", ".missing"),       // absent
 	} {
-		code, body := fetch(t, fileURL(s.port, rel))
+		code, body := fetch(t, s.url(rel))
 		if code != 404 {
 			t.Errorf("%s must be refused with 404, got %d", rel, code)
 		}
@@ -1286,7 +1308,7 @@ func TestAssetResolvingOutsideItsRootIs404NotAPrompt(t *testing.T) {
 	a.rt.confirm = countingDenyConfirm(&prompts)
 	s, _ := a.openForTest(t, page)
 
-	code, body := fetch(t, fileURL(s.port, filepath.Join("site", "link.txt")))
+	code, body := fetch(t, s.url(filepath.Join("site", "link.txt")))
 	if code != 404 {
 		t.Errorf("a symlink resolving outside every read root must 404, got %d", code)
 	}
@@ -1416,7 +1438,7 @@ func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 	s, _ := a.openForTest(t, page)
 
 	relSibling := filepath.Join("site", "week.htmlclay")
-	target := fileURL(s.port, relSibling)
+	target := s.url(relSibling)
 
 	code, body := fetchNav(t, target)
 	if code != 200 || !strings.Contains(body, "htmlclay-banner") {
@@ -1430,7 +1452,7 @@ func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 		t.Fatalf("no nonce in banner: %q", body)
 	}
 
-	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/open-request", s.port),
+	code, out := postSameOrigin(t, "http://"+s.host+"/_/open-request",
 		"application/json", `{"nonce":"`+m[1]+`"}`)
 	if code != 200 || !strings.Contains(out, `"ok":true`) {
 		t.Fatalf("open-request failed: %d %s", code, out)
@@ -1466,7 +1488,7 @@ func TestOpenBannerFlowOpensSiblingInPlace(t *testing.T) {
 	if tok == nil {
 		t.Fatal("no token in editable serve")
 	}
-	if code, outSave := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
+	if code, outSave := postSameOrigin(t, "http://"+s.host+"/_/save/"+tok[1],
 		"text/html", "<html><body>week, edited</body></html>"); code != 200 {
 		t.Fatalf("the trusted sibling should save: %d %s", code, outSave)
 	}
@@ -1493,7 +1515,7 @@ func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
 	}
 
 	relCousin := filepath.Join("work", "codex", "notes.htmlclay")
-	code, body := fetchNav(t, fileURL(granting.port, relCousin))
+	code, body := fetchNav(t, granting.url(relCousin))
 	if code != 200 || !strings.Contains(body, "htmlclay-banner") {
 		t.Fatalf("grant-covered cousin should get the banner: %d", code)
 	}
@@ -1502,7 +1524,7 @@ func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
 		t.Fatal("no nonce")
 	}
 
-	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/open-request", granting.port),
+	code, out := postSameOrigin(t, "http://"+granting.host+"/_/open-request",
 		"application/json", `{"nonce":"`+m[1]+`"}`)
 	if code != 200 {
 		t.Fatalf("open-request = %d: %s", code, out)
@@ -1511,7 +1533,7 @@ func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
 		URL string `json:"url"`
 	}
 	json.Unmarshal([]byte(out), &resp)
-	if strings.Contains(resp.URL, fmt.Sprintf(":%d/", granting.port)) {
+	if strings.Contains(resp.URL, granting.host+"/") {
 		t.Fatalf("grant-only cousin opened on the granting origin: %s", resp.URL)
 	}
 	if len(a.sites) != 2 {
@@ -1527,7 +1549,7 @@ func TestOpenRequestGrantOnlyFileGetsFreshOrigin(t *testing.T) {
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	fromGranting, err := noRedirect.Get(fileURL(granting.port, relCousin))
+	fromGranting, err := noRedirect.Get(granting.url(relCousin))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1572,7 +1594,7 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 	s, _ := a.openForTest(t, index)
 
 	relWeek := filepath.Join("thelaunch", "weeks", "week-02.htmlclay")
-	code, body := fetchNav(t, fileURL(s.port, relWeek))
+	code, body := fetchNav(t, s.url(relWeek))
 	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("trusted-folder link should serve editable with no prompt: %d", code)
 	}
@@ -1590,7 +1612,7 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 	if tok == nil {
 		t.Fatal("no token")
 	}
-	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", s.port, tok[1]),
+	code, out := postSameOrigin(t, "http://"+s.host+"/_/save/"+tok[1],
 		"text/html", "<html><body>week two, edited</body></html>")
 	if code != 200 {
 		t.Fatalf("trusted-folder save = %d: %s", code, out)
@@ -1604,7 +1626,7 @@ func TestWorkspaceLinksOpenEditableInPlace(t *testing.T) {
 	// but no token and no registration.
 	other := filepath.Join(ws, "notes.htmlclay")
 	writeTestFile(t, other, "<html><body>notes</body></html>")
-	code, body = fetchAsSubresource(t, fileURL(s.port, filepath.Join("thelaunch", "notes.htmlclay")))
+	code, body = fetchAsSubresource(t, s.url(filepath.Join("thelaunch", "notes.htmlclay")))
 	if code != 200 {
 		t.Fatalf("trusted-folder fetch = %d", code)
 	}
@@ -1647,8 +1669,8 @@ func TestWorkspaceFileNeverRegisteredInTwoSites(t *testing.T) {
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	nav := func(port int) *http.Response {
-		req, _ := http.NewRequest("GET", fileURL(port, relShared), nil)
+	nav := func(host string) *http.Response {
+		req, _ := http.NewRequest("GET", fileURL(host, relShared), nil)
 		req.Header.Set("Sec-Fetch-Dest", "document")
 		req.Header.Set("Sec-Fetch-User", "?1")
 		resp, err := noRedirect.Do(req)
@@ -1658,8 +1680,8 @@ func TestWorkspaceFileNeverRegisteredInTwoSites(t *testing.T) {
 		return resp
 	}
 
-	respA := nav(siteA.port)
-	respB := nav(siteB.port)
+	respA := nav(siteA.host)
+	respB := nav(siteB.host)
 	defer respA.Body.Close()
 	defer respB.Body.Close()
 
@@ -1715,7 +1737,7 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 	}
 	s, _ := a.openForTest(t, index)
 
-	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
+	code, body := fetch(t, s.url(filepath.Join("proj", "index.htmlclay")))
 	if code != 200 {
 		t.Fatal("index serve failed")
 	}
@@ -1724,7 +1746,7 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 		t.Fatal("no token on the OS-opened page")
 	}
 
-	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, tok[1]), "", "")
+	code, out := postSameOrigin(t, "http://"+s.host+"/_/workspace-request/"+tok[1], "", "")
 	if code != 200 || !strings.Contains(out, `"ok":true`) {
 		t.Fatalf("workspace-request = %d: %s", code, out)
 	}
@@ -1752,7 +1774,7 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 	}
 
 	// The trusted folder now auto-registers its files.
-	code, body = fetchNav(t, fileURL(s.port, filepath.Join("proj", "week.htmlclay")))
+	code, body = fetchNav(t, s.url(filepath.Join("proj", "week.htmlclay")))
 	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatal("a trusted folder should auto-register its files")
 	}
@@ -1763,7 +1785,7 @@ func TestWorkspaceRequestFromPagePromotesFolder(t *testing.T) {
 	if s.sessions.Via(week) != session.ViaTrusted {
 		t.Fatalf("week provenance = %v", s.sessions.Via(week))
 	}
-	code, out = postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, weekTok[1]), "", "")
+	code, out = postSameOrigin(t, "http://"+s.host+"/_/workspace-request/"+weekTok[1], "", "")
 	if code != 200 || !strings.Contains(out, `"ok":true`) {
 		t.Fatalf("covered sibling ask = %d: %s", code, out)
 	}
@@ -1799,7 +1821,7 @@ func TestWorkspaceRequestRepinsReplacedFolder(t *testing.T) {
 	}
 	s, _ := a.openForTest(t, index)
 
-	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
+	code, body := fetch(t, s.url(filepath.Join("proj", "index.htmlclay")))
 	if code != 200 {
 		t.Fatal("index serve failed")
 	}
@@ -1807,7 +1829,7 @@ func TestWorkspaceRequestRepinsReplacedFolder(t *testing.T) {
 	if tok == nil {
 		t.Fatal("no token on the OS-opened page")
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, tok[1])
+	url := "http://" + s.host + "/_/workspace-request/" + tok[1]
 
 	if code, out := postSameOrigin(t, url, "", ""); code != 200 {
 		t.Fatalf("first trust request = %d: %s", code, out)
@@ -1874,7 +1896,7 @@ func TestWorkspaceRequestAlreadyCoveredSkipsDialog(t *testing.T) {
 	}
 	s, _ := a.openForTest(t, index)
 
-	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
+	code, body := fetch(t, s.url(filepath.Join("proj", "index.htmlclay")))
 	if code != 200 {
 		t.Fatal("index serve failed")
 	}
@@ -1882,7 +1904,7 @@ func TestWorkspaceRequestAlreadyCoveredSkipsDialog(t *testing.T) {
 	if tok == nil {
 		t.Fatal("no token on the OS-opened page")
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, tok[1])
+	url := "http://" + s.host + "/_/workspace-request/" + tok[1]
 
 	if code, out := postSameOrigin(t, url, "", ""); code != 200 {
 		t.Fatalf("first trust request = %d: %s", code, out)
@@ -1967,7 +1989,7 @@ func TestRemoveWorkspaceEndsCapability(t *testing.T) {
 	s, _ := a.openForTest(t, index)
 
 	relWeek := filepath.Join("ws", "week.htmlclay")
-	_, body := fetchNav(t, fileURL(s.port, relWeek))
+	_, body := fetchNav(t, s.url(relWeek))
 	tok := tokenAttrRe.FindStringSubmatch(body)
 	if tok == nil {
 		t.Fatal("trusted-folder file did not auto-register")
@@ -1983,14 +2005,14 @@ func TestRemoveWorkspaceEndsCapability(t *testing.T) {
 	if _, ok := host.sessions.LookupByPath(week); ok {
 		t.Fatal("the auto-registered file survived the untrust")
 	}
-	if code := postAllowingFailure(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", host.port, tok[1]),
+	if code := postAllowingFailure(t, "http://"+host.host+"/_/save/"+tok[1],
 		"text/html", "<html><body>worm</body></html>"); code == 200 {
 		t.Fatal("a token minted under the trust must not save after the untrust")
 	}
-	if code, body := fetchNav(t, fileURL(host.port, relWeek)); code != 200 || strings.Contains(body, "savetoken") {
+	if code, body := fetchNav(t, host.url(relWeek)); code != 200 || strings.Contains(body, "savetoken") {
 		t.Fatalf("the untrusted folder's file should serve read-only: %d", code)
 	}
-	if code, body := fetch(t, fileURL(host.port, filepath.Join("ws", "index.htmlclay"))); code != 200 || !strings.Contains(body, "savetoken") {
+	if code, body := fetch(t, host.url(filepath.Join("ws", "index.htmlclay"))); code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatal("OS-opened file should still serve editable")
 	}
 
@@ -2026,7 +2048,7 @@ func TestOpeningAWorkspaceFileRecordsTheOpen(t *testing.T) {
 	a.rt.confirmTrust = func(string, string, string) (bool, error) { return true, nil }
 	s, _ := a.openForTest(t, index)
 
-	code, body := fetch(t, fileURL(s.port, filepath.Join("proj", "index.htmlclay")))
+	code, body := fetch(t, s.url(filepath.Join("proj", "index.htmlclay")))
 	if code != 200 {
 		t.Fatal("index serve failed")
 	}
@@ -2034,11 +2056,11 @@ func TestOpeningAWorkspaceFileRecordsTheOpen(t *testing.T) {
 	if tok == nil {
 		t.Fatal("no token on the OS-opened page")
 	}
-	if code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/workspace-request/%s", s.port, tok[1]), "", ""); code != 200 || !strings.Contains(out, `"ok":true`) {
+	if code, out := postSameOrigin(t, "http://"+s.host+"/_/workspace-request/"+tok[1], "", ""); code != 200 || !strings.Contains(out, `"ok":true`) {
 		t.Fatalf("trust request = %d: %s", code, out)
 	}
 
-	code, body = fetchNav(t, fileURL(s.port, filepath.Join("proj", "week.htmlclay")))
+	code, body = fetchNav(t, s.url(filepath.Join("proj", "week.htmlclay")))
 	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatal("a trusted folder should auto-register its files")
 	}
@@ -2075,7 +2097,7 @@ func TestOpeningAWorkspaceFileRecordsTheOpen(t *testing.T) {
 	if !ok {
 		t.Fatal("untrusting the folder revoked a file the user had opened themselves: the open never accumulated onto the existing registration")
 	}
-	code, out := postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/save/%s", host.port, f.Token),
+	code, out := postSameOrigin(t, "http://"+host.host+"/_/save/"+f.Token,
 		"text/html", "<html><body>week, edited</body></html>")
 	if code != 200 {
 		t.Fatalf("save after the untrust = %d: %s; the user's own open must keep the file saveable", code, out)
@@ -2146,6 +2168,7 @@ func TestUntrustMovesTheSurvivorToANewAddress(t *testing.T) {
 	}
 	s, _ := a.openForTest(t, mine)
 	before := s.port
+	host := s.host
 
 	if err := a.untrustFolder(proj); err != nil {
 		t.Fatalf("untrust: %v", err)
@@ -2158,7 +2181,7 @@ func TestUntrustMovesTheSurvivorToANewAddress(t *testing.T) {
 		t.Errorf("the untrusted folder's port must not stay remembered, still %d", remembered)
 	}
 	// The freed address degrades to the recovery page rather than serving a file.
-	code, body := fetchNav(t, fmt.Sprintf("http://127.0.0.1:%d/proj/mine.htmlclay", before))
+	code, body := fetchNav(t, "http://"+host+"/proj/mine.htmlclay")
 	if code != 404 || !strings.Contains(body, "Nothing is open at this address") {
 		t.Fatalf("the freed port should hold nothing but the recovery page, got %d: %s", code, body)
 	}
@@ -2241,7 +2264,7 @@ func TestTrustingAParkedFolderMakesItsAddressWorkWithoutARestart(t *testing.T) {
 	cfgBase := t.TempDir()
 	first := newTestAppWithConfigDir(t, home, cfgBase)
 	s, rel := first.openForTest(t, page)
-	bookmark := fileURL(s.port, rel)
+	bookmark := s.url(rel)
 	port := s.port
 	first.shutdown()
 
@@ -2472,12 +2495,12 @@ func TestFileURLUsesForwardSlashes(t *testing.T) {
 			if tc.winOnly && runtime.GOOS != "windows" {
 				t.Skip("path separator rewriting only applies on Windows")
 			}
-			got := fileURL(4000, tc.rel)
+			got := fileURL("127.0.0.1:4000", tc.rel)
 			if got != tc.want {
-				t.Errorf("fileURL(4000, %q) = %q, want %q", tc.rel, got, tc.want)
+				t.Errorf("fileURL(127.0.0.1:4000, %q) = %q, want %q", tc.rel, got, tc.want)
 			}
 			if strings.Contains(got, "%5C") || strings.Contains(got, `\`) {
-				t.Errorf("fileURL(4000, %q) = %q: a backslash survived into the URL, so "+
+				t.Errorf("fileURL(127.0.0.1:4000, %q) = %q: a backslash survived into the URL, so "+
 					"relative assets in the page will resolve against the server root", tc.rel, got)
 			}
 		})
@@ -2502,8 +2525,8 @@ func TestFileURLLiteralCharacters(t *testing.T) {
 		{"unicode", "café.htmlclay", "http://127.0.0.1:4000/caf%C3%A9.htmlclay"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := fileURL(4000, tc.rel); got != tc.want {
-				t.Errorf("fileURL(4000, %q) = %q, want %q", tc.rel, got, tc.want)
+			if got := fileURL("127.0.0.1:4000", tc.rel); got != tc.want {
+				t.Errorf("fileURL(127.0.0.1:4000, %q) = %q, want %q", tc.rel, got, tc.want)
 			}
 		})
 	}

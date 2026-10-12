@@ -39,6 +39,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv(attachmentHelperMode) != "" {
 		os.Exit(runAttachmentHelper())
 	}
+	http.DefaultTransport = loopbackTransport()
 	os.Exit(m.Run())
 }
 
@@ -106,7 +107,7 @@ func attachmentRequestTerminal(t *testing.T, s *site, document, token, id string
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	query := url.Values{"file": {document}, "token": {token}}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/_/wire/subscribe?%s", s.port, query.Encode()), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+s.host+"/_/wire/subscribe?"+query.Encode(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

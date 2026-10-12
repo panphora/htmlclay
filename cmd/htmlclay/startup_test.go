@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"path/filepath"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/panphora/htmlclay/internal/platform"
+	"github.com/panphora/htmlclay/internal/server"
 )
 
 // requirePortFree proves nothing is listening by successfully taking the address.
@@ -16,7 +16,7 @@ import (
 // stack. Binding is the only positive evidence, so it is what this asserts.
 func requirePortFree(t *testing.T, port int) {
 	t.Helper()
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	ln, err := net.Listen("tcp", server.LoopbackHosts(port)[0])
 	if err != nil {
 		t.Fatalf("port %d is still bound: %v", port, err)
 	}
@@ -49,7 +49,7 @@ func TestBookmarkedURLSurvivesARestart(t *testing.T) {
 		t.Fatalf("trust: %v", err)
 	}
 	s, rel := first.openForTest(t, page)
-	bookmark := fileURL(s.port, rel)
+	bookmark := s.url(rel)
 	port := s.port
 	first.shutdown()
 
@@ -104,7 +104,7 @@ func TestRememberedAdHocPortServesOnlyTheRecoveryPage(t *testing.T) {
 	cfgBase := t.TempDir()
 	first := newTestAppWithConfigDir(t, home, cfgBase)
 	s, rel := first.openForTest(t, loose)
-	bookmark := fileURL(s.port, rel)
+	bookmark := s.url(rel)
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
@@ -153,7 +153,7 @@ func TestTrustedFolderWithABrokenPinParksWithoutServing(t *testing.T) {
 		t.Fatalf("trust: %v", err)
 	}
 	s, rel := first.openForTest(t, page)
-	bookmark := fileURL(s.port, rel)
+	bookmark := s.url(rel)
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
@@ -205,7 +205,7 @@ func TestRouteReclaimsAParkedPort(t *testing.T) {
 	if reopened.port != port {
 		t.Fatalf("route must reclaim the parked port: got %d, want %d", reopened.port, port)
 	}
-	code, body := fetch(t, fileURL(reopened.port, rel))
+	code, body := fetch(t, reopened.url(rel))
 	if code != 200 || !strings.Contains(body, "loose") {
 		t.Fatalf("the reclaimed port should serve the file: %d, %q", code, body)
 	}
@@ -251,7 +251,7 @@ func TestNestedTrustedFoldersAnchorAtTheBroadest(t *testing.T) {
 		t.Fatalf("the file is registered in %d sites, want exactly 1", hosts)
 	}
 
-	code, body := fetch(t, fileURL(s.port, rel))
+	code, body := fetch(t, s.url(rel))
 	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("the anchoring origin should serve the file editable: %d", code)
 	}
@@ -273,8 +273,7 @@ func TestNestedTrustedFolderIsShadowedButItsPortIsHeld(t *testing.T) {
 		t.Fatalf("trust sub: %v", err)
 	}
 	s, rel := first.openForTest(t, page)
-	subPort := s.port
-	subBookmark := fileURL(subPort, rel)
+	subBookmark := s.url(rel)
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatalf("trust proj: %v", err)
 	}
@@ -301,8 +300,8 @@ func TestNestedTrustedFolderIsShadowedButItsPortIsHeld(t *testing.T) {
 	// A real navigation from the old bookmark goes to the folder that owns the
 	// tree now, which is what the held port is for.
 	parent := liveSite(t, second, proj)
-	if got := recoveryRedirect(t, subBookmark); got != fileURL(parent.port, rel) {
-		t.Fatalf("a navigation on the shadowed port relocated to %q, want %q", got, fileURL(parent.port, rel))
+	if got := recoveryRedirect(t, subBookmark); got != parent.url(rel) {
+		t.Fatalf("a navigation on the shadowed port relocated to %q, want %q", got, parent.url(rel))
 	}
 }
 
@@ -336,7 +335,7 @@ func TestOpenAfterStartupJoinsTheBoundSite(t *testing.T) {
 	if len(second.sites) != before {
 		t.Fatalf("an open after startup built another site: %d, want %d", len(second.sites), before)
 	}
-	code, body := fetch(t, fileURL(opened.port, rel))
+	code, body := fetch(t, opened.url(rel))
 	if code != 200 || !strings.Contains(body, "savetoken") {
 		t.Fatalf("the bound site should serve the newly opened file editable: %d", code)
 	}

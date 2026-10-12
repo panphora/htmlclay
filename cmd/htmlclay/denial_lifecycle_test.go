@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -16,7 +15,7 @@ func helperDiscoveryState(t *testing.T, s *site, document string) string {
 	if !ok {
 		t.Fatal("missing document registration")
 	}
-	status, body := fetch(t, fmt.Sprintf("http://127.0.0.1:%d/_/meta/%s", s.port, f.Token))
+	status, body := fetch(t, "http://"+s.host+"/_/meta/"+f.Token)
 	var meta struct {
 		Document struct {
 			Helpers []struct{ Name, State string }
@@ -89,7 +88,7 @@ func TestADenialLastsForTheRestOfThatOpen(t *testing.T) {
 					t.Fatal("serveURL failed")
 				}
 			case "ordinary reload":
-				if status, _ := fetchNav(t, fileURL(s.port, rel)); status != 200 {
+				if status, _ := fetchNav(t, s.url(rel)); status != 200 {
 					t.Fatalf("reload status %d", status)
 				}
 			}

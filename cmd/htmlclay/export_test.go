@@ -29,7 +29,7 @@ func TestExportDocumentRowsListEveryOpenDocumentWithoutHelperFiltering(t *testin
 		t.Fatal(err)
 	}
 	s := liveSite(t, a, folder)
-	if status, body := fetchNav(t, fileURL(s.port, filepath.Join("proj", "page.htmlclay"))); status != 200 {
+	if status, body := fetchNav(t, s.url(filepath.Join("proj", "page.htmlclay"))); status != 200 {
 		t.Fatalf("bookmark navigation = %d: %s", status, body)
 	}
 	a.openForTest(t, quiet)

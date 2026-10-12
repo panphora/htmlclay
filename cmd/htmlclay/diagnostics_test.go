@@ -12,6 +12,7 @@ import (
 	"github.com/panphora/htmlclay/internal/config"
 	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/platform"
+	"github.com/panphora/htmlclay/internal/server"
 )
 
 // diagnosticLog points the app's logger at a file in a temporary directory. The
@@ -281,7 +282,7 @@ func TestUsabilityDiagnosticsOccupiedPortLogsTheFallbackAndTheChange(t *testing.
 	first.shutdown()
 	requirePortFree(t, held)
 
-	blocker, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", held))
+	blocker, err := net.Listen("tcp", server.LoopbackHosts(held)[0])
 	if err != nil {
 		t.Fatalf("occupy the remembered port %d: %v", held, err)
 	}
@@ -321,6 +322,7 @@ func TestUsabilityDiagnosticsShadowedOriginLogsBothAnchorsWithoutRequests(t *tes
 	}
 	s, rel := first.openForTest(t, page)
 	subPort := s.port
+	subHost := s.host
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +348,7 @@ func TestUsabilityDiagnosticsShadowedOriginLogsBothAnchorsWithoutRequests(t *tes
 	}
 
 	before := read()
-	code, _, _ := do(t, browserClient(), navRequest(t, fileURL(subPort, rel)))
+	code, _, _ := do(t, browserClient(), navRequest(t, fileURL(subHost, rel)))
 	if code != http.StatusFound {
 		t.Fatalf("a navigation on the held port = %d, want 302 to the current origin", code)
 	}

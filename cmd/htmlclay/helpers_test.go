@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,7 +81,7 @@ func TestHelperDenialAppliesToThisOpenOnly(t *testing.T) {
 		}
 	}
 
-	restarted := newTestAppWithConfigDir(t, home, cfgBase)
+	restarted := buildTestApp(t, home, cfgBase)
 	asked := 0
 	restartedPlan := restarted.helpersForOpenWith(document, true, true, helperApprovalDialogs{
 		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
@@ -142,7 +141,7 @@ func TestHelperPromptClosedWithoutAnAnswerStoresNothing(t *testing.T) {
 			if got := a.rt.cfg.HelperDecisionList(); len(got) != 0 {
 				t.Fatalf("no answer was stored: %+v", got)
 			}
-			restarted := newTestAppWithConfigDir(t, home, cfgBase)
+			restarted := buildTestApp(t, home, cfgBase)
 			restarted.helpersForOpenWith(document, true, true, dialogs)
 			if calls != 3 {
 				t.Fatalf("after a restart the document must ask again, calls = %d", calls)
@@ -458,7 +457,7 @@ func TestTrustedNavigationRestoresHelpersWithoutDialogs(t *testing.T) {
 				if err := first.rt.cfg.Save(); err != nil {
 					t.Fatal(err)
 				}
-				a := newTestAppWithConfigDir(t, home, cfgBase)
+				a := buildTestApp(t, home, cfgBase)
 				a.helperMu.Lock()
 				release := sync.OnceFunc(a.helperMu.Unlock)
 				defer release()
@@ -490,14 +489,14 @@ func TestTrustedNavigationRestoresHelpersWithoutDialogs(t *testing.T) {
 				if _, ok := s.sessions.LookupByPath(document); ok {
 					t.Fatal("the fixture registered the helper document before navigation")
 				}
-				target := fileURL(s.port, filepath.Join("search", "sol.htmlclay"))
+				target := s.url(filepath.Join("search", "sol.htmlclay"))
 				if entry == "banner" {
 					status, body := fetchNav(t, target)
 					nonce := bannerNonceRe.FindStringSubmatch(body)
 					if status != 200 || nonce == nil {
 						t.Fatalf("read-only banner = %d: %s", status, body)
 					}
-					status, body = postSameOrigin(t, fmt.Sprintf("http://127.0.0.1:%d/_/open-request", s.port),
+					status, body = postSameOrigin(t, "http://"+s.host+"/_/open-request",
 						"application/json", `{"nonce":"`+nonce[1]+`"}`)
 					if status != 200 || !strings.Contains(body, `"ok":true`) {
 						t.Fatalf("trust request = %d: %s", status, body)
@@ -509,7 +508,7 @@ func TestTrustedNavigationRestoresHelpersWithoutDialogs(t *testing.T) {
 					if status != 200 || token == nil {
 						t.Fatalf("navigation = %d: %s", status, body)
 					}
-					status, body = fetch(t, fmt.Sprintf("http://127.0.0.1:%d/_/meta/%s", s.port, token[1]))
+					status, body = fetch(t, "http://"+s.host+"/_/meta/"+token[1])
 					var meta struct {
 						Document struct {
 							Helpers []struct{ Name, State string }
@@ -609,7 +608,7 @@ func TestRefreshingOpenDispatchersAppliesRevocationWithoutPrompt(t *testing.T) {
 	if !ok {
 		t.Fatal("reopened document is not registered")
 	}
-	status, raw := fetch(t, fmt.Sprintf("http://127.0.0.1:%d/_/meta/%s", s.port, file.Token))
+	status, raw := fetch(t, "http://"+s.host+"/_/meta/"+file.Token)
 	if status != 200 {
 		t.Fatalf("meta status = %d: %s", status, raw)
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -19,7 +18,7 @@ func metaPeopleOf(t *testing.T, s *site, document string) (string, string) {
 	if !ok {
 		t.Fatalf("%s is not registered in any live site", document)
 	}
-	status, headers, body := fetchFull(t, fmt.Sprintf("http://127.0.0.1:%d/_/meta/%s", s.port, f.Token))
+	status, headers, body := fetchFull(t, "http://"+s.host+"/_/meta/"+f.Token)
 	if status != 200 {
 		t.Fatalf("meta status %d: %s", status, body)
 	}
@@ -61,8 +60,8 @@ func TestProfileMetaServesOnePersonAcrossOrigins(t *testing.T) {
 
 	siteA, _ := a.openForTest(t, first)
 	siteB, _ := a.openForTest(t, second)
-	if siteA.port == siteB.port {
-		t.Fatalf("both files landed on port %d; this test needs two origins", siteA.port)
+	if siteA.host == siteB.host {
+		t.Fatalf("both files landed on %s; this test needs two origins", siteA.host)
 	}
 
 	for _, s := range []struct {
@@ -71,10 +70,10 @@ func TestProfileMetaServesOnePersonAcrossOrigins(t *testing.T) {
 	}{{siteA, first}, {siteB, second}} {
 		got, cache := metaPeopleOf(t, s.site, s.document)
 		if got != profilePerson(id, "Ada Chen") {
-			t.Errorf("origin %d: people = %s, want %s", s.site.port, got, profilePerson(id, "Ada Chen"))
+			t.Errorf("origin %s: people = %s, want %s", s.site.host, got, profilePerson(id, "Ada Chen"))
 		}
 		if cache != "private, no-store" {
-			t.Errorf("origin %d: Cache-Control = %q, want %q", s.site.port, cache, "private, no-store")
+			t.Errorf("origin %s: Cache-Control = %q, want %q", s.site.host, cache, "private, no-store")
 		}
 	}
 }
@@ -111,7 +110,7 @@ func TestProfileMetaKeepsTheIDAcrossARestart(t *testing.T) {
 		t.Fatalf("the reloaded config holds id %q, want %q", got, id)
 	}
 
-	restarted := newTestAppWithConfigDir(t, home, cfgBase)
+	restarted := buildTestApp(t, home, cfgBase)
 	restartedSite, _ := restarted.openForTest(t, document)
 	if got, _ := metaPeopleOf(t, restartedSite, document); got != profilePerson(id, "Ada Chen") {
 		t.Errorf("after the restart: people = %s, want %s", got, profilePerson(id, "Ada Chen"))
