@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,7 +52,20 @@ type appRuntime struct {
 	ls        *server.LiveSync
 	home      string
 	configDir string
-	guard     func(dir string) bool
+	// port is the one loopback port every site is served on, bound by startListener.
+	port  int
+	bound *boundPort
+	// httpServer is the process's one server; serveHost routes each request by Host.
+	httpServer *http.Server
+	// portCandidates is the order a launch with no remembered port tries. main sets
+	// defaultPorts; tests set {0} so every test app gets an ephemeral port.
+	portCandidates []int
+	// confirmPort overrides the port-taken dialog. Production leaves it nil.
+	confirmPort func(title, message string, labels platform.ConfirmLabels) (platform.ConfirmChoice, error)
+	// portOwner and quitProcess override the port-owner lookup and the quit request.
+	portOwner   func(port int) (pid int, name string, ok bool)
+	quitProcess func(pid int, force bool) error
+	guard       func(dir string) bool
 	// policy holds the rules about which folders may be trusted, and on whose
 	// say-so. Pure functions; see package trust.
 	policy trust.Policy
@@ -83,6 +97,11 @@ type app struct {
 	helperMu sync.Mutex
 	sites    []*site
 	parked   []*parked
+	// bySlug is the router's view of the live sites, written wherever sites changes and
+	// read on every request behind hostMu, so a request never waits on mu (route holds mu
+	// across filesystem work, and one stalled mount must not block every other site).
+	hostMu   sync.RWMutex
+	bySlug   map[string]*site
 	stopping bool
 	noTray   bool
 	// helperStateMu guards the permission transactions themselves and the current

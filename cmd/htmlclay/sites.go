@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/panphora/htmlclay/internal/logging"
 	"github.com/panphora/htmlclay/internal/server"
@@ -50,6 +51,12 @@ type site struct {
 	sessions *session.Manager
 	srv      *server.Server
 	armOnce  sync.Once
+	key      string
+	slug     string
+	closed   atomic.Bool
+	ctx      context.Context
+	cancel   context.CancelFunc
+	arm      func()
 }
 
 func (s *site) url(rel string) string { return fileURL(s.host, rel) }
@@ -203,6 +210,8 @@ func (a *app) buildSite(anchor string, trusted bool) (*site, error) {
 		port:     ln.Addr().(*net.TCPAddr).Port,
 		sessions: sessions,
 	}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.arm = func() {}
 	s.host = fmt.Sprintf("127.0.0.1:%d", s.port)
 	s.ln = &armingListener{Listener: ln, arm: func() {
 		s.armOnce.Do(func() {
