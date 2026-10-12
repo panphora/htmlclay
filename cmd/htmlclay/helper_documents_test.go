@@ -447,6 +447,9 @@ func TestHelperDocumentSaveFailureRollsBackAndKeepsTheDenial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.RemoveAll(config.DirFrom(cfgBase)); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(config.DirFrom(cfgBase), []byte("blocks the config directory"), 0600); err != nil {
 		t.Fatal(err)
 	}

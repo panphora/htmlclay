@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestDeadFolderNeverTakesALiveFoldersPort(t *testing.T) {
+func TestDeadFolderNeverTakesALiveFoldersHostname(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	dead := filepath.Join(home, "aaa-dead")
 	live := filepath.Join(home, "zzz-live")
@@ -23,19 +23,21 @@ func TestDeadFolderNeverTakesALiveFoldersPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, rel := first.openForTest(t, page)
-	livePort := s.port
 	bookmark := s.url(rel)
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
 	second.rt.cfg.SetTrustedIdentity(dead, "not-the-folder-on-disk")
-	second.rt.cfg.RememberSitePort(dead, livePort)
 	second.startSites()
 	t.Cleanup(second.shutdown)
 
+	deadSlug, liveSlug := second.rt.cfg.SiteSlug(dead), second.rt.cfg.SiteSlug(live)
+	if deadSlug == "" || liveSlug == "" || deadSlug == liveSlug {
+		t.Fatalf("a dead folder and a live one must have their own addresses: dead=%q live=%q", deadSlug, liveSlug)
+	}
 	code, body := fetch(t, bookmark)
 	if code != 200 || !strings.Contains(body, "savetoken") {
-		t.Fatalf("the live folder should keep its remembered port, got %d", code)
+		t.Fatalf("the live folder should keep its remembered address, got %d", code)
 	}
 }
 

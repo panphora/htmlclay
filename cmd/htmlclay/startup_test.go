@@ -50,7 +50,8 @@ func TestBookmarkedURLSurvivesARestart(t *testing.T) {
 	}
 	s, rel := first.openForTest(t, page)
 	bookmark := s.url(rel)
-	port := s.port
+	host := s.host
+	port := first.rt.port
 	first.shutdown()
 
 	requirePortFree(t, port)
@@ -64,6 +65,9 @@ func TestBookmarkedURLSurvivesARestart(t *testing.T) {
 	}
 	second.startSites()
 
+	if second.rt.port != port {
+		t.Fatalf("the app port moved across the restart: %d, want %d", second.rt.port, port)
+	}
 	var relaunched *site
 	second.mu.Lock()
 	for _, cand := range second.sites {
@@ -75,8 +79,8 @@ func TestBookmarkedURLSurvivesARestart(t *testing.T) {
 	if relaunched == nil {
 		t.Fatal("a trusted folder must get its site back at startup")
 	}
-	if relaunched.port != port {
-		t.Fatalf("the origin moved across the restart: port %d, want %d", relaunched.port, port)
+	if relaunched.host != host {
+		t.Fatalf("the origin moved across the restart: %s, want %s", relaunched.host, host)
 	}
 
 	code, body := fetch(t, bookmark)
@@ -91,12 +95,12 @@ func TestBookmarkedURLSurvivesARestart(t *testing.T) {
 	}
 }
 
-// A remembered port for an ordinary (untrusted) folder is bound too, but with
-// no capability at all behind it: the recovery page, no registration, and no
-// read root anywhere. A bookmark then degrades to a page that explains itself
-// rather than a connection refusal, without the port quietly serving files
-// nobody asked it to.
-func TestRememberedAdHocPortServesOnlyTheRecoveryPage(t *testing.T) {
+// A remembered address for an ordinary (untrusted) folder is answered with no
+// capability at all behind it: the recovery page, no registration, and no read
+// root anywhere. A bookmark then degrades to a page that explains itself rather
+// than a connection refusal, without the address quietly serving files nobody
+// asked it to.
+func TestRememberedAdHocHostnameServesOnlyTheRecoveryPage(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	loose := filepath.Join(home, "notes", "loose.htmlclay")
 	writeTestFile(t, loose, "<html><body>loose</body></html>")
@@ -112,13 +116,13 @@ func TestRememberedAdHocPortServesOnlyTheRecoveryPage(t *testing.T) {
 
 	code, body := fetch(t, bookmark)
 	if code != 404 {
-		t.Fatalf("a parked port must answer 404, got %d", code)
+		t.Fatalf("a retired address must answer 404, got %d", code)
 	}
 	if !strings.Contains(body, "Nothing is open at this address") {
-		t.Fatalf("a parked port must serve the recovery page, got %q", body)
+		t.Fatalf("a retired address must serve the recovery page, got %q", body)
 	}
 	if strings.Contains(body, "loose") || strings.Contains(body, "savetoken") {
-		t.Fatal("a parked port served the file it once held")
+		t.Fatal("a retired address served the file it once held")
 	}
 
 	second.mu.Lock()
@@ -131,17 +135,16 @@ func TestRememberedAdHocPortServesOnlyTheRecoveryPage(t *testing.T) {
 			t.Error("startup installed a read root for an ad-hoc root")
 		}
 	}
-	if len(second.sites) != 0 {
-		t.Fatalf("an ad-hoc root must bind no site at startup, got %d", len(second.sites))
+	if len(second.sites) != 0 || len(second.parked) != 0 {
+		t.Fatalf("an ad-hoc root must bind no site at startup, got %d sites and %d legacy listeners", len(second.sites), len(second.parked))
 	}
 }
 
 // A trusted folder whose identity pin no longer matches gets no site: the path
 // may be anything now, and serving it would hand a page whatever tree has taken
-// that name. Its port is held by a parked listener instead, which can serve
-// nothing but the page saying why, so a bookmark gets a reason rather than a
-// connection refusal.
-func TestTrustedFolderWithABrokenPinParksWithoutServing(t *testing.T) {
+// that name. Its address answers with the page saying why instead, so a bookmark
+// gets a reason rather than a connection refusal.
+func TestTrustedFolderWithABrokenPinAnswersTheDeadPageWithoutServing(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	proj := filepath.Join(home, "proj")
 	page := filepath.Join(proj, "index.htmlclay")
@@ -177,11 +180,10 @@ func TestTrustedFolderWithABrokenPinParksWithoutServing(t *testing.T) {
 	}
 }
 
-// route() takes back the port its own recovery listener is holding. Without the
-// unpark, opening a file under a remembered ad-hoc root found the port taken by
-// HTML Clay itself, moved the origin, and broke the one bookmark that binding
-// at startup exists to preserve.
-func TestRouteReclaimsAParkedPort(t *testing.T) {
+// route() reuses the address a remembered ad-hoc key was served under last time.
+// Otherwise opening the same file again moved the origin and broke the one
+// bookmark that remembering an address exists to preserve.
+func TestRouteReusesTheRememberedHostname(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	loose := filepath.Join(home, "notes", "loose.htmlclay")
 	writeTestFile(t, loose, "<html><body>loose</body></html>")
@@ -189,7 +191,7 @@ func TestRouteReclaimsAParkedPort(t *testing.T) {
 	cfgBase := t.TempDir()
 	first := newTestAppWithConfigDir(t, home, cfgBase)
 	s, _ := first.openForTest(t, loose)
-	port := s.port
+	host := s.host
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
@@ -197,17 +199,17 @@ func TestRouteReclaimsAParkedPort(t *testing.T) {
 	second.mu.Lock()
 	parked := len(second.parked)
 	second.mu.Unlock()
-	if parked != 1 {
-		t.Fatalf("expected the remembered port to be parked, got %d parked", parked)
+	if parked != 0 {
+		t.Fatalf("a remembered hostname needs no legacy listener, got %d parked", parked)
 	}
 
 	reopened, rel := second.openForTest(t, loose)
-	if reopened.port != port {
-		t.Fatalf("route must reclaim the parked port: got %d, want %d", reopened.port, port)
+	if reopened.host != host {
+		t.Fatalf("route must reuse the remembered hostname: got %s, want %s", reopened.host, host)
 	}
 	code, body := fetch(t, reopened.url(rel))
 	if code != 200 || !strings.Contains(body, "loose") {
-		t.Fatalf("the reclaimed port should serve the file: %d, %q", code, body)
+		t.Fatalf("the remembered hostname should serve the file: %d, %q", code, body)
 	}
 }
 
@@ -257,10 +259,10 @@ func TestNestedTrustedFoldersAnchorAtTheBroadest(t *testing.T) {
 	}
 }
 
-// startSites binds the broadest of a nested set only. A folder shadowed by a
-// broader one still gets its remembered port held, so a bookmark made before
-// the broader folder was declared answers with a page rather than nothing.
-func TestNestedTrustedFolderIsShadowedButItsPortIsHeld(t *testing.T) {
+// startSites builds the broadest of a nested set only. A folder shadowed by a
+// broader one still answers at its remembered address, so a bookmark made before
+// the broader folder was declared redirects rather than failing outright.
+func TestNestedTrustedFolderIsShadowedButItsHostnameRedirects(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	proj := filepath.Join(home, "proj")
 	sub := filepath.Join(proj, "sub")
@@ -294,14 +296,14 @@ func TestNestedTrustedFolderIsShadowedButItsPortIsHeld(t *testing.T) {
 
 	code, body := fetch(t, subBookmark)
 	if code != 404 || !strings.Contains(body, "Nothing is open at this address") {
-		t.Fatalf("the shadowed folder's port should hold the recovery page: %d, %q", code, body)
+		t.Fatalf("the shadowed folder's address should answer the recovery page: %d, %q", code, body)
 	}
 
 	// A real navigation from the old bookmark goes to the folder that owns the
-	// tree now, which is what the held port is for.
+	// tree now, which is what the remembered address is for.
 	parent := liveSite(t, second, proj)
 	if got := recoveryRedirect(t, subBookmark); got != parent.url(rel) {
-		t.Fatalf("a navigation on the shadowed port relocated to %q, want %q", got, parent.url(rel))
+		t.Fatalf("a navigation on the shadowed address relocated to %q, want %q", got, parent.url(rel))
 	}
 }
 
@@ -321,7 +323,7 @@ func TestOpenAfterStartupJoinsTheBoundSite(t *testing.T) {
 		t.Fatalf("trust: %v", err)
 	}
 	s, _ := first.openForTest(t, page)
-	port := s.port
+	host := s.host
 	first.shutdown()
 
 	second := newTestAppWithConfigDir(t, home, cfgBase)
@@ -329,8 +331,8 @@ func TestOpenAfterStartupJoinsTheBoundSite(t *testing.T) {
 	before := len(second.sites)
 
 	opened, rel := second.openForTest(t, other)
-	if opened.port != port {
-		t.Fatalf("an open after startup should join the bound site on %d, got %d", port, opened.port)
+	if opened.host != host {
+		t.Fatalf("an open after startup should join the bound site at %s, got %s", host, opened.host)
 	}
 	if len(second.sites) != before {
 		t.Fatalf("an open after startup built another site: %d, want %d", len(second.sites), before)

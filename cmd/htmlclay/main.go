@@ -42,8 +42,8 @@ func resolveSymlinks(absPath string) (string, error) {
 
 // appRuntime holds everything shared across every origin: config, logging, the
 // versions store, the single-instance lock, and the one live-sync runtime. Each
-// origin becomes its own site (see sites.go) on its own port, so the browser
-// treats unrelated trees as separate origins; the runtime is what they share.
+// origin becomes its own site (see sites.go) at its own hostname on the one port, so the
+// browser treats unrelated trees as separate origins; the runtime is what they share.
 type appRuntime struct {
 	cfg       *config.Config
 	logger    *logging.Logger
@@ -204,9 +204,12 @@ func main() {
 	a.refreshFileTypes()
 	a.warnMissingDialogs()
 
-	// Bind every remembered port before argv is processed, so a URL bookmarked
-	// before the last quit answers on the first launch after it. A file named on
-	// the command line then routes onto a site that is already listening.
+	// Bind the one port before argv is processed, asking the user what to do if it is held,
+	// then build every live trusted folder's site, so a URL bookmarked before the last quit
+	// answers on the first launch after it.
+	if !a.startListener() {
+		return
+	}
 	a.startSites()
 
 	args := flag.Args()
@@ -341,6 +344,8 @@ func (a *app) startRuntime() {
 	}
 	a.rt.guard = func(dir string) bool { return grantForbidden(dir, forbidden, library) }
 	a.rt.policy = trust.Policy{Home: a.rt.home, Guard: a.rt.guard}
+
+	a.rt.portCandidates = defaultPorts
 
 	a.rt.logger.Printf("Runtime ready (home=%s)", a.rt.home)
 }

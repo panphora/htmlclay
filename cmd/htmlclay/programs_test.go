@@ -235,6 +235,9 @@ func TestPickHelperProgramRollsBackWhenConfigSaveFails(t *testing.T) {
 	cfgBase := t.TempDir()
 	a := newTestAppWithConfigDir(t, t.TempDir(), cfgBase)
 	programPath := writeTestProgram(t, t.TempDir(), "search", 0755)
+	if err := os.RemoveAll(config.DirFrom(cfgBase)); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(cfgBase, "htmlclay"), []byte("blocks config directory"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -390,6 +393,9 @@ func TestManageHelperProgramRollsBackWhenConfigSaveFails(t *testing.T) {
 				DecidedAt: 42,
 			}
 			if _, _, err := a.rt.cfg.DecideHelper(decision); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(config.DirFrom(cfgBase)); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(cfgBase, "htmlclay"), []byte("blocks config directory"), 0600); err != nil {

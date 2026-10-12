@@ -76,16 +76,8 @@ func (a *app) bringLive(canonical string) {
 		return
 	}
 
-	// Release the recovery listener first, or the bind below finds its own port
-	// taken and moves the origin, breaking the bookmark the port was held for.
-	// Bind outside a.mu: it is the one call here that can block on a stalled mount.
-	a.unpark(canonical)
-	s, err := a.buildSite(canonical, true)
-	if err != nil {
-		a.rt.logger.Printf("Could not bind a port for trusted folder %s: %v", canonical, err)
-		a.reparkRemembered(canonical)
-		return
-	}
+	// Build outside a.mu: it is the one call here that can block on a stalled mount.
+	s := a.buildSite(canonical, canonical, filepath.Base(canonical), true)
 
 	a.mu.Lock()
 	// Re-check everything the first pass established. An untrust or a quit can land
@@ -93,26 +85,18 @@ func (a *app) bringLive(canonical string) {
 	// anchor, so publishing on the earlier answer could leave a trusted site for a
 	// folder no longer in the list, which the tray cannot show or revoke.
 	if !a.shouldBindLiveLocked(canonical) {
-		stopping := a.stopping
 		a.mu.Unlock()
 		s.close()
-		// A quit wants nothing held. shutdown has already closed every parked
-		// listener and emptied the list, so parking one now would bind a port
-		// after the snapshot that was supposed to account for it.
-		if !stopping {
-			a.reparkRemembered(canonical)
-		}
 		return
 	}
-	a.sites = append(a.sites, s)
-	// Persist the port in the same critical section that publishes the site, and
+	a.publishLocked(s)
+	// Persist the slug in the same critical section that publishes the site, and
 	// so under the same lock shutdown takes to set stopping. Saving after the
 	// unlock let a config write land after shutdown had already returned.
-	a.rememberPort(canonical, s.port)
+	a.saveConfig("trusting " + s.slug)
 	a.mu.Unlock()
-	s.start(a.rt.logger)
 
-	a.rt.logger.Printf("Trusted folder %s listening on 127.0.0.1:%d", canonical, s.port)
+	a.rt.logger.Printf("Trusted folder %s at http://%s", canonical, s.host)
 }
 
 func (a *app) shouldBindLive(canonical string) bool {
@@ -136,15 +120,6 @@ func (a *app) shouldBindLiveLocked(canonical string) bool {
 	}
 	anchor, ok := a.trustedAnchor(canonical)
 	return ok && anchor == canonical
-}
-
-// reparkRemembered puts a recovery page back on a port unparked for a bind that
-// then did not happen, so a live bookmark degrades to a page that explains itself
-// rather than to a refused connection for the rest of the run.
-func (a *app) reparkRemembered(canonical string) {
-	if port := a.rt.cfg.SitePort(canonical); port != 0 {
-		a.parkPort(canonical, port)
-	}
 }
 
 // adoptLocked brings a newly trusted folder live. Caller holds a.mu.
@@ -194,6 +169,10 @@ func (a *app) untrustFolder(dir string) error {
 	// Forget the port in the same write that drops the trust, or re-homing below
 	// binds it straight back and the survivor keeps the untrusted folder's origin.
 	forgottenPort := a.rt.cfg.ForgetSitePort(dir)
+	// Forget and retire the slug in the same write that drops the trust, so the files
+	// re-homed below get a fresh address: their own folder IS this folder, and the old slug would
+	// hand the untrusted folder's still-open pages a live save token on the same origin.
+	forgottenSlug := a.rt.cfg.ForgetSiteSlug(dir)
 	if err := a.rt.cfg.Save(); err != nil {
 		// Restore what was taken out, exactly. Rebuilding the entry from the folder
 		// on disk would re-pin a dead one to whatever is there now.
@@ -201,14 +180,15 @@ func (a *app) untrustFolder(dir string) error {
 		if forgottenPort != 0 {
 			a.rt.cfg.RememberSitePort(dir, forgottenPort)
 		}
+		if forgottenSlug != "" {
+			a.rt.cfg.RestoreSiteSlug(dir, forgottenSlug)
+		}
 		a.mu.Unlock()
 		return fmt.Errorf("could not save config: %w", err)
 	}
 
 	var dropped, reopen []string
-	freedPort := 0
 	if s := a.siteAtLocked(dir); s != nil {
-		freedPort = s.port
 		for _, reg := range s.sessions.Registrations() {
 			dropped = append(dropped, reg.Path)
 			if reg.Via.Has(session.ViaOsOpen) {
@@ -246,16 +226,10 @@ func (a *app) untrustFolder(dir string) error {
 		}
 		a.applyHelperPlan(s, p, a.helpersForOpen(p, false))
 	}
-	// Hold the freed port with the recovery page, so a live bookmark degrades to a
-	// page rather than a connection refusal for the rest of this run. Re-homing
-	// cannot have taken it back: the port was forgotten with the trust, so the
-	// survivors bound fresh ones.
-	if freedPort == 0 {
-		// A dead folder has no site, only the listener saying it needs approving
-		// again, which is no longer true once it is untrusted.
-		freedPort = a.unpark(dir)
-	}
-	if freedPort != 0 {
+	// A legacy per-folder port for this folder, if one is still bound, keeps answering the
+	// recovery page for the rest of this run instead of redirecting: its folder is no longer
+	// trusted. Its config entry was forgotten above.
+	if freedPort := a.unpark(dir); freedPort != 0 {
 		a.parkPortMode(dir, freedPort, recoveryPage, recoveryRevoked)
 	}
 
@@ -273,6 +247,9 @@ func (a *app) removeSiteLocked(s *site) {
 		}
 	}
 	a.sites = kept
+	a.hostMu.Lock()
+	delete(a.bySlug, s.slug)
+	a.hostMu.Unlock()
 }
 
 // mayTrustFromPrompt gates the read prompt's third button. The dialog does not
@@ -524,7 +501,7 @@ func (a *app) pickAndTrustFolder() []tray.Row {
 }
 
 // removeTrustedFolder is the tray's remove hook. It asks first, because a
-// misclick now closes a live origin and kills the address a bookmark points at.
+// misclick now closes a live origin and retires the address a bookmark points at.
 //
 // A folder covered by a broader trusted folder gets different wording, because
 // for it none of that is true: the outer folder still anchors the tree, so nothing

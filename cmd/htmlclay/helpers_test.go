@@ -360,6 +360,9 @@ func TestHelperDecisionSaveFailureRollsBackExactly(t *testing.T) {
 			}
 			beforePrograms := a.rt.cfg.HelperProgramList()
 			beforeDecisions := a.rt.cfg.HelperDecisionList()
+			if err := os.RemoveAll(config.DirFrom(cfgBase)); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(config.DirFrom(cfgBase), []byte("blocks config directory"), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -457,7 +460,8 @@ func TestTrustedNavigationRestoresHelpersWithoutDialogs(t *testing.T) {
 				if err := first.rt.cfg.Save(); err != nil {
 					t.Fatal(err)
 				}
-				a := buildTestApp(t, home, cfgBase)
+				first.shutdown()
+				a := newTestAppWithConfigDir(t, home, cfgBase)
 				a.helperMu.Lock()
 				release := sync.OnceFunc(a.helperMu.Unlock)
 				defer release()

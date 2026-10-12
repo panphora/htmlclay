@@ -110,7 +110,8 @@ func TestProfileMetaKeepsTheIDAcrossARestart(t *testing.T) {
 		t.Fatalf("the reloaded config holds id %q, want %q", got, id)
 	}
 
-	restarted := buildTestApp(t, home, cfgBase)
+	a.shutdown()
+	restarted := newTestAppWithConfigDir(t, home, cfgBase)
 	restartedSite, _ := restarted.openForTest(t, document)
 	if got, _ := metaPeopleOf(t, restartedSite, document); got != profilePerson(id, "Ada Chen") {
 		t.Errorf("after the restart: people = %s, want %s", got, profilePerson(id, "Ada Chen"))

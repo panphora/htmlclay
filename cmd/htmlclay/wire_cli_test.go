@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -285,8 +286,8 @@ func (l *wireQueryLog) all() []string {
 
 // fakeWireOrigin answers like a live wire origin for exactly one file: 200
 // text/event-stream on subscribe, 404 plain text for anything else. wantHost, when
-// given, is the hostname it answers on its own port, and a request whose r.Host is
-// not that name answers 403, which is what proves the CLI sent the Host header it
+// given, are the hostnames it answers on its own port, and a request whose r.Host is
+// none of them answers 403, which is what proves the CLI sent the Host header it
 // was given instead of the address it dialed.
 func fakeWireOrigin(t *testing.T, file string, log *wireQueryLog, wantHost ...string) int {
 	t.Helper()
@@ -295,7 +296,9 @@ func fakeWireOrigin(t *testing.T, file string, log *wireQueryLog, wantHost ...st
 		if log != nil {
 			log.add(r.URL.RawQuery)
 		}
-		if len(wantHost) > 0 && r.Host != net.JoinHostPort(wantHost[0], strconv.Itoa(port)) {
+		if len(wantHost) > 0 && !slices.ContainsFunc(wantHost, func(h string) bool {
+			return r.Host == net.JoinHostPort(h, strconv.Itoa(port))
+		}) {
 			http.Error(w, "wrong host", http.StatusForbidden)
 			return
 		}
@@ -313,9 +316,9 @@ func fakeWireOrigin(t *testing.T, file string, log *wireQueryLog, wantHost ...st
 	return port
 }
 
-// ambiguousWirePair serves one file from both apps: an HTML Clay site whose port
-// is in config.json, and a Hyperclay Local root published in served-roots.json.
-// The returned harness reads both.
+// ambiguousWirePair serves one file from both apps: an HTML Clay site whose hostname
+// and port are in config.json, and a Hyperclay Local root published in
+// served-roots.json. The returned harness reads both.
 func ambiguousWirePair(t *testing.T) (h *wireHarness, file string, htmlclayPort, localPort int, log *wireQueryLog) {
 	t.Helper()
 	home, _ := filepath.EvalSymlinks(t.TempDir())
@@ -324,11 +327,12 @@ func ambiguousWirePair(t *testing.T) (h *wireHarness, file string, htmlclayPort,
 	cfgBase := t.TempDir()
 
 	log = &wireQueryLog{}
-	htmlclayPort = fakeWireOrigin(t, file, log)
+	htmlclayPort = fakeWireOrigin(t, file, log, "proj-0001.localhost", "127.0.0.1")
 	localPort = fakeWireOrigin(t, file, log)
 
-	a := newTestAppWithConfigDir(t, home, cfgBase)
-	a.rt.cfg.RememberSitePort(filepath.Dir(file), htmlclayPort)
+	a := buildTestApp(t, home, cfgBase)
+	a.rt.cfg.SetPort(htmlclayPort)
+	a.rt.cfg.RememberSiteSlug(filepath.Dir(file), "proj-0001")
 	if err := a.rt.cfg.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -1044,7 +1048,28 @@ func TestWireWalksPastAStrangerOnARememberedPort(t *testing.T) {
 			code, h.errs.String())
 	}
 	if !strings.Contains(h.out.String(), s.host) {
-		t.Errorf("where printed %q, want the real site on port %d", h.out.String(), s.port)
+		t.Errorf("where printed %q, want the real site at %s", h.out.String(), s.host)
+	}
+}
+
+// A file loose in home anchors at home, which every other such file shares, so its
+// address is remembered under the file itself. `where` has to find it from the config
+// alone, with no flags and no --origin.
+func TestWireLooseHomeFileIsDiscoverable(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	file := filepath.Join(home, "loose.htmlclay")
+	writeTestFile(t, file, "<html><body>loose</body></html>")
+
+	cfgBase := t.TempDir()
+	a := newTestAppWithConfigDir(t, home, cfgBase)
+	s, _ := a.openForTest(t, file)
+
+	h := newWireHarness(t, cfgBase)
+	if code := h.run("where", file); code != wireExitOK {
+		t.Fatalf("where exited %d; stderr:\n%s", code, h.errs.String())
+	}
+	if want := "http://" + s.host; !strings.Contains(h.out.String(), want) {
+		t.Fatalf("where printed %q, want %s", h.out.String(), want)
 	}
 }
 

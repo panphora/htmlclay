@@ -136,13 +136,6 @@ func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, sto
 	return listenerServer(ln, s)
 }
 
-// NewWithLiveSync is the pre-hostname per-port constructor, kept until cmd/htmlclay
-// moves to NewHosted.
-func NewWithLiveSync(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store, ls *LiveSync) *Server {
-	hosts := LoopbackHosts(ln.Addr().(*net.TCPAddr).Port)
-	return listenerServer(ln, newServer(sessions, logger, store, ls, hosts, ownsHosts(hosts)))
-}
-
 // NewHosted builds a server that answers exactly one Host value, <slug>.localhost:<port>,
 // and owns no listener: the process's one http.Server routes requests to it by Host
 // through ServeHTTP. ours is the app's view of which origins are its own, for the

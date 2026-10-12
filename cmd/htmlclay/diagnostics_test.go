@@ -51,6 +51,9 @@ func diagnosticProgramAtPath(t *testing.T, a *app, path string) config.HelperPro
 // every Save fails the way a full disk or an unwritable home would.
 func blockDiagnosticConfigDir(t *testing.T, cfgBase string) {
 	t.Helper()
+	if err := os.RemoveAll(config.DirFrom(cfgBase)); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(cfgBase, "htmlclay"), []byte("blocks the config directory"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +238,7 @@ func TestUsabilityDiagnosticsNormalizationCountsAreLogged(t *testing.T) {
     {"document": "/docs/d", "name": "format", "program": "kept", "decidedAt": 4}
   ]
 }`)
-		a := newTestAppWithConfigDir(t, home, cfgBase)
+		a := buildTestApp(t, home, cfgBase)
 		logger, read := diagnosticLog(t)
 		a.rt.logger = logger
 
@@ -266,7 +269,7 @@ func TestUsabilityDiagnosticsNormalizationCountsAreLogged(t *testing.T) {
 	})
 }
 
-func TestUsabilityDiagnosticsOccupiedPortLogsTheFallbackAndTheChange(t *testing.T) {
+func TestUsabilityDiagnosticsOccupiedPortAsksThenLogsTheMove(t *testing.T) {
 	home, _ := resolveSymlinks(t.TempDir())
 	proj := filepath.Join(home, "proj")
 	page := filepath.Join(proj, "index.htmlclay")
@@ -277,8 +280,8 @@ func TestUsabilityDiagnosticsOccupiedPortLogsTheFallbackAndTheChange(t *testing.
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatal(err)
 	}
-	s, _ := first.openForTest(t, page)
-	held := s.port
+	first.openForTest(t, page)
+	held := first.rt.port
 	first.shutdown()
 	requirePortFree(t, held)
 
@@ -288,23 +291,73 @@ func TestUsabilityDiagnosticsOccupiedPortLogsTheFallbackAndTheChange(t *testing.
 	}
 	defer blocker.Close()
 
-	second := newTestAppWithConfigDir(t, home, cfgBase)
+	second := buildTestApp(t, home, cfgBase)
 	logger, read := diagnosticLog(t)
 	second.rt.logger = logger
-	second.startSites()
+	second.rt.portOwner = func(int) (int, string, bool) { return 4242, "blocker", true }
+	asked := 0
+	var message string
+	second.rt.confirmPort = func(_, msg string, _ platform.ConfirmLabels) (platform.ConfirmChoice, error) {
+		asked++
+		message = msg
+		return platform.ConfirmAllowOnce, nil
+	}
+	if !second.startListener() {
+		t.Fatal("the app should start on another port when the user says so")
+	}
+	t.Cleanup(second.shutdown)
 
-	moved := liveSite(t, second, proj).port
-	if moved == 0 || moved == held {
-		t.Fatalf("the origin did not move off the occupied port %d: got %d", held, moved)
+	if asked != 1 {
+		t.Fatalf("an occupied remembered port must ask once, asked %d time(s)", asked)
+	}
+	if !strings.Contains(message, "blocker (PID 4242)") {
+		t.Errorf("the dialog should name the process holding the port:\n%s", message)
+	}
+	if second.rt.port == held {
+		t.Fatalf("the app stayed on the occupied port %d", held)
 	}
 	log := read()
-	taken := fmt.Sprintf("Remembered port %d for %s is taken; using another port, so old bookmarks cannot be held", held, proj)
+	taken := fmt.Sprintf("Port %d is taken", held)
 	if !strings.Contains(log, taken) {
 		t.Fatalf("an occupied remembered port is not in the log:\n%s", log)
 	}
-	changed := fmt.Sprintf("Origin port changed: anchor=%s previous=%d current=%d", proj, held, moved)
-	if !strings.Contains(log, changed) {
+	moved := fmt.Sprintf("Port moved: previous=%d current=%d", held, second.rt.port)
+	if !strings.Contains(log, moved) {
 		t.Fatalf("the port change did not record both ports:\n%s", log)
+	}
+}
+
+// A user who declines the move gets no port at all: binding on another port after a
+// denial would silently break every bookmark the dialog just described.
+func TestOccupiedPortDialogDenyExitsWithoutBinding(t *testing.T) {
+	home, _ := resolveSymlinks(t.TempDir())
+	cfgBase := t.TempDir()
+	first := newTestAppWithConfigDir(t, home, cfgBase)
+	held := first.rt.port
+	first.shutdown()
+	requirePortFree(t, held)
+
+	blocker, err := net.Listen("tcp", server.LoopbackHosts(held)[0])
+	if err != nil {
+		t.Fatalf("occupy the remembered port %d: %v", held, err)
+	}
+	defer blocker.Close()
+
+	second := buildTestApp(t, home, cfgBase)
+	logger, read := diagnosticLog(t)
+	second.rt.logger = logger
+	second.rt.portOwner = func(int) (int, string, bool) { return 4242, "blocker", true }
+	second.rt.confirmPort = func(string, string, platform.ConfirmLabels) (platform.ConfirmChoice, error) {
+		return platform.ConfirmDeny, nil
+	}
+	if second.startListener() {
+		t.Fatal("a denied port dialog must exit instead of binding")
+	}
+	if second.rt.bound != nil {
+		t.Fatalf("a denied port dialog bound %+v", second.rt.bound)
+	}
+	if log := read(); !strings.Contains(log, "Exiting") {
+		t.Fatalf("the log should say the app is exiting:\n%s", log)
 	}
 }
 
@@ -321,7 +374,6 @@ func TestUsabilityDiagnosticsShadowedOriginLogsBothAnchorsWithoutRequests(t *tes
 		t.Fatal(err)
 	}
 	s, rel := first.openForTest(t, page)
-	subPort := s.port
 	subHost := s.host
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatal(err)
@@ -333,26 +385,19 @@ func TestUsabilityDiagnosticsShadowedOriginLogsBothAnchorsWithoutRequests(t *tes
 	second.rt.logger = logger
 	second.startSites()
 
-	projPort := liveSite(t, second, proj).port
-	if subPort == projPort {
-		t.Fatalf("the fixture needs two distinct origins, both are %d", subPort)
-	}
+	parent := liveSite(t, second, proj)
 	log := read()
 	shadowed := fmt.Sprintf("Trusted folder %s is covered by %s; its remembered origin uses navigation recovery", sub, proj)
 	if !strings.Contains(log, shadowed) {
 		t.Fatalf("a shadowed trusted folder is not in the log:\n%s", log)
 	}
-	holding := fmt.Sprintf("Holding remembered origin: anchor=%s port=%d; current trust covers it at anchor=%s port=%d for eligible navigations", sub, subPort, proj, projPort)
-	if !strings.Contains(log, holding) {
-		t.Fatalf("the held shadowed origin did not name both anchors and ports:\n%s", log)
-	}
 
 	before := read()
-	code, _, _ := do(t, browserClient(), navRequest(t, fileURL(subHost, rel)))
-	if code != http.StatusFound {
-		t.Fatalf("a navigation on the held port = %d, want 302 to the current origin", code)
+	code, headers, _ := do(t, browserClient(), navRequest(t, fileURL(subHost, rel)))
+	if code != http.StatusFound || headers.Get("Location") != parent.url(rel) {
+		t.Fatalf("a navigation on the shadowed address = %d, %q, want 302 to %q", code, headers.Get("Location"), parent.url(rel))
 	}
 	if after := read(); after != before {
-		t.Fatalf("a request to the held port wrote to the log:\n%s", strings.TrimPrefix(after, before))
+		t.Fatalf("a request to the shadowed address wrote to the log:\n%s", strings.TrimPrefix(after, before))
 	}
 }

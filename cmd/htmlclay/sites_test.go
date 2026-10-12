@@ -70,7 +70,11 @@ func newTestApp(t *testing.T, home string) *app {
 // buildTestApp, so it never contends for that app's port.
 func newTestAppWithConfigDir(t *testing.T, home, cfgBase string) *app {
 	t.Helper()
-	return buildTestApp(t, home, cfgBase)
+	a := buildTestApp(t, home, cfgBase)
+	if !a.startListener() {
+		t.Fatal("test app could not bind a port")
+	}
+	return a
 }
 
 // buildTestApp builds an app whose config lives in a caller-chosen
@@ -110,6 +114,13 @@ func buildTestApp(t *testing.T, home, cfgBase string) *app {
 			policy: trust.Policy{Home: home, Guard: guard},
 		},
 	}
+	a.rt.portCandidates = []int{0}
+	a.rt.confirmPort = func(title, message string, _ platform.ConfirmLabels) (platform.ConfirmChoice, error) {
+		t.Errorf("unexpected port dialog: %s: %s", title, message)
+		return platform.ConfirmDeny, nil
+	}
+	a.rt.portOwner = func(int) (int, string, bool) { return 0, "", false }
+	a.rt.quitProcess = func(int, bool) error { return nil }
 	t.Cleanup(func() {
 		ls.Shutdown()
 		a.mu.Lock()
@@ -128,6 +139,10 @@ func buildTestApp(t *testing.T, home, cfgBase string) *app {
 		for _, p := range a.parked {
 			p.close()
 		}
+		if a.rt.httpServer != nil {
+			a.rt.httpServer.Close()
+		}
+		a.rt.bound.close()
 	})
 	return a
 }
@@ -2151,9 +2166,9 @@ func TestConfirmLabelsMatchTheirAction(t *testing.T) {
 
 // SECURITY.md:34 promises that a file you opened yourself survives an untrust
 // "on a new address of their own". The new address is the whole of the
-// protection. v1.3.0 kept the folder's remembered port, and the survivor's own
-// folder IS the untrusted folder, so it anchored there and bound the very same
-// port: every page the trust had auto-registered, still open in a tab, stayed
+// protection. Keeping the folder's remembered address, when the survivor's own
+// folder IS the untrusted folder, would serve the survivor on the very same
+// origin: every page the trust had auto-registered, still open in a tab, stayed
 // same-origin with a file that now holds a fresh save token, and could open it
 // and lift that token. Untrusting has to take the address with it.
 func TestUntrustMovesTheSurvivorToANewAddress(t *testing.T) {
@@ -2167,26 +2182,26 @@ func TestUntrustMovesTheSurvivorToANewAddress(t *testing.T) {
 		t.Fatalf("trust: %v", err)
 	}
 	s, _ := a.openForTest(t, mine)
-	before := s.port
+	before, beforeSlug := s.host, s.slug
 	host := s.host
 
 	if err := a.untrustFolder(proj); err != nil {
 		t.Fatalf("untrust: %v", err)
 	}
 
-	if after := hostOf(t, a, mine); after.port == before {
-		t.Fatalf("the survivor must leave the untrusted folder's origin, still on port %d", before)
+	if after := hostOf(t, a, mine); after.host == before {
+		t.Fatalf("the survivor must leave the untrusted folder's origin, still at %s", before)
 	}
-	if remembered := a.rt.cfg.SitePort(proj); remembered == before {
-		t.Errorf("the untrusted folder's port must not stay remembered, still %d", remembered)
+	if remembered := a.rt.cfg.SiteSlug(proj); remembered == beforeSlug {
+		t.Errorf("the untrusted folder's address must not stay remembered, still %q", remembered)
 	}
 	// The freed address degrades to the recovery page rather than serving a file.
 	code, body := fetchNav(t, "http://"+host+"/proj/mine.htmlclay")
 	if code != 404 || !strings.Contains(body, "Nothing is open at this address") {
-		t.Fatalf("the freed port should hold nothing but the recovery page, got %d: %s", code, body)
+		t.Fatalf("the freed address should hold nothing but the recovery page, got %d: %s", code, body)
 	}
 	if strings.Contains(body, "savetoken") {
-		t.Error("the freed port served a save token")
+		t.Error("the freed address served a save token")
 	}
 }
 
@@ -2212,7 +2227,7 @@ func TestUntrustSaveFailureRestoresTheEntryVerbatim(t *testing.T) {
 	if _, ok := a.rt.cfg.SetTrustedIdentity(proj, deadPin); !ok {
 		t.Fatal("could not set the stored pin")
 	}
-	a.rt.cfg.RememberSitePort(proj, 51515)
+	a.rt.cfg.RememberSiteSlug(proj, "proj-5151")
 
 	// Fail the next Save on every platform, Windows included: config.json becomes
 	// a directory, so the atomic rename onto it cannot succeed. A chmod would be a
@@ -2241,8 +2256,8 @@ func TestUntrustSaveFailureRestoresTheEntryVerbatim(t *testing.T) {
 	if restored.Identity != deadPin {
 		t.Errorf("the rollback re-pinned the entry: identity = %q, want the stored %q", restored.Identity, deadPin)
 	}
-	if got := a.rt.cfg.SitePort(proj); got != 51515 {
-		t.Errorf("the rollback must restore the remembered port too, got %d", got)
+	if got := a.rt.cfg.SiteSlug(proj); got != "proj-5151" {
+		t.Errorf("the rollback must restore the remembered address too, got %q", got)
 	}
 }
 
@@ -2265,16 +2280,16 @@ func TestTrustingAParkedFolderMakesItsAddressWorkWithoutARestart(t *testing.T) {
 	first := newTestAppWithConfigDir(t, home, cfgBase)
 	s, rel := first.openForTest(t, page)
 	bookmark := s.url(rel)
-	port := s.port
+	host := s.host
 	first.shutdown()
 
-	// The folder was never trusted, so the second launch holds its remembered port
-	// with the recovery page rather than a site.
+	// The folder was never trusted, so the second launch answers its remembered
+	// address with the recovery page rather than a site.
 	second := newTestAppWithConfigDir(t, home, cfgBase)
 	defer second.shutdown()
 	second.startSites()
 	if code, _ := fetch(t, bookmark); code != http.StatusNotFound {
-		t.Fatalf("precondition: the remembered port should hold the recovery page, got %d", code)
+		t.Fatalf("precondition: the remembered address should answer the recovery page, got %d", code)
 	}
 
 	if err := second.trustFolder(proj); err != nil {
@@ -2295,8 +2310,8 @@ func TestTrustingAParkedFolderMakesItsAddressWorkWithoutARestart(t *testing.T) {
 	for _, site := range second.sites {
 		if site.anchor == proj {
 			live++
-			if site.port != port {
-				t.Errorf("the origin moved to %d; the whole point of the remembered port is that it does not", site.port)
+			if site.host != host {
+				t.Errorf("the origin moved to %s; the whole point of the remembered address is that it does not", site.host)
 			}
 		}
 	}
@@ -2309,9 +2324,9 @@ func TestTrustingAParkedFolderMakesItsAddressWorkWithoutARestart(t *testing.T) {
 // origin for a tree that already has one (invariant 4).
 //
 // The outer folder keeps anchoring everything under it, so a second site would
-// hold a redundant listener and remember a port for a shadowed anchor. startSites
-// skips shadowed folders, so after a restart that port would be parked instead:
-// the same URL would work now and be dead tomorrow.
+// serve a redundant origin and remember an address for a shadowed anchor.
+// startSites skips shadowed folders, so after a restart that address would be
+// retired instead: the same URL would work now and be dead tomorrow.
 func TestTrustingANestedFolderBindsNoSecondSite(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -2341,8 +2356,8 @@ func TestTrustingANestedFolderBindsNoSecondSite(t *testing.T) {
 	if len(anchors) != 1 || anchors[0] != outer {
 		t.Errorf("the outer folder must own the only site, got %v", anchors)
 	}
-	if got := a.rt.cfg.SitePort(inner); got != 0 {
-		t.Errorf("a shadowed folder must not have a remembered port, got %d", got)
+	if got := a.rt.cfg.SiteSlug(inner); got != "" {
+		t.Errorf("a shadowed folder must not have a remembered address, got %q", got)
 	}
 }
 
@@ -2430,13 +2445,13 @@ func TestTrustingOnceQuittingHasStartedBuildsNothing(t *testing.T) {
 	cfgBase := t.TempDir()
 	first := newTestAppWithConfigDir(t, home, cfgBase)
 	s, _ := first.openForTest(t, filepath.Join(proj, "index.htmlclay"))
-	remembered := s.port
+	remembered := s.slug
 	first.shutdown()
 
 	a := newTestAppWithConfigDir(t, home, cfgBase)
 	a.startSites()
-	if got := a.rt.cfg.SitePort(proj); got != remembered {
-		t.Fatalf("precondition: the port should be remembered, got %d want %d", got, remembered)
+	if got := a.rt.cfg.SiteSlug(proj); got != remembered {
+		t.Fatalf("precondition: the address should be remembered, got %q want %q", got, remembered)
 	}
 	a.shutdown()
 

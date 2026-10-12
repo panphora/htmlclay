@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -163,7 +162,7 @@ func TestRecoveryNavigationMovesAnOldBookmarkToTheParentsOrigin(t *testing.T) {
 	}
 	s, rel := first.openForTest(t, page)
 	bookmark := s.url(rel)
-	subPort := s.port
+	subHost := s.host
 	host := s.host
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatal(err)
@@ -175,8 +174,8 @@ func TestRecoveryNavigationMovesAnOldBookmarkToTheParentsOrigin(t *testing.T) {
 	t.Cleanup(second.shutdown)
 
 	parent := liveSite(t, second, proj)
-	if parent.port == subPort {
-		t.Fatal("the parent took the child's port, so the fixture proves nothing")
+	if parent.host == subHost {
+		t.Fatal("the parent took the child's address, so the fixture proves nothing")
 	}
 
 	// A plain GET is not a navigation and keeps the old answer, exactly as
@@ -241,8 +240,8 @@ func TestRecoveryNavigationMovesAnUndeclaredRememberedAnchorToTheTrustedParent(t
 	second.startSites()
 	t.Cleanup(second.shutdown)
 
-	if second.rt.cfg.SitePort(child) == 0 {
-		t.Fatal("the fixture did not remember a port for the child folder")
+	if second.rt.cfg.SiteSlug(child) == "" {
+		t.Fatal("the fixture did not remember an address for the child folder")
 	}
 	for _, tf := range second.rt.cfg.TrustedFolderList() {
 		if tf.Path == child {
@@ -480,11 +479,10 @@ func TestLinkFromASiteToARetiredAddressRedirectsThenServes(t *testing.T) {
 	if got, want := next.Header.Get("Referer"), "http://"+otherSite.host+"/"; got != want {
 		t.Fatalf("the hop the 302 caused carried Referer %q, want %q", got, want)
 	}
-	// A per-port site's own gate (internal/server.NewWithLiveSync) owns only its own
-	// two loopback spellings, so the hop above is refused until the app's origins are
-	// installed on the hosted servers. The relocation itself is what this step owns.
-	if code, _, _ := do(t, browserClient(), next); code != http.StatusForbidden {
-		t.Fatalf("a cross-site hop between two live sites = %d, want 403 before the hosted cutover", code)
+	// The destination's gate admits the hop because the Referer names an origin this
+	// process owns, so the file is served editable on the site that holds it.
+	if code, _, body := do(t, browserClient(), next); code != http.StatusOK || !strings.Contains(body, "savetoken") {
+		t.Fatalf("a cross-site hop between two live sites = %d, %q, want 200 with a save token", code, body)
 	}
 
 	// Opened as a bookmark, the same retired address redirects and the destination
@@ -638,29 +636,12 @@ func TestRecoveryNavigationRefusesWhenTheDestinationCannotServe(t *testing.T) {
 		}
 	})
 
-	t.Run("target on the same port", func(t *testing.T) {
-		home, _ := filepath.EvalSymlinks(t.TempDir())
-		proj := filepath.Join(home, "proj")
-		sub := filepath.Join(proj, "sub")
-		writeTestFile(t, filepath.Join(sub, "index.htmlclay"), "<html><body>index</body></html>")
-
-		a := newTestApp(t, home)
-		if err := a.trustFolder(proj); err != nil {
-			t.Fatal(err)
-		}
-		parent := liveSite(t, a, proj)
-
-		req := navRequest(t, parent.url(filepath.Join("proj", "sub", "index.htmlclay")))
-		if target, ok := a.recoveryTargetFor(sub, req, false); ok {
-			t.Fatalf("a target on the same port relocated to %q", target)
-		}
-	})
 }
 
-// Untrusting a folder is a revocation, not a relocation. Its freed port keeps
+// Untrusting a folder is a revocation, not a relocation. Its freed address keeps
 // the recovery page even though a trusted parent still covers the file, so an
 // old address cannot quietly revive what the user took back.
-func TestRecoveryNavigationDoesNotReviveAnUntrustedPort(t *testing.T) {
+func TestRecoveryNavigationDoesNotReviveAnUntrustedHostname(t *testing.T) {
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	proj := filepath.Join(home, "proj")
 	sub := filepath.Join(proj, "sub")
@@ -684,7 +665,7 @@ func TestRecoveryNavigationDoesNotReviveAnUntrustedPort(t *testing.T) {
 	t.Cleanup(second.shutdown)
 
 	if got := recoveryRedirect(t, bookmark); got == "" {
-		t.Fatal("setup: a merely shadowed folder's port should relocate")
+		t.Fatal("setup: a merely shadowed folder's address should relocate")
 	}
 	if err := second.untrustFolder(sub); err != nil {
 		t.Fatal(err)
@@ -692,16 +673,16 @@ func TestRecoveryNavigationDoesNotReviveAnUntrustedPort(t *testing.T) {
 
 	code, header, body := do(t, browserClient(), navRequest(t, bookmark))
 	if code != 404 || header.Get("Location") != "" {
-		t.Fatalf("a revoked port relocated: %d, %q", code, header.Get("Location"))
+		t.Fatalf("a revoked address relocated: %d, %q", code, header.Get("Location"))
 	}
 	if strings.Contains(body, "savetoken") {
-		t.Fatalf("a revoked port served the file: %q", body)
+		t.Fatalf("a revoked address served the file: %q", body)
 	}
 	if !strings.Contains(body, "Nothing is open at this address") {
 		t.Fatalf("expected the recovery page, got %q", body)
 	}
 	if n := registrations(t, second, page); n != 0 {
-		t.Fatalf("a revoked port registered the file in %d sites", n)
+		t.Fatalf("a revoked address registered the file in %d sites", n)
 	}
 }
 
@@ -765,7 +746,7 @@ func TestRecoveryDeadChildRelocatesOnlyAfterItsPinIsRestored(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, rel := first.openForTest(t, page)
-	childPort := s.port
+	childHost := s.host
 	bookmark := s.url(rel)
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatal(err)
@@ -798,11 +779,11 @@ func TestRecoveryDeadChildRelocatesOnlyAfterItsPinIsRestored(t *testing.T) {
 	}
 
 	parent := liveSite(t, second, proj)
-	if parent.port == childPort {
-		t.Fatal("the parent took the child's port, so the fixture proves nothing")
+	if parent.host == childHost {
+		t.Fatal("the parent took the child's address, so the fixture proves nothing")
 	}
 	if got := recoveryRedirect(t, bookmark); got != parent.url(rel) {
-		t.Fatalf("the repaired port relocated to %q, want %q", got, parent.url(rel))
+		t.Fatalf("the repaired address relocated to %q, want %q", got, parent.url(rel))
 	}
 	if n := registrations(t, second, page); n != 0 {
 		t.Fatalf("relocating registered the file in %d sites", n)
@@ -829,7 +810,7 @@ func TestRecoveryNavigationDoesNotReviveARetrustedChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, rel := first.openForTest(t, page)
-	childPort := s.port
+	childHost := s.host
 	bookmark := s.url(rel)
 	if err := first.trustFolder(proj); err != nil {
 		t.Fatal(err)
@@ -841,11 +822,11 @@ func TestRecoveryNavigationDoesNotReviveARetrustedChild(t *testing.T) {
 	t.Cleanup(second.shutdown)
 
 	parent := liveSite(t, second, proj)
-	if parent.port == childPort {
-		t.Fatal("the parent took the child's port, so the fixture proves nothing")
+	if parent.host == childHost {
+		t.Fatal("the parent took the child's address, so the fixture proves nothing")
 	}
 	if got := recoveryRedirect(t, bookmark); got == "" {
-		t.Fatal("setup: a merely shadowed folder's port should relocate")
+		t.Fatal("setup: a merely shadowed folder's address should relocate")
 	}
 
 	if err := second.untrustFolder(child); err != nil {
@@ -857,10 +838,10 @@ func TestRecoveryNavigationDoesNotReviveARetrustedChild(t *testing.T) {
 
 	code, header, body := do(t, browserClient(), navRequest(t, bookmark))
 	if code != http.StatusNotFound || header.Get("Location") != "" {
-		t.Fatalf("a revoked port relocated: %d, %q", code, header.Get("Location"))
+		t.Fatalf("a revoked address relocated: %d, %q", code, header.Get("Location"))
 	}
 	if strings.Contains(body, "savetoken") {
-		t.Fatalf("a revoked port served the file: %q", body)
+		t.Fatalf("a revoked address served the file: %q", body)
 	}
 	code, body = followNav(t, parent.url(rel))
 	if code != 200 || !strings.Contains(body, "savetoken") {
@@ -872,7 +853,7 @@ func TestRecoveryNavigationDoesNotReviveARetrustedChild(t *testing.T) {
 // once: their bookmarks have to work again without an OS open, and the port the
 // removed folder held must not become a way back into the tree.
 func TestRecoveryUntrustingAParentBringsItsShadowedChildLive(t *testing.T) {
-	fixture := func(t *testing.T) (home, proj, child, page, rel, cfgBase string, childPort int, bookmark string) {
+	fixture := func(t *testing.T) (home, proj, child, page, rel, cfgBase string, childHost string, bookmark string) {
 		t.Helper()
 		home, _ = filepath.EvalSymlinks(t.TempDir())
 		proj = filepath.Join(home, "proj")
@@ -886,28 +867,28 @@ func TestRecoveryUntrustingAParentBringsItsShadowedChildLive(t *testing.T) {
 			t.Fatal(err)
 		}
 		s, rel := first.openForTest(t, page)
-		childPort = s.port
+		childHost = s.host
 		bookmark = s.url(rel)
 		if err := first.trustFolder(proj); err != nil {
 			t.Fatal(err)
 		}
 		first.shutdown()
-		return home, proj, child, page, rel, cfgBase, childPort, bookmark
+		return home, proj, child, page, rel, cfgBase, childHost, bookmark
 	}
 
 	t.Run("valid child", func(t *testing.T) {
-		home, proj, child, page, rel, cfgBase, childPort, bookmark := fixture(t)
+		home, proj, child, page, rel, cfgBase, childHost, bookmark := fixture(t)
 
 		second := newTestAppWithConfigDir(t, home, cfgBase)
 		second.startSites()
 		t.Cleanup(second.shutdown)
 
 		parent := liveSite(t, second, proj)
-		if parent.port == childPort {
-			t.Fatal("the parent took the child's port, so the fixture proves nothing")
+		if parent.host == childHost {
+			t.Fatal("the parent took the child's address, so the fixture proves nothing")
 		}
 		if code, _ := fetch(t, bookmark); code != 404 {
-			t.Fatalf("setup: the shadowed child's port should hold the recovery page, got %d", code)
+			t.Fatalf("setup: the shadowed child's address should answer the recovery page, got %d", code)
 		}
 
 		if err := second.untrustFolder(proj); err != nil {
@@ -915,8 +896,8 @@ func TestRecoveryUntrustingAParentBringsItsShadowedChildLive(t *testing.T) {
 		}
 
 		childSite := liveSite(t, second, child)
-		if childSite.port != childPort {
-			t.Fatalf("the surviving child bound port %d, want its remembered %d", childSite.port, childPort)
+		if childSite.host != childHost {
+			t.Fatalf("the surviving child bound address %s, want its remembered %s", childSite.host, childHost)
 		}
 		if n := registrations(t, second, page); n != 0 {
 			t.Fatalf("bringing the child live registered the file in %d sites", n)
@@ -928,7 +909,7 @@ func TestRecoveryUntrustingAParentBringsItsShadowedChildLive(t *testing.T) {
 
 		code, header, _ := do(t, browserClient(), navRequest(t, parent.url(rel)))
 		if code != 404 || header.Get("Location") != "" {
-			t.Fatalf("the untrusted parent's port relocated: %d, %q", code, header.Get("Location"))
+			t.Fatalf("the untrusted parent's address relocated: %d, %q", code, header.Get("Location"))
 		}
 	})
 
@@ -955,10 +936,10 @@ func TestRecoveryUntrustingAParentBringsItsShadowedChildLive(t *testing.T) {
 		}
 		code, header, body := do(t, browserClient(), navRequest(t, bookmark))
 		if code != 404 || header.Get("Location") != "" {
-			t.Fatalf("a broken child's port relocated: %d, %q", code, header.Get("Location"))
+			t.Fatalf("a broken child's address relocated: %d, %q", code, header.Get("Location"))
 		}
 		if strings.Contains(body, "savetoken") {
-			t.Fatalf("a broken child's port served the file: %q", body)
+			t.Fatalf("a broken child's address served the file: %q", body)
 		}
 	})
 }
@@ -978,7 +959,12 @@ func TestRecoveryTargetForRequiresTheAnchorToDeclareItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent := liveSite(t, a, proj)
-	parkedPort := parent.port + 1
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parkedPort := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
 	rel := filepath.Join("proj", "child", "index.htmlclay")
 	req := navRequest(t, fileURL(server.LoopbackHosts(parkedPort)[0], rel))
 
@@ -1240,7 +1226,7 @@ func revokedTestClient() *http.Client {
 	return &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-func TestRecoveryRevokedChildPortSurvivesParentRemoval(t *testing.T) {
+func TestRecoveryRevokedChildHostnameSurvivesParentRemoval(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1253,7 +1239,6 @@ func TestRecoveryRevokedChildPortSurvivesParentRemoval(t *testing.T) {
 	if err := first.trustFolder(child); err != nil {
 		t.Fatal(err)
 	}
-	oldPort := revokedTestSite(first, child).port
 	oldHost := revokedTestSite(first, child).host
 	if err := first.trustFolder(parent); err != nil {
 		t.Fatal(err)
@@ -1278,18 +1263,14 @@ func TestRecoveryRevokedChildPortSurvivesParentRemoval(t *testing.T) {
 	}
 	status, err := revokedTestNavigation(t, client, bookmark)
 	if err != nil {
-		ln, bindErr := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(oldPort))
-		if bindErr == nil {
-			ln.Close()
-		}
-		t.Fatalf("revoked bookmark stopped answering after parent removal: %v; old port free=%v", err, bindErr == nil)
+		t.Fatalf("revoked bookmark stopped answering after parent removal: %v", err)
 	}
 	if status != http.StatusNotFound {
-		t.Fatalf("revoked port = %d, want 404", status)
+		t.Fatalf("revoked address = %d, want 404", status)
 	}
 }
 
-func TestRecoveryRevokedPortSurvivesRetrustingTheSameFolder(t *testing.T) {
+func TestRecoveryRevokedHostnameSurvivesRetrustingTheSameFolder(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1300,7 +1281,6 @@ func TestRecoveryRevokedPortSurvivesRetrustingTheSameFolder(t *testing.T) {
 	if err := a.trustFolder(folder); err != nil {
 		t.Fatal(err)
 	}
-	oldPort := revokedTestSite(a, folder).port
 	oldHost := revokedTestSite(a, folder).host
 	if err := a.untrustFolder(folder); err != nil {
 		t.Fatal(err)
@@ -1309,11 +1289,107 @@ func TestRecoveryRevokedPortSurvivesRetrustingTheSameFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := revokedTestSite(a, folder)
-	if s == nil || s.port == oldPort {
-		t.Fatalf("re-trusted site = %+v, want a live site on a fresh port", s)
+	if s == nil || s.host == oldHost {
+		t.Fatalf("re-trusted site = %+v, want a live site at a fresh address", s)
 	}
 	status, err := revokedTestNavigation(t, revokedTestClient(), fileURL(oldHost, "proj/page.htmlclay"))
 	if err != nil || status != http.StatusNotFound {
 		t.Fatalf("revoked address after re-trust = %d, %v; want the 404 recovery page", status, err)
+	}
+}
+
+// A per-folder port remembered from before hostnames is bound at startup even when the
+// folder behind it is dead, and answers with the page that says why: the address the
+// bookmark names has to explain itself rather than refuse the connection.
+func TestLegacyPortForADeadFolderAnswersTheDeadPage(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	page := filepath.Join(proj, "index.htmlclay")
+	writeTestFile(t, page, "<html><body>index</body></html>")
+
+	cfgBase := t.TempDir()
+	first := newTestAppWithConfigDir(t, home, cfgBase)
+	if err := first.trustFolder(proj); err != nil {
+		t.Fatal(err)
+	}
+	first.openForTest(t, page)
+	first.shutdown()
+
+	second := newTestAppWithConfigDir(t, home, cfgBase)
+	if _, ok := second.rt.cfg.SetTrustedIdentity(proj, "not-the-folder-on-disk"); !ok {
+		t.Fatal("no trusted entry to break")
+	}
+	legacy := freeTestPort(t)
+	second.rt.cfg.RememberSitePort(proj, legacy)
+	second.startSites()
+	t.Cleanup(second.shutdown)
+
+	bookmark := fileURL(server.LoopbackHosts(legacy)[0], "proj/index.htmlclay")
+	if code, body := fetch(t, bookmark); code != http.StatusNotFound || body != string(deadFolderPage) {
+		t.Fatalf("a plain GET on a dead folder's legacy port = %d %q", code, body)
+	}
+	code, headers, body := do(t, browserClient(), navRequest(t, bookmark))
+	if code != http.StatusNotFound || headers.Get("Location") != "" || body != string(deadFolderPage) {
+		t.Fatalf("a navigation on a dead folder's legacy port = %d %q %q", code, headers.Get("Location"), body)
+	}
+}
+
+// A legacy per-folder port redirects an eligible navigation to the folder's hostname
+// while the folder is trusted, and keeps the recovery page once the user revokes it: an
+// old address must never quietly revive what the user took back.
+func TestUntrustingAFolderTurnsItsLegacyPortRevoked(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	proj := filepath.Join(home, "proj")
+	page := filepath.Join(proj, "index.htmlclay")
+	writeTestFile(t, page, "<html><body>index</body></html>")
+
+	cfgBase := t.TempDir()
+	first := newTestAppWithConfigDir(t, home, cfgBase)
+	if err := first.trustFolder(proj); err != nil {
+		t.Fatal(err)
+	}
+	first.openForTest(t, page)
+	first.shutdown()
+
+	second := newTestAppWithConfigDir(t, home, cfgBase)
+	legacy := freeTestPort(t)
+	second.rt.cfg.RememberSitePort(proj, legacy)
+	second.startSites()
+	t.Cleanup(second.shutdown)
+
+	live := liveSite(t, second, proj)
+	rel := "proj/index.htmlclay"
+	bookmark := fileURL(server.LoopbackHosts(legacy)[0], rel)
+	if got := recoveryRedirect(t, bookmark); got != live.url(rel) {
+		t.Fatalf("the legacy port relocated to %q, want %q", got, live.url(rel))
+	}
+	if code, _ := fetch(t, bookmark); code != http.StatusNotFound {
+		t.Fatalf("a plain GET on the legacy port = %d, want 404", code)
+	}
+
+	if err := second.untrustFolder(proj); err != nil {
+		t.Fatal(err)
+	}
+	code, headers, body := do(t, browserClient(), navRequest(t, bookmark))
+	if code != http.StatusNotFound || headers.Get("Location") != "" || !strings.Contains(body, "Nothing is open at this address") {
+		t.Fatalf("an untrusted folder's legacy port = %d %q %q", code, headers.Get("Location"), body)
+	}
+	if _, known := second.rt.cfg.SitePortList()[proj]; known {
+		t.Fatal("the untrusted folder's legacy port must be forgotten")
+	}
+	second.shutdown()
+
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+
+	third := newTestAppWithConfigDir(t, home, cfgBase)
+	third.rt.cfg.RememberSitePort(proj, taken.Addr().(*net.TCPAddr).Port)
+	third.startSites()
+	t.Cleanup(third.shutdown)
+	if _, known := third.rt.cfg.SitePortList()[proj]; known {
+		t.Fatal("a legacy port that is already taken must be dropped from the config")
 	}
 }

@@ -14,11 +14,10 @@ import (
 	"github.com/panphora/htmlclay/internal/trust"
 )
 
-// parked is a remembered port bound with no capability at all: no session
-// manager, no read roots, no versions store, no broker, and no file-serving
-// code. It exists so a bookmarked URL answers with a page instead of
-// ERR_CONNECTION_REFUSED, which is what a refresh got before ports were bound
-// at startup.
+// parked is a LEGACY per-folder port from before hostnames, bound with no capability at
+// all: no session manager, no read roots, no versions store, no broker, and no
+// file-serving code. It exists so a bookmark made under the old model answers with a
+// redirect to the folder's hostname, or a page, instead of ERR_CONNECTION_REFUSED.
 //
 // It is a separate type from site precisely so that it is structurally
 // incapable of serving a file, whatever a later change to the serve path does.
@@ -54,6 +53,16 @@ const (
 	recoveryRevoked
 )
 
+func (k recoveryKind) String() string {
+	switch k {
+	case recoveryDead:
+		return "dead"
+	case recoveryRevoked:
+		return "revoked"
+	}
+	return "ordinary"
+}
+
 // parkPort binds port and answers it with the recovery page, or with a redirect
 // to the origin current trust gives the anchor when an eligible navigation
 // arrives. A port that is already taken is simply skipped: something else owns
@@ -69,33 +78,39 @@ func (a *app) parkPortWith(anchor string, port int, page []byte) {
 }
 
 // ownsOrigin is the app's OriginOwner (server.EligibleNavigation): every origin this
-// process answers on. Before hostnames that is each live site's two loopback spellings
-// and each parked port's.
+// process answers on. That is every hostname on its port, plus each legacy per-folder
+// port it still holds.
 func (a *app) ownsOrigin(host string) bool {
+	name, p, err := net.SplitHostPort(strings.ToLower(host))
+	if err != nil {
+		return false
+	}
+	port, _ := strconv.Atoi(p)
+	if port == a.rt.port {
+		if name == "localhost" || name == "127.0.0.1" || name == "::1" {
+			return true
+		}
+		label, ok := strings.CutSuffix(name, ".localhost")
+		return ok && server.ValidSlug(label)
+	}
+	if name != "localhost" && name != "127.0.0.1" {
+		return false
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, s := range a.sites {
-		for _, h := range server.LoopbackHosts(s.port) {
-			if h == host {
-				return true
-			}
-		}
-	}
-	for _, p := range a.parked {
-		for _, h := range server.LoopbackHosts(p.port) {
-			if h == host {
-				return true
-			}
+	for _, parked := range a.parked {
+		if parked.port == port {
+			return true
 		}
 	}
 	return false
 }
 
-func (a *app) parkPortMode(anchor string, port int, page []byte, kind recoveryKind) {
+func (a *app) parkPortMode(anchor string, port int, page []byte, kind recoveryKind) bool {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		a.rt.logger.Printf("Remembered port %d for %s is taken; not holding it", port, anchor)
-		return
+		a.rt.logger.Printf("Legacy port %d for %s is taken; dropping it", port, anchor)
+		return false
 	}
 	p := &parked{anchor: anchor, port: port, ln: ln, kind: kind}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +144,7 @@ func (a *app) parkPortMode(anchor string, port int, page []byte, kind recoveryKi
 	if a.stopping {
 		a.mu.Unlock()
 		p.close()
-		return
+		return false
 	}
 	a.parked = append(a.parked, p)
 	a.mu.Unlock()
@@ -138,35 +153,15 @@ func (a *app) parkPortMode(anchor string, port int, page []byte, kind recoveryKi
 			a.rt.logger.Printf("Recovery listener error on %s: %v", anchor, err)
 		}
 	}()
-	if kind == recoveryRevoked {
-		a.rt.logger.Printf("Holding revoked origin: anchor=%s port=%d; navigation remains on the recovery page", anchor, port)
-	} else if kind == recoveryDead {
-		a.rt.logger.Printf("Holding origin awaiting folder approval: anchor=%s port=%d", anchor, port)
-	} else {
-		a.mu.Lock()
-		targetAnchor, trusted := a.trustedAnchor(anchor)
-		target := a.siteAtLocked(targetAnchor)
-		targetPort := 0
-		if trusted && target != nil && target.trusted {
-			targetPort = target.port
-		}
-		a.mu.Unlock()
-		if targetPort != 0 && targetPort != port {
-			a.rt.logger.Printf("Holding remembered origin: anchor=%s port=%d; current trust covers it at anchor=%s port=%d for eligible navigations", anchor, port, targetAnchor, targetPort)
-		} else {
-			a.rt.logger.Printf("Holding remembered port %d for %s; eligible documents may relocate to their current trusted folder", port, anchor)
-		}
-	}
+	a.rt.logger.Printf("Holding legacy port %d for %s (%v); eligible navigations redirect to its current address", port, anchor, kind)
+	return true
 }
 
 // Relocation registers nothing; the destination performs authorization and file lookup.
+// The caller's gate or the router has already validated Host, and a retired address has
+// no live site, so the same-port refusals that used to live here have nothing to refuse.
 func (a *app) recoveryTargetFor(anchor string, r *http.Request, requireSource bool) (string, bool) {
 	if !server.EligibleNavigation(r, a.ownsOrigin) {
-		return "", false
-	}
-	_, portText, err := net.SplitHostPort(r.Host)
-	port, _ := strconv.Atoi(portText)
-	if err != nil || port == 0 {
 		return "", false
 	}
 	rel := strings.TrimPrefix(r.URL.Path, "/")
@@ -204,13 +199,8 @@ func (a *app) recoveryTargetFor(anchor string, r *http.Request, requireSource bo
 		return "", false
 	}
 	s := a.siteAtLocked(targetAnchor)
-	if s == nil || !s.trusted || s.port == port {
+	if s == nil || !s.trusted {
 		return "", false
-	}
-	for _, other := range a.sites {
-		if other != s && other.port == s.port {
-			return "", false
-		}
 	}
 	target := s.url(rel)
 	if r.URL.RawQuery != "" {
@@ -219,12 +209,10 @@ func (a *app) recoveryTargetFor(anchor string, r *http.Request, requireSource bo
 	return target, true
 }
 
-// unpark releases the recovery listener holding anchor's port, so a real site
-// can bind that exact port and the bookmark keeps working. Without this, route
-// would find the port taken by HTML Clay's own placeholder and move the origin,
-// which is the one thing binding at startup exists to prevent. A revoked
-// listener is never released: its port was forgotten with the trust, so no site
-// will bind it again, and it keeps the old address on the recovery page.
+// unpark releases the legacy listener holding anchor's port. It releases a listener
+// only, and untrustFolder is its only caller: the folder has just lost its trust, so the
+// listener is turned into a revoked one holding the same port. A revoked listener is
+// never released.
 func (a *app) unpark(anchor string) int {
 	a.mu.Lock()
 	var found *parked
@@ -244,6 +232,35 @@ func (a *app) unpark(anchor string) int {
 		return found.port
 	}
 	return 0
+}
+
+// startLegacyRedirects binds every per-folder port the config still remembers from
+// before hostnames, so an old bookmark answers with a redirect to the folder's new
+// address. A port that is taken is dropped from the config: the bookmark it protected
+// already answers with a stranger, and re-checking it every launch buys nothing. The
+// app's own port can never be held this way, since adoptPort bound it first.
+func (a *app) startLegacyRedirects() {
+	changed := false
+	for anchor, port := range a.rt.cfg.SitePortList() {
+		if port == a.rt.port {
+			a.rt.cfg.ForgetSitePort(anchor)
+			changed = true
+			continue
+		}
+		page, kind := recoveryPage, recoveryOrdinary
+		if a.retiredIsDead(anchor) {
+			page, kind = deadFolderPage, recoveryDead
+		}
+		if !a.parkPortMode(anchor, port, page, kind) {
+			a.rt.cfg.ForgetSitePort(anchor)
+			changed = true
+		}
+	}
+	if changed {
+		a.mu.Lock()
+		a.saveConfig("dropping taken legacy ports")
+		a.mu.Unlock()
+	}
 }
 
 var recoveryPage = []byte(`<!doctype html>
