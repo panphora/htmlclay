@@ -229,3 +229,93 @@ func TestSameOriginGate(t *testing.T) {
 		})
 	}
 }
+
+func TestHostGateAllowsOnlyNamedHosts(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	ours := func(h string) bool { return IsSiteHost(h, 24190) || h == "127.0.0.1:51000" }
+	gate := HostGate(ok, ours, "w4-3f2a.localhost:24190")
+	cases := []struct {
+		name, host, site, mode, dest, referer string
+		want                                  int
+	}{
+		{"own host", "w4-3f2a.localhost:24190", "", "", "", "", 204},
+		{"other slug", "notes-9c1e.localhost:24190", "", "", "", "", 403},
+		{"other port", "w4-3f2a.localhost:24191", "", "", "", "", 403},
+		{"bare loopback", "127.0.0.1:24190", "", "", "", "", 403},
+		{"uppercase is not canonical", "W4-3F2A.localhost:24190", "", "", "", "", 403},
+		{"cross-site fetch", "w4-3f2a.localhost:24190", "cross-site", "cors", "empty", "http://notes-9c1e.localhost:24190/", 403},
+		{"cross-site navigation from a sibling", "w4-3f2a.localhost:24190", "cross-site", "navigate", "document", "http://notes-9c1e.localhost:24190/a.htmlclay", 204},
+		{"cross-site navigation from a sibling, origin-only referer", "w4-3f2a.localhost:24190", "cross-site", "navigate", "document", "http://notes-9c1e.localhost:24190/", 204},
+		{"cross-site navigation from a held legacy port", "w4-3f2a.localhost:24190", "cross-site", "navigate", "document", "http://127.0.0.1:51000/", 204},
+		{"cross-site navigation from the web", "w4-3f2a.localhost:24190", "cross-site", "navigate", "document", "https://evil.example/", 403},
+		{"cross-site navigation from another port", "w4-3f2a.localhost:24190", "cross-site", "navigate", "document", "http://notes-9c1e.localhost:3000/", 403},
+		{"cross-site navigation with no referer", "w4-3f2a.localhost:24190", "cross-site", "navigate", "document", "", 403},
+		{"cross-site iframe from a sibling", "w4-3f2a.localhost:24190", "cross-site", "navigate", "iframe", "http://notes-9c1e.localhost:24190/", 403},
+		{"same-site fetch stays allowed", "w4-3f2a.localhost:24190", "same-site", "no-cors", "image", "", 204},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/x.htmlclay", nil)
+			req.Host = tc.host
+			for k, v := range map[string]string{"Sec-Fetch-Site": tc.site, "Sec-Fetch-Mode": tc.mode, "Sec-Fetch-Dest": tc.dest, "Referer": tc.referer} {
+				if v != "" {
+					req.Header.Set(k, v)
+				}
+			}
+			w := httptest.NewRecorder()
+			gate.ServeHTTP(w, req)
+			if w.Code != tc.want {
+				t.Fatalf("got %d, want %d", w.Code, tc.want)
+			}
+		})
+	}
+}
+
+func TestEligibleNavigation(t *testing.T) {
+	ours := func(h string) bool { return h == "a-1111.localhost:24190" }
+	nav := func(site, user, referer string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/p.htmlclay", nil)
+		r.Header.Set("Sec-Fetch-Mode", "navigate")
+		r.Header.Set("Sec-Fetch-Dest", "document")
+		if site != "" {
+			r.Header.Set("Sec-Fetch-Site", site)
+		}
+		if user != "" {
+			r.Header.Set("Sec-Fetch-User", user)
+		}
+		if referer != "" {
+			r.Header.Set("Referer", referer)
+		}
+		return r
+	}
+	cases := map[string]struct {
+		r    *http.Request
+		want bool
+	}{
+		"typed":                     {nav("none", "", ""), true},
+		"same-origin user":          {nav("same-origin", "?1", ""), true},
+		"same-origin script":        {nav("same-origin", "", ""), false},
+		"cross-site from ours":      {nav("cross-site", "", "http://a-1111.localhost:24190/"), true},
+		"cross-site uppercase ours": {nav("cross-site", "", "http://A-1111.localhost:24190/"), true},
+		"same-site from ours":       {nav("same-site", "", "http://a-1111.localhost:24190/x"), true},
+		"cross-site from the web":   {nav("cross-site", "", "https://evil.example/"), false},
+		"cross-site no referer":     {nav("cross-site", "", ""), false},
+		"no fetch metadata":         {nav("", "", ""), false},
+		"not a navigation (iframe)": {func() *http.Request { r := nav("none", "", ""); r.Header.Set("Sec-Fetch-Dest", "iframe"); return r }(), false},
+		"not a navigation (POST)":   {func() *http.Request { r := nav("none", "", ""); r.Method = http.MethodPost; return r }(), false},
+	}
+	for name, tc := range cases {
+		if got := EligibleNavigation(tc.r, ours); got != tc.want {
+			t.Errorf("%s: %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestValidSlug(t *testing.T) {
+	for slug, want := range map[string]bool{"w4-3f2a": true, "notes-9c1e": true, "a": true, "9lives": true,
+		"-a": false, "a-": false, "A-1": false, "a.b": false, "": false, "a_b": false} {
+		if got := ValidSlug(slug); got != want {
+			t.Errorf("ValidSlug(%q) = %v, want %v", slug, got, want)
+		}
+	}
+}

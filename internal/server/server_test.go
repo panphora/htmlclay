@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -67,5 +68,40 @@ func TestHostValidationAccepts(t *testing.T) {
 	// missing path short-circuiting to 404, which was the existence oracle.
 	if w.Code == http.StatusForbidden && w.Header().Get("X-HTMLClay-Error") == "" {
 		t.Error("should not be forbidden for valid host")
+	}
+}
+
+func TestHostedServerAnswersItsOwnHostOnly(t *testing.T) {
+	home := t.TempDir()
+	mgr := newTestManager(t, home)
+	store := versions.New(t.TempDir())
+	ls := NewLiveSync(store, logging.NewStdout())
+	t.Cleanup(ls.Shutdown)
+	ours := func(h string) bool { return IsSiteHost(h, 24190) }
+	srv := NewHosted("w4-3f2a.localhost:24190", ours, mgr, logging.NewStdout(), store, ls)
+	if srv.Host() != "w4-3f2a.localhost:24190" || srv.port != 24190 {
+		t.Fatalf("host %q port %d", srv.Host(), srv.port)
+	}
+	if err := srv.Start(); err == nil {
+		t.Fatal("a hosted server must refuse Start: it has no listener")
+	}
+	req := httptest.NewRequest("GET", "/_/meta", nil)
+	req.Host = "w4-3f2a.localhost:24190"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("own host: %d, want 200", w.Code)
+	}
+	req.Host = "127.0.0.1:24190"
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("foreign host: %d, want 403", w.Code)
+	}
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }

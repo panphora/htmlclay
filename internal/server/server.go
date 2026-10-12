@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +18,16 @@ import (
 )
 
 type Server struct {
-	httpServer  *http.Server
-	listener    net.Listener
-	sessions    *session.Manager
+	// httpServer and listener are set by New only. A hosted server (NewHosted) has neither:
+	// the app's one http.Server dispatches to it by Host through ServeHTTP.
+	httpServer *http.Server
+	listener   net.Listener
+	// handler is the whole middleware chain over the mux, which is what ServeHTTP runs.
+	handler http.Handler
+	// hosts are the exact Host header values this server answers.
+	hosts       []string
 	port        int
+	sessions    *session.Manager
 	logger      *logging.Logger
 	versions    *versions.Store
 	internalDir string
@@ -106,27 +113,64 @@ func SeqPath(store *versions.Store) string {
 	return filepath.Join(store.BaseDir(), ".livesync-seq")
 }
 
-// New builds a server that owns its own live-sync runtime and tears it down on
-// Shutdown/Close. Used by tests and any single-server caller.
-func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store) *Server {
-	s := newServer(ln, sessions, logger, store, NewLiveSync(store, logger))
-	s.ownsLiveSync = true
+func listenerServer(ln net.Listener, s *Server) *Server {
+	s.listener = ln
+	s.port = ln.Addr().(*net.TCPAddr).Port
+	s.httpServer = &http.Server{
+		Handler:           s.handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	return s
 }
 
-// NewWithLiveSync builds a server that shares an injected live-sync runtime with
-// its sibling sites. The runtime is owned by the process, not by any one server,
-// so Shutdown/Close leave it running; the process shuts it down once.
-func NewWithLiveSync(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store, ls *LiveSync) *Server {
-	return newServer(ln, sessions, logger, store, ls)
+// New builds a server on its own listener that owns its own live-sync runtime and
+// tears it down on Shutdown/Close. Used by tests and any single-server caller. It
+// accepts the two loopback spellings of its port as Host and owns no other origin.
+func New(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store) *Server {
+	hosts := LoopbackHosts(ln.Addr().(*net.TCPAddr).Port)
+	s := newServer(sessions, logger, store, NewLiveSync(store, logger), hosts, ownsHosts(hosts))
+	s.ownsLiveSync = true
+	return listenerServer(ln, s)
 }
 
-func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store, ls *LiveSync) *Server {
-	port := ln.Addr().(*net.TCPAddr).Port
+// NewWithLiveSync is the pre-hostname per-port constructor, kept until cmd/htmlclay
+// moves to NewHosted.
+func NewWithLiveSync(ln net.Listener, sessions *session.Manager, logger *logging.Logger, store *versions.Store, ls *LiveSync) *Server {
+	hosts := LoopbackHosts(ln.Addr().(*net.TCPAddr).Port)
+	return listenerServer(ln, newServer(sessions, logger, store, ls, hosts, ownsHosts(hosts)))
+}
+
+// NewHosted builds a server that answers exactly one Host value, <slug>.localhost:<port>,
+// and owns no listener: the process's one http.Server routes requests to it by Host
+// through ServeHTTP. ours is the app's view of which origins are its own, for the
+// cross-site navigation rule. It shares the injected live-sync runtime with its sibling
+// sites; Shutdown and Close release its broker, wire and AI edits and leave the runtime
+// and the listener alone, because both belong to the process.
+func NewHosted(host string, ours OriginOwner, sessions *session.Manager, logger *logging.Logger, store *versions.Store, ls *LiveSync) *Server {
+	s := newServer(sessions, logger, store, ls, []string{host}, ours)
+	if _, p, err := net.SplitHostPort(host); err == nil {
+		s.port, _ = strconv.Atoi(p)
+	}
+	return s
+}
+
+// Host is the one Host value a hosted server answers, or the first loopback spelling for
+// a listener server.
+func (s *Server) Host() string { return s.hosts[0] }
+
+// ServeHTTP runs the full middleware chain, Host gate included, for a request the
+// process router has already matched to this server.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.handler.ServeHTTP(w, r)
+}
+
+func newServer(sessions *session.Manager, logger *logging.Logger, store *versions.Store, ls *LiveSync, hosts []string, ours OriginOwner) *Server {
 	s := &Server{
-		listener: ln,
 		sessions: sessions,
-		port:     port,
+		hosts:    hosts,
 		logger:   logger,
 		versions: store,
 		broker:   newBroker(sessions, logger, defaultConfirm),
@@ -232,17 +276,7 @@ func newServer(ln net.Listener, sessions *session.Manager, logger *logging.Logge
 	// and every reserved /_/ path that reached it unmatched, which ServeMux used to answer 405 for.
 	mux.HandleFunc("POST /{path...}", s.handleDataFileWrite)
 
-	handler := s.loggingMiddleware(mux)
-	handler = HostValidationMiddleware(handler, port)
-
-	s.httpServer = &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-
+	s.handler = HostGate(s.loggingMiddleware(mux), ours, hosts...)
 	return s
 }
 
@@ -277,6 +311,9 @@ func (s *Server) isInternal(absPath string) bool {
 }
 
 func (s *Server) Start() error {
+	if s.httpServer == nil {
+		return errors.New("server: a hosted server has no listener; route to it with ServeHTTP")
+	}
 	err := s.httpServer.Serve(s.listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -296,6 +333,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.ownsLiveSync {
 		s.ls.Shutdown()
 	}
+	if s.httpServer == nil {
+		return nil
+	}
 	return s.httpServer.Shutdown(ctx)
 }
 
@@ -305,6 +345,9 @@ func (s *Server) Close() error {
 	s.wire.shutdown()
 	if s.ownsLiveSync {
 		s.ls.Shutdown()
+	}
+	if s.httpServer == nil {
+		return nil
 	}
 	return s.httpServer.Close()
 }
