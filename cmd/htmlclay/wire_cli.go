@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -124,10 +125,11 @@ const wireUsage = `htmlclay wire — talk to one open HTML Clay file from this t
   htmlclay wire send   <file> --type <type> ...    send one frame, payload on stdin
   htmlclay wire where  <file>                      print the origin serving <file>
 
-Flags may come before or after <file>. Every command also takes --port <n> to
-name the origin directly, which is how you reach a file whose folder HTML Clay
-does not remember a port for (a file loose in your home directory, say): read the
-port off the page's own URL.
+Flags may come before or after <file>. Every command also takes --origin <url> to
+name an HTML Clay site's address as the browser shows it, which is how you reach a
+file whose folder HTML Clay remembers no origin for (a file loose in your home
+directory, say): copy it out of the address bar. --port <n> names a Hyperclay
+Local origin, which has no hostname.
 
 serve runs <cmd> once per wire/request with the request envelope on stdin, and
 sets HTMLCLAY_WIRE_FILE and HTMLCLAY_WIRE_ID in its environment. Each line the
@@ -145,7 +147,7 @@ Frames go to stdout, one JSON object per line. Everything else goes to stderr.
 Exit codes: 1 usage, 2 HTML Clay is not running, 3 the address is held by the
 recovery page, 4 no site is serving that file, 5 the handler slot is taken,
 6 refused, 7 sent with no handler attached, 8 both HTML Clay and Hyperclay Local
-serve that file, so pass --port.
+serve that file, so pass --origin or --port.
 `
 
 // wireDispatch runs a `htmlclay wire ...` invocation and reports whether it
@@ -283,16 +285,23 @@ func newWireID() string {
 
 type wireCandidate struct {
 	anchor string
-	port   int
-	// ancestor records that this port's anchor contains the file, which is what
-	// makes a recovery page found here mean "this file's own address is parked"
-	// rather than "some unrelated address is".
+	// port is the loopback port to dial; host is the Host header to send, "" for a
+	// Hyperclay Local root, a legacy per-folder port and a --port candidate, which are
+	// reached as 127.0.0.1:<port>.
+	port     int
+	host     string
 	ancestor bool
-	// source names the app that published this anchor ("htmlclay" or
-	// "hyperclay-local"), which is what the ambiguity check groups by. Empty on
-	// a --port candidate.
-	source string
+	source   string
 }
+
+func (c wireCandidate) hostHeader() string {
+	if c.host != "" {
+		return c.host
+	}
+	return fmt.Sprintf("127.0.0.1:%d", c.port)
+}
+
+func (c wireCandidate) origin() string { return "http://" + c.hostHeader() }
 
 var (
 	errWireAppDown  = errors.New("HTML Clay is not running, or has never served this file's folder")
@@ -302,27 +311,33 @@ var (
 	errWireAmbiguous = errors.New("both HTML Clay and Hyperclay Local serve this file")
 )
 
-// 8: both apps serve the file, and only --port can say which origin is meant.
+// 8: both apps serve the file, and only --origin or --port can say which origin is meant.
 const wireExitAmbiguous = 8
 
-// wireSitePorts reads the remembered ports WITHOUT going through config.Load.
+// wireConfig is the tolerant decode of the config fields the CLI reads.
+type wireConfig struct {
+	Port      int               `json:"port"`
+	SiteSlugs map[string]string `json:"siteSlugs"`
+	SitePorts map[string]int    `json:"sitePorts"`
+}
+
+// wireReadConfig reads the remembered origins WITHOUT going through config.Load.
 //
 // Load renames a corrupt config aside, promotes legacy fields, dedupes and caps,
 // so a `htmlclay wire` invocation racing the running app could quarantine the
-// live config. A tolerant decode of the one field this CLI needs cannot. Every
-// failure here means no hint at all, and --port is the way out of that.
-func wireSitePorts(configPath string) map[string]int {
+// live config. A tolerant decode of the fields this CLI needs cannot. Every
+// failure here means no hint at all, and --origin or --port is the way out of
+// that.
+func wireReadConfig(configPath string) wireConfig {
+	var doc wireConfig
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil
-	}
-	var doc struct {
-		SitePorts map[string]int `json:"sitePorts"`
+		return doc
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil
+		return wireConfig{}
 	}
-	return doc.SitePorts
+	return doc
 }
 
 // wireLocalRootsPath is where Hyperclay Local publishes the folders it serves:
@@ -381,51 +396,60 @@ func wirePIDAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// wireCandidates orders the remembered ports by how likely each is to serve
-// file. This is a PROBE ORDER and never a decision: the anchor rule (the
-// broadest live trusted folder wins, with an identity pin and a lexical
-// tiebreak) lives in sites.go, and reimplementing it here is how a bug family
-// gets a second home. The server answers; this only decides who to ask first.
-//
-// Ancestors first and broadest first mirrors that rule, so the ordinary case is
-// one request. Every other remembered port follows, because config.json is
-// written only when a port changes and a merely stale hint must not make a live
-// origin unreachable. A site never admits a file another site registered, so a
-// wrong guess costs one 404 and nothing else.
-//
-// KNOWN GAP, and --port is the answer to it: a file whose origin anchors at the
-// home directory has no entry at all, because rememberPort deliberately skips
-// that anchor (every loose file would otherwise overwrite one entry, and startup
-// would then bind a port belonging to whichever file was opened last). Such a
-// file is served and editable but undiscoverable from here.
-func wireCandidates(ports map[string]int, file string) []wireCandidate {
-	dir := filepath.Dir(file)
+// wireCandidates orders the remembered origins by how likely each is to serve file.
+// Hostnames on the app's port come first, then legacy per-folder ports, which an app
+// that has not restarted since the upgrade still serves and a restarted one redirects
+// (a redirect classifies as a stranger, so a stale entry costs one probe). Ancestors
+// first, broadest first, exactly as before; a key that IS the file (a file loose in
+// home) is an ancestor too, which closes the old gap for such files.
+func wireCandidates(cfg wireConfig, file string) []wireCandidate {
 	var ancestors, others []wireCandidate
-	for anchor, port := range ports {
+	add := func(c wireCandidate) {
+		if session.EqualOrUnder(file, c.anchor) {
+			c.ancestor = true
+			ancestors = append(ancestors, c)
+		} else {
+			others = append(others, c)
+		}
+	}
+	if cfg.Port > 0 && cfg.Port <= 65535 {
+		for key, slug := range cfg.SiteSlugs {
+			if slug == "" {
+				continue
+			}
+			add(wireCandidate{anchor: key, port: cfg.Port, host: slug + ".localhost:" + strconv.Itoa(cfg.Port), source: "htmlclay"})
+		}
+	}
+	for anchor, port := range cfg.SitePorts {
 		if port <= 0 || port > 65535 {
 			continue
 		}
-		if session.EqualOrUnder(dir, anchor) {
-			ancestors = append(ancestors, wireCandidate{anchor: anchor, port: port, ancestor: true, source: "htmlclay"})
-		} else {
-			others = append(others, wireCandidate{anchor: anchor, port: port, source: "htmlclay"})
-		}
+		add(wireCandidate{anchor: anchor, port: port, source: "htmlclay"})
 	}
-	sort.Slice(ancestors, func(i, j int) bool {
-		if len(ancestors[i].anchor) != len(ancestors[j].anchor) {
-			return len(ancestors[i].anchor) < len(ancestors[j].anchor)
+	less := func(a, b wireCandidate) bool {
+		if (a.host != "") != (b.host != "") {
+			return a.host != ""
 		}
-		return ancestors[i].anchor < ancestors[j].anchor
+		if len(a.anchor) != len(b.anchor) {
+			return len(a.anchor) < len(b.anchor)
+		}
+		return a.anchor < b.anchor
+	}
+	sort.SliceStable(ancestors, func(i, j int) bool { return less(ancestors[i], ancestors[j]) })
+	sort.SliceStable(others, func(i, j int) bool {
+		if (others[i].host != "") != (others[j].host != "") {
+			return others[i].host != ""
+		}
+		return others[i].anchor < others[j].anchor
 	})
-	sort.Slice(others, func(i, j int) bool { return others[i].anchor < others[j].anchor })
 	return append(ancestors, others...)
 }
 
 // wireAllCandidates merges both apps' anchors into one probe order: every
 // ancestor from either app broadest first, then every other anchor. A file only
 // one app serves costs at most one 404 from the other.
-func wireAllCandidates(ports map[string]int, local []wireLocalRoot, file string) []wireCandidate {
-	cands := wireCandidates(ports, file)
+func wireAllCandidates(cfg wireConfig, local []wireLocalRoot, file string) []wireCandidate {
+	cands := wireCandidates(cfg, file)
 	dir := filepath.Dir(file)
 	var ancestors, others []wireCandidate
 	for _, c := range cands {
@@ -457,13 +481,56 @@ func wireAllCandidates(ports map[string]int, local []wireLocalRoot, file string)
 	return append(ancestors, others...)
 }
 
-// wireResolveCandidates is what every subcommand calls. A --port names the
-// origin outright and suppresses the hint entirely.
-func wireResolveCandidates(env *wireEnv, file string, port int) []wireCandidate {
-	if port > 0 {
-		return []wireCandidate{{anchor: "--port", port: port, ancestor: true}}
+// wireOriginCandidate parses --origin. It takes what the address bar shows, with or
+// without the scheme, with or without a path: the host and port are all it keeps. HTML
+// Clay serves plain http, so https is a mistake, and a port is required because the
+// hostname alone names nothing. Dialed at 127.0.0.1 with that Host, so it needs no name
+// resolution.
+func wireOriginCandidate(origin string) (wireCandidate, error) {
+	raw := origin
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
 	}
-	return wireAllCandidates(wireSitePorts(env.configPath), wireLocalRoots(env.localRootsPath), file)
+	u, err := url.Parse(raw)
+	if err != nil {
+		return wireCandidate{}, fmt.Errorf("--origin %q is not an address: %v", origin, err)
+	}
+	if !strings.EqualFold(u.Scheme, "http") {
+		return wireCandidate{}, fmt.Errorf("--origin %q: HTML Clay serves plain http, not %s", origin, u.Scheme)
+	}
+	if u.User != nil {
+		return wireCandidate{}, fmt.Errorf("--origin %q must not carry credentials", origin)
+	}
+	host, p, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		return wireCandidate{}, fmt.Errorf("--origin %q needs a port, like http://notes-3f2a.localhost:24190", origin)
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil || port <= 0 || port > 65535 {
+		return wireCandidate{}, fmt.Errorf("--origin %q: bad port %q", origin, p)
+	}
+	return wireCandidate{anchor: "--origin", port: port, host: net.JoinHostPort(strings.ToLower(host), p), ancestor: true, source: "origin"}, nil
+}
+
+// wireResolveCandidates is what every subcommand calls. --origin or --port names the
+// destination outright and suppresses the hint; a malformed --origin is a usage error
+// and nothing is probed, because a typo must not send a frame to whatever a lookup
+// finds instead.
+func wireResolveCandidates(env *wireEnv, file string, port int, origin string) ([]wireCandidate, error) {
+	if origin != "" && port > 0 {
+		return nil, errors.New("pass --origin or --port, not both")
+	}
+	if origin != "" {
+		c, err := wireOriginCandidate(origin)
+		if err != nil {
+			return nil, err
+		}
+		return []wireCandidate{c}, nil
+	}
+	if port > 0 {
+		return []wireCandidate{{anchor: "--port", port: port, ancestor: true}}, nil
+	}
+	return wireAllCandidates(wireReadConfig(env.configPath), wireLocalRoots(env.localRootsPath), file), nil
 }
 
 // wireAmbiguity asks each app's ancestors, in probe order and as an observer,
@@ -510,7 +577,7 @@ func wireAmbiguity(ctx context.Context, cands []wireCandidate, file string) erro
 	h, okH := found["htmlclay"]
 	l, okL := found["hyperclay-local"]
 	if okH && okL {
-		return fmt.Errorf("%w: HTML Clay on port %d and Hyperclay Local on port %d; pass --port to choose one", errWireAmbiguous, h.port, l.port)
+		return fmt.Errorf("%w: HTML Clay at %s and Hyperclay Local at %s; pass --origin or --port to choose one", errWireAmbiguous, h.origin(), l.origin())
 	}
 	return nil
 }
@@ -626,7 +693,7 @@ func wireReport(env *wireEnv, file string, err error) int {
 	case errors.Is(err, errWireAmbiguous):
 		return wireExitAmbiguous
 	default:
-		fmt.Fprintf(env.stderr, "htmlclay wire: if the page is open, its port is in the browser's address bar; pass it with --port\n")
+		fmt.Fprintf(env.stderr, "htmlclay wire: if the page is open, its address is in the browser's address bar; pass it with --origin\n")
 		return wireExitAppDown
 	}
 }
@@ -697,6 +764,7 @@ func wireSubscribe(ctx context.Context, c wireCandidate, file string, handler bo
 	if err != nil {
 		return nil, err
 	}
+	req.Host = c.hostHeader()
 	req.Header.Set("Accept", "text/event-stream")
 	if lastID != "" {
 		req.Header.Set("Last-Event-ID", lastID)
@@ -712,6 +780,7 @@ func wirePost(ctx context.Context, c wireCandidate, body []byte) (*http.Response
 	if err != nil {
 		return nil, err
 	}
+	req.Host = c.hostHeader()
 	req.Header.Set("Content-Type", "application/json")
 	return wireProbeClient.Do(req)
 }
@@ -729,6 +798,7 @@ func wireDrain(resp *http.Response) {
 type wireStreamOpts struct {
 	file    string
 	port    int
+	origin  string
 	handler bool
 	mode    string
 	onFrame func(raw []byte, f wireFrame)
@@ -784,7 +854,12 @@ func wireStream(ctx context.Context, env *wireEnv, opts wireStreamOpts) int {
 			attemptCancel()
 		}
 
-		cands := wireResolveCandidates(env, opts.file, opts.port)
+		cands, err := wireResolveCandidates(env, opts.file, opts.port, opts.origin)
+		if err != nil {
+			stop()
+			fmt.Fprintf(env.stderr, "htmlclay wire: %v\n", err)
+			return wireExitUsage
+		}
 		if !checked {
 			// Once, before the first connect: the answer cannot change while
 			// this stream is open, and a reconnect must not spend two extra
@@ -827,7 +902,7 @@ func wireStream(ctx context.Context, env *wireEnv, opts wireStreamOpts) int {
 		default:
 			attached = true
 			backoff = minBackoff
-			fmt.Fprintf(env.stderr, "[wire] attached as %s to http://127.0.0.1:%d (%s)\n", role, c.port, opts.file)
+			fmt.Fprintf(env.stderr, "[wire] attached as %s to %s (%s)\n", role, c.origin(), opts.file)
 			reader := &wireIdleReader{r: resp.Body, awake: func() { idle.Reset(wireIdleTimeout) }}
 			lastID = wireReadStream(reader, lastID, opts.onFrame)
 			resp.Body.Close()
@@ -895,6 +970,7 @@ func wireReadStream(body io.Reader, lastID string, onFrame func(raw []byte, f wi
 func wireWhereCmd(env *wireEnv, args []string) int {
 	fs := wireFlagSet(env, "where")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
+	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://notes-3f2a.localhost:24190; HTML Clay sites only")
 	operands, err := wireParse(fs, args)
 	if err != nil {
 		return wireExitUsage
@@ -907,7 +983,11 @@ func wireWhereCmd(env *wireEnv, args []string) int {
 	ctx, cancel := context.WithTimeout(env.ctx, 15*time.Second)
 	defer cancel()
 
-	cands := wireResolveCandidates(env, file, *port)
+	cands, err := wireResolveCandidates(env, file, *port, *origin)
+	if err != nil {
+		fmt.Fprintf(env.stderr, "htmlclay wire: %v\n", err)
+		return wireExitUsage
+	}
 	if *port == 0 {
 		if err := wireAmbiguity(ctx, cands, file); err != nil {
 			return wireReport(env, file, err)
@@ -936,7 +1016,7 @@ func wireWhereCmd(env *wireEnv, args []string) int {
 
 	out := map[string]any{
 		"file":   file,
-		"origin": fmt.Sprintf("http://127.0.0.1:%d", c.port),
+		"origin": c.origin(),
 		"anchor": c.anchor,
 		"state":  "live",
 	}
@@ -958,6 +1038,7 @@ func wireListenCmd(env *wireEnv, args []string) int {
 	fs := wireFlagSet(env, "listen")
 	handler := fs.Bool("handler", false, "take the exclusive handler slot and keep the file watched")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
+	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://notes-3f2a.localhost:24190; HTML Clay sites only")
 	operands, err := wireParse(fs, args)
 	if err != nil {
 		return wireExitUsage
@@ -972,6 +1053,7 @@ func wireListenCmd(env *wireEnv, args []string) int {
 	return wireStream(env.ctx, env, wireStreamOpts{
 		file:    file,
 		port:    *port,
+		origin:  *origin,
 		handler: *handler,
 		onFrame: func(raw []byte, _ wireFrame) {
 			// Verbatim where it can be: the envelope on stdout is this CLI's
@@ -1005,6 +1087,7 @@ func wireSendCmd(env *wireEnv, args []string) int {
 	id := fs.String("id", "", "request id (default: a fresh uuid)")
 	text := fs.String("text", "", "free-form text")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
+	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://notes-3f2a.localhost:24190; HTML Clay sites only")
 	operands, err := wireParse(fs, args)
 	if err != nil {
 		return wireExitUsage
@@ -1037,7 +1120,11 @@ func wireSendCmd(env *wireEnv, args []string) int {
 		return wireExitUsage
 	}
 
-	cands := wireResolveCandidates(env, file, *port)
+	cands, err := wireResolveCandidates(env, file, *port, *origin)
+	if err != nil {
+		fmt.Fprintf(env.stderr, "htmlclay wire: %v\n", err)
+		return wireExitUsage
+	}
 	if *port == 0 {
 		if err := wireAmbiguity(env.ctx, cands, file); err != nil {
 			return wireReport(env, file, err)
@@ -1156,6 +1243,7 @@ func wireServeCmd(env *wireEnv, args []string) int {
 
 	fs := wireFlagSet(env, "serve")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
+	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://notes-3f2a.localhost:24190; HTML Clay sites only")
 	protocol := fs.String("protocol", "raw", "helper output protocol: raw or jsonl")
 	operands, err := wireParse(fs, args[:sep])
 	if err != nil {
@@ -1176,11 +1264,11 @@ func wireServeCmd(env *wireEnv, args []string) int {
 		file:     file,
 		cmd:      args[sep+1:],
 		protocol: *protocol,
-		sender:   &wireSender{env: env, file: file, port: *port},
+		sender:   &wireSender{env: env, file: file, port: *port, origin: *origin},
 		live:     make(map[string]context.CancelFunc),
 	}
 	exit := wireStream(env.ctx, env, wireStreamOpts{
-		file: file, port: *port, handler: true, mode: *protocol, onFrame: sv.onFrame,
+		file: file, port: *port, origin: *origin, handler: true, mode: *protocol, onFrame: sv.onFrame,
 	})
 	sv.stopAll()
 	return exit
@@ -1499,11 +1587,12 @@ func (p *wirePrefixWriter) Flush() {
 // context those posts would all fail and the page would be left with requests
 // that never ended. The client's own timeout is what bounds them instead.
 type wireSender struct {
-	env   *wireEnv
-	file  string
-	port  int
-	mu    sync.Mutex
-	cands []wireCandidate
+	env    *wireEnv
+	file   string
+	port   int
+	origin string
+	mu     sync.Mutex
+	cands  []wireCandidate
 }
 
 func (s *wireSender) send(f wireFrame) {
@@ -1532,7 +1621,12 @@ func (s *wireSender) sendBody(f wireFrame, body []byte) {
 	defer s.mu.Unlock()
 	for pass := 0; pass < 2; pass++ {
 		if pass == 1 || s.cands == nil {
-			s.cands = wireResolveCandidates(s.env, s.file, s.port)
+			cands, err := wireResolveCandidates(s.env, s.file, s.port, s.origin)
+			if err != nil {
+				fmt.Fprintf(s.env.stderr, "[wire] %v\n", err)
+				return
+			}
+			s.cands = cands
 		}
 		resp, _, tErr := wireTry(s.cands, "application/json", func(c wireCandidate) (*http.Response, error) {
 			return wirePost(context.Background(), c, body)

@@ -165,18 +165,55 @@ func openTestSite(t *testing.T) (file string, s *site, cfgBase string) {
 }
 
 // The probe order mirrors the anchor rule (broadest ancestor first) without
-// reimplementing it, and every other remembered port still gets asked, because a
-// stale hint must not make a live origin unreachable.
+// reimplementing it, and every other remembered origin still gets asked, because a
+// stale hint must not make a live origin unreachable. Hostnames come first: an app
+// that has not restarted since the upgrade still serves the legacy ports, but only
+// the hostname is the address the browser is on.
 func TestWireCandidatesProbeOrder(t *testing.T) {
 	base := filepath.Join(string(filepath.Separator), "home", "u")
-	ports := map[string]int{
+	cfg := wireConfig{
+		Port: 24190,
+		SiteSlugs: map[string]string{
+			filepath.Join(base, "proj"): "proj-0001",
+			filepath.Join(base, "aaa"):  "aaa-0002",
+			filepath.Join(base, "bad"):  "",
+		},
+		SitePorts: map[string]int{
+			filepath.Join(base, "proj", "deep"): 1002,
+			filepath.Join(base, "other"):        1003,
+			filepath.Join(base, "bad"):          0,
+		},
+	}
+	got := wireCandidates(cfg, filepath.Join(base, "proj", "deep", "index.htmlclay"))
+	wantHosts := []string{
+		"proj-0001.localhost:24190",
+		"",
+		"aaa-0002.localhost:24190",
+		"",
+	}
+	wantPorts := []int{24190, 1002, 24190, 1003}
+	if len(got) != len(wantPorts) {
+		t.Fatalf("got %d candidates, want %d: %+v", len(got), len(wantPorts), got)
+	}
+	for i, c := range got {
+		if c.host != wantHosts[i] || c.port != wantPorts[i] {
+			t.Fatalf("candidate %d is %+v, want host %q on port %d", i, c, wantHosts[i], wantPorts[i])
+		}
+	}
+}
+
+// A config written before hostnames existed has only ports, and its order is
+// unchanged: broadest ancestor first, then every other remembered port.
+func TestWireCandidatesProbeOrderOfLegacyPorts(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "home", "u")
+	cfg := wireConfig{SitePorts: map[string]int{
 		filepath.Join(base, "proj"):         1001,
 		filepath.Join(base, "proj", "deep"): 1002,
 		filepath.Join(base, "other"):        1003,
 		filepath.Join(base, "aaa"):          1004,
 		filepath.Join(base, "bad"):          0,
-	}
-	got := wireCandidates(ports, filepath.Join(base, "proj", "deep", "index.htmlclay"))
+	}}
+	got := wireCandidates(cfg, filepath.Join(base, "proj", "deep", "index.htmlclay"))
 	want := []int{1001, 1002, 1004, 1003}
 	if len(got) != len(want) {
 		t.Fatalf("got %d candidates, want %d: %+v", len(got), len(want), got)
@@ -191,14 +228,14 @@ func TestWireCandidatesProbeOrder(t *testing.T) {
 // The CLI must never repair a config it cannot parse. config.Load renames a
 // corrupt file aside, and a wire invocation racing the app doing that would
 // quarantine the live config.
-func TestWireSitePortsLeavesACorruptConfigAlone(t *testing.T) {
+func TestWireReadConfigLeavesACorruptConfigAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	garbage := []byte("{not json at all")
 	if err := os.WriteFile(path, garbage, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if ports := wireSitePorts(path); ports != nil {
-		t.Fatalf("a corrupt config must yield no hint, got %+v", ports)
+	if cfg := wireReadConfig(path); cfg.Port != 0 || cfg.SiteSlugs != nil || cfg.SitePorts != nil {
+		t.Fatalf("a corrupt config must yield no hint, got %+v", cfg)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
@@ -247,12 +284,20 @@ func (l *wireQueryLog) all() []string {
 }
 
 // fakeWireOrigin answers like a live wire origin for exactly one file: 200
-// text/event-stream on subscribe, 404 plain text for anything else.
-func fakeWireOrigin(t *testing.T, file string, log *wireQueryLog) int {
+// text/event-stream on subscribe, 404 plain text for anything else. wantHost, when
+// given, is the hostname it answers on its own port, and a request whose r.Host is
+// not that name answers 403, which is what proves the CLI sent the Host header it
+// was given instead of the address it dialed.
+func fakeWireOrigin(t *testing.T, file string, log *wireQueryLog, wantHost ...string) int {
 	t.Helper()
-	return fakeOrigin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var port int
+	port = fakeOrigin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if log != nil {
 			log.add(r.URL.RawQuery)
+		}
+		if len(wantHost) > 0 && r.Host != net.JoinHostPort(wantHost[0], strconv.Itoa(port)) {
+			http.Error(w, "wrong host", http.StatusForbidden)
+			return
 		}
 		if r.URL.Path != "/_/wire/subscribe" || r.URL.Query().Get("file") != file {
 			http.Error(w, "no such file", http.StatusNotFound)
@@ -265,6 +310,7 @@ func fakeWireOrigin(t *testing.T, file string, log *wireQueryLog) int {
 		}
 		<-r.Context().Done()
 	}))
+	return port
 }
 
 // ambiguousWirePair serves one file from both apps: an HTML Clay site whose port
@@ -352,7 +398,7 @@ func TestWireAllCandidatesMergesBothApps(t *testing.T) {
 	ports := map[string]int{filepath.Join(base, "proj"): 1001}
 	local := []wireLocalRoot{{Path: team, Port: 5432}}
 
-	got := wireAllCandidates(ports, local, filepath.Join(team, "a.html"))
+	got := wireAllCandidates(wireConfig{SitePorts: ports}, local, filepath.Join(team, "a.html"))
 	wantPorts := []int{1001, 5432}
 	wantSources := []string{"htmlclay", "hyperclay-local"}
 	if len(got) != len(wantPorts) {
@@ -390,7 +436,7 @@ func TestWireAmbiguityWalksPastStaleAncestor(t *testing.T) {
 	localPort := fakeWireOrigin(t, file, nil)
 
 	cands := wireAllCandidates(
-		map[string]int{home: stalePort, project: htmlclayPort},
+		wireConfig{SitePorts: map[string]int{home: stalePort, project: htmlclayPort}},
 		[]wireLocalRoot{{Path: project, Port: localPort}},
 		file,
 	)
@@ -823,14 +869,15 @@ func parkTestPort(t *testing.T, a *app, anchor string) int {
 // the form that silently did not work while every test used the other one.
 func TestWireAcceptsFlagsOnEitherSideOfTheFile(t *testing.T) {
 	file, s, cfgBase := openTestSite(t)
+	origin := "http://" + s.host
 
 	fileFirst := newWireHarness(t, cfgBase)
-	if code := fileFirst.run("where", file, "--port", strconv.Itoa(s.port)); code != wireExitOK {
-		t.Fatalf("`where <file> --port` exited %d; stderr:\n%s", code, fileFirst.errs.String())
+	if code := fileFirst.run("where", file, "--origin", origin); code != wireExitOK {
+		t.Fatalf("`where <file> --origin` exited %d; stderr:\n%s", code, fileFirst.errs.String())
 	}
 	flagsFirst := newWireHarness(t, cfgBase)
-	if code := flagsFirst.run("where", "--port", strconv.Itoa(s.port), file); code != wireExitOK {
-		t.Fatalf("`where --port <file>` exited %d; stderr:\n%s", code, flagsFirst.errs.String())
+	if code := flagsFirst.run("where", "--origin", origin, file); code != wireExitOK {
+		t.Fatalf("`where --origin <file>` exited %d; stderr:\n%s", code, flagsFirst.errs.String())
 	}
 
 	sender := newWireHarness(t, cfgBase)
@@ -842,16 +889,107 @@ func TestWireAcceptsFlagsOnEitherSideOfTheFile(t *testing.T) {
 	}
 }
 
-// --port is the way to reach a file whose folder HTML Clay remembers no port
-// for, which is every file loose in the home directory.
+// --origin is the way to reach a file whose folder HTML Clay remembers no
+// origin for, which is every file loose in the home directory.
 func TestWirePortFlagReachesAnUnrememberedOrigin(t *testing.T) {
 	file, s, _ := openTestSite(t)
 	empty := newWireHarness(t, t.TempDir()) // no config at all
-	if code := empty.run("where", file, "--port", strconv.Itoa(s.port)); code != wireExitOK {
-		t.Fatalf("where with --port and no config exited %d; stderr:\n%s", code, empty.errs.String())
+	if code := empty.run("where", file, "--origin", "http://"+s.host); code != wireExitOK {
+		t.Fatalf("where with --origin and no config exited %d; stderr:\n%s", code, empty.errs.String())
 	}
 	if !strings.Contains(empty.out.String(), s.host) {
-		t.Errorf("where printed %q, which does not name the port it was given", empty.out.String())
+		t.Errorf("where printed %q, which does not name the origin it was given", empty.out.String())
+	}
+}
+
+// --port is what Hyperclay Local is reached with: it has no hostname, and the
+// port the CLI is given is dialed as it stands.
+func TestWirePortFlagReachesAHyperclayLocalRoot(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	file := filepath.Join(home, "proj", "index.htmlclay")
+	writeTestFile(t, file, "<html><body>local</body></html>")
+
+	port := fakeWireOrigin(t, file, nil)
+
+	h := newWireHarness(t, t.TempDir()) // no config at all
+	if code := h.run("where", file, "--port", strconv.Itoa(port)); code != wireExitOK {
+		t.Fatalf("where with --port exited %d; stderr:\n%s", code, h.errs.String())
+	}
+	if want := fmt.Sprintf("http://127.0.0.1:%d", port); !strings.Contains(h.out.String(), want) {
+		t.Errorf("where printed %q, want %s", h.out.String(), want)
+	}
+}
+
+// --origin names a site the way the browser shows it, and the CLI dials loopback
+// with that Host, so a hostname this machine need not resolve still reaches it.
+func TestWireOriginFlagNamesASiteDirectly(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	file := filepath.Join(home, "proj", "index.htmlclay")
+	writeTestFile(t, file, "<html><body>named</body></html>")
+
+	port := fakeWireOrigin(t, file, nil, "proj-0001.localhost")
+	origin := fmt.Sprintf("http://proj-0001.localhost:%d", port)
+
+	h := newWireHarness(t, t.TempDir()) // no config at all
+	if code := h.run("where", file, "--origin", origin+"/some/path.htmlclay"); code != wireExitOK {
+		t.Fatalf("where --origin exited %d; stderr:\n%s", code, h.errs.String())
+	}
+	if !strings.Contains(h.out.String(), origin) {
+		t.Errorf("where printed %q, want %s", h.out.String(), origin)
+	}
+
+	bare := newWireHarness(t, t.TempDir())
+	if code := bare.run("where", file, "--origin", fmt.Sprintf("proj-0001.localhost:%d", port)); code != wireExitOK {
+		t.Fatalf("where --origin without a scheme exited %d; stderr:\n%s", code, bare.errs.String())
+	}
+	if !strings.Contains(bare.out.String(), origin) {
+		t.Errorf("where printed %q, want %s", bare.out.String(), origin)
+	}
+}
+
+// A typo in --origin must not send a frame to whatever a lookup turns up
+// instead, so a malformed one is a usage error and nothing is probed at all.
+func TestWireOriginFlagRefusesBadInputWithoutProbing(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	file := filepath.Join(home, "proj", "index.htmlclay")
+	writeTestFile(t, file, "<html><body>x</body></html>")
+
+	var hits atomic.Int32
+	port := fakeOrigin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "no", http.StatusNotFound)
+	}))
+
+	cfgBase := t.TempDir()
+	a := buildTestApp(t, home, cfgBase)
+	a.rt.cfg.RememberSitePort(filepath.Dir(file), port)
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, origin := range []string{
+		"https://x.localhost:1",
+		"http://x.localhost",
+		"http://u:p@x.localhost:1",
+		"http://x.localhost:99999",
+	} {
+		h := newWireHarness(t, cfgBase)
+		if code := h.run("where", file, "--origin", origin); code != wireExitUsage {
+			t.Errorf("where --origin %s exited %d, want %d; stderr:\n%s",
+				origin, code, wireExitUsage, h.errs.String())
+		}
+		if !strings.Contains(h.errs.String(), "--origin") {
+			t.Errorf("stderr %q for --origin %s does not name --origin", h.errs.String(), origin)
+		}
+	}
+
+	both := newWireHarness(t, cfgBase)
+	if code := both.run("where", file, "--origin", "http://x.localhost:1", "--port", "1"); code != wireExitUsage {
+		t.Errorf("where with both flags exited %d, want %d; stderr:\n%s", code, wireExitUsage, both.errs.String())
+	}
+
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("a malformed --origin must not probe; the remembered origin saw %d requests", n)
 	}
 }
 
