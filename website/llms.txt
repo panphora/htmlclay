@@ -201,8 +201,9 @@ CDN. HTML Clay never injects a script into your page; the page brings its own.
 ```
 
 Save it as plain text with a `.htmlclay` extension, put it anywhere inside your home folder, and
-double-click it. It opens at an address beginning `http://127.0.0.1:`. You can also open it from
-a terminal with `htmlclay my-list.htmlclay`.
+double-click it. It opens at an address like `http://notes-3f2a.localhost:24190/my-list.htmlclay`,
+its folder's own hostname on the app's one port. You can also open it from a terminal with
+`htmlclay my-list.htmlclay`.
 
 The three attributes that did the work:
 
@@ -247,8 +248,9 @@ A file needs no library at all. The save endpoint is a plain POST, and this is t
 User double-clicks a .htmlclay file
   -> OS launches HTML Clay (registered handler for .htmlclay)
     -> App picks the file's origin: the trusted folder containing it, else its own folder
-      -> App binds that origin's remembered port on 127.0.0.1 and mints a session token
-        -> App opens the system default browser at http://127.0.0.1:<port>/<relative path>
+      -> App serves the folder at its own hostname on the app's one port, bound on 127.0.0.1 and
+         ::1, and mints a session token
+        -> App opens the system default browser at http://<folder>-<4 letters>.localhost:24190/<relative path>
           -> Server injects savetoken into the <html> tag on the way out
             -> Page edits, saves: POST /_/save/{token} with the whole document as the body
               -> Server writes to a temp file, fsyncs, renames it over the target
@@ -256,14 +258,16 @@ User double-clicks a .htmlclay file
 
 Facts that matter when you are reasoning about this:
 
-- The server binds `127.0.0.1` only, never `0.0.0.0`, and validates the `Host` header.
-- One origin per project tree. A trusted folder gets its own port; each folder a loose file was
-  opened from gets its own port. Two projects are therefore two browser origins and cannot read
-  each other.
-- **The port is never fixed.** `52341` throughout this file is illustrative. The port is
-  remembered per anchor folder in `config.json` and bound again at every startup, before any
-  file is opened, so a bookmarked address still answers after a restart. A remembered port that
-  is taken at startup is given up and the new one recorded.
+- The server binds loopback only, `127.0.0.1` and `::1`, never `0.0.0.0`, and validates the `Host`
+  header.
+- One origin per folder. A trusted folder is served at its own hostname on the app's one port, and
+  each folder a loose file was opened from gets a hostname of its own. Two folders are therefore two
+  browser origins and cannot read each other.
+- **The port is fixed per computer, 24190 unless taken; the hostname is fixed per folder.** The port
+  is chosen on the first launch and bound again at every startup, before any file is opened, and the
+  hostname is chosen once per folder and never changes. Both live in `config.json`, so a bookmarked
+  address still answers after a restart. `52341` throughout this file is illustrative; the addresses
+  are not.
 - An address HTML Clay remembers but is not currently serving holds no permissions and serves no
   files. A top-level navigation to a `.htmlclay` file that a trusted folder still covers is
   redirected to that folder's current address. Anything else gets a fixed recovery page that never
@@ -297,8 +301,11 @@ history, and serving re-stamps it as `documentid`, so it migrates on its next sa
 
 Write new pages against `savetoken` and `documentid`.
 - **`isAdminOfCurrentResource=true`**, a host-only cookie that tells ClayJS edit mode is
-  available. The response also carries `Cache-Control: no-store`, so a 304 after a restart
-  cannot hand back a dead token.
+  available. It is set with no `Domain` attribute, so it stays with the hostname that served the
+  page: a cookie spelled `Domain=localhost` would be sent to every `*.localhost` hostname on the
+  machine. Safari is the browser that has historically treated cookies on `localhost` names
+  differently, so it is the one to check by hand if edit mode ever fails to appear. The response
+  also carries `Cache-Control: no-store`, so a 304 after a restart cannot hand back a dead token.
 
 The save token and the read-only banner are stripped from the body on every save, so neither
 reaches disk. **Opening a file changes nothing.** The token, the cookie and the initial identity
@@ -344,9 +351,14 @@ Every mutating route except the wire is wrapped in a same-origin guard: it requi
 is deliberately outside that guard, because it admits local processes, which attest neither
 header.
 
-Two global gates sit in front of everything. The `Host` header must be exactly
-`127.0.0.1:<port>` or `localhost:<port>`, so both spellings work from `curl`. Any request with
-`Sec-Fetch-Site: cross-site` is refused. Both failures are `403 Forbidden` in plain text.
+Two global gates sit in front of everything. The `Host` header must be a
+`<folder>-<4 letters>.localhost:<port>` name the app issued, or one of the bare loopback spellings
+`127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>`, which get a fixed page saying nothing is
+served there. Any request with `Sec-Fetch-Site: cross-site` is refused unless it is an eligible
+top-level navigation from an origin this process serves. Two folders' hostnames are cross-site to
+each other in every browser, so a link from one folder to another works under the default referrer
+policy, and a page that sets `no-referrer` makes its cross-folder links fail closed. Both failures
+are `403 Forbidden` in plain text.
 
 A read refused for being outside the page's permitted folder answers `403` with
 `Content-Type: application/problem+json`, the header `X-HTMLClay-Error: read-access-required`,
@@ -524,7 +536,7 @@ htmlclay wire serve ~/notes/page.htmlclay -- ./my-agent.sh
 The CLI answers with one line and waits:
 
 ```
-[wire] attached as handler to http://127.0.0.1:52341 (/Users/you/notes/page.htmlclay)
+[wire] attached as handler to http://notes-3f2a.localhost:24190 (/Users/you/notes/page.htmlclay)
 ```
 
 `my-agent.sh` runs once per request. The request envelope arrives on stdin and the file's path
@@ -564,18 +576,20 @@ Flags may sit on either side of the file argument. Exactly one file operand is r
 
 | Subcommand | Flags |
 |---|---|
-| `serve` | `--port <n>` |
-| `listen` | `--handler`, `--port <n>` |
-| `send` | `--type <type>`, `--id <id>`, `--text <text>`, `--port <n>` |
-| `where` | `--port <n>` |
+| `serve` | `--origin <url>`, `--port <n>` |
+| `listen` | `--handler`, `--origin <url>`, `--port <n>` |
+| `send` | `--type <type>`, `--id <id>`, `--text <text>`, `--origin <url>`, `--port <n>` |
+| `where` | `--origin <url>`, `--port <n>` |
 
 `serve` requires a literal `--` with at least one argument after it; without one it prints usage
 and exits 1. It always takes the handler role, so it has no `--handler` flag.
 
-`--port <n>` names the origin directly. Use it to reach a file whose folder HTML Clay does not
-remember a port for, such as a file loose in your home directory: read the port off the page's
-own address bar. Otherwise the CLI discovers the origin from `sitePorts` in `config.json`,
-trying ancestor anchors first, shortest first.
+`--origin <url>` names an HTML Clay site's address as the browser shows it, such as
+`http://notes-3f2a.localhost:24190`. Use it to reach a file whose folder HTML Clay remembers no
+origin for, such as a file loose in your home directory: copy the address out of the page's own
+address bar. `--port <n>` names a Hyperclay Local origin, which has no hostname; passing both is a
+usage error. Otherwise the CLI discovers the origin from `siteSlugs` in `config.json`, trying
+ancestor anchors first, shortest first, then any legacy per-folder port the config still remembers.
 
 `listen` is an observer unless you pass `--handler`. The handler slot is exclusive, one program
 per file, and it also keeps HTML Clay watching the file while no tab is open on it, so an edit
@@ -596,11 +610,11 @@ It prints the server's acknowledgement.
 `where` prints one JSON line:
 
 ```json
-{"file":"/Users/you/notes/page.htmlclay","origin":"http://127.0.0.1:52341","anchor":"/Users/you/notes","state":"live"}
+{"file":"/Users/you/notes/page.htmlclay","origin":"http://notes-3f2a.localhost:24190","anchor":"/Users/you/notes","state":"live"}
 ```
 
-`anchor` is the literal string `--port` when `--port` was passed. `state` is `live` or `refused`,
-and a refused answer carries a `status` field.
+`anchor` is the literal string `--origin` or `--port` when one of those was passed. `state` is `live`
+or `refused`, and a refused answer carries a `status` field.
 
 Exit codes:
 
@@ -614,6 +628,7 @@ Exit codes:
 | 5 | another program holds the handler slot |
 | 6 | refused (403, 429, 503) |
 | 7 | the send was accepted and nothing was attached to take it |
+| 8 | both HTML Clay and Hyperclay Local serve that file, so pass `--origin` or `--port` |
 
 Frames go to stdout, one JSON object per line. Everything else goes to stderr.
 
@@ -1025,15 +1040,20 @@ extraction rules as the Hyperclay platform. Two URL forms, with caller supplied 
 You supply the rules, and the document's own rules tag is ignored:
 
 ```bash
-curl --get 'http://127.0.0.1:52341/notes.htmlclay' \
+curl --get 'http://notes-3f2a.localhost:24190/notes.htmlclay' \
   --data-urlencode 'data={title:"h1",items:".todo[]"}'
 ```
 
 Without `?data=`, the file supplies its own:
 
 ```bash
-curl 'http://127.0.0.1:52341/_/api/notes.htmlclay'
+curl 'http://notes-3f2a.localhost:24190/_/api/notes.htmlclay'
 ```
+
+Replace `notes-3f2a` with the hostname in your tab's address bar; the port is the same for every
+folder. On Linux, `curl` resolves `*.localhost` only with systemd-resolved's `nss-myhostname`, so
+send `Host: notes-3f2a.localhost:24190` to `127.0.0.1:24190` instead, or pass `--resolve`
+`notes-3f2a.localhost:24190:127.0.0.1`. Browsers resolve `*.localhost` themselves.
 
 The second reads a tag the page publishes:
 
@@ -1168,17 +1188,18 @@ The full ledger, with the measurement behind every row, is
 Caller supplied rules work on both URL forms, for GET and POST. No embedded tag is required:
 
 ```bash
-curl --get 'http://127.0.0.1:51842/soup.htmlclay' \
+curl --get 'http://notes-3f2a.localhost:24190/soup.htmlclay' \
   --data-urlencode 'data={title:h1}'
 
 curl --request POST \
-  'http://127.0.0.1:51842/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
+  'http://notes-3f2a.localhost:24190/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
   --header 'Content-Type: application/json' \
   --data '{"title":"Lunch"}'
 ```
 
-Replace the port with your file's port. The same requests work with
-`/_/api/soup.htmlclay?data=%7Btitle%3Ah1%7D`, and with `.html` files.
+Replace `notes-3f2a` with the hostname in your tab's address bar; the port is the same for every
+folder. The same requests work with `/_/api/soup.htmlclay?data=%7Btitle%3Ah1%7D`, and with `.html`
+files.
 Supplied rules replace the embedded mapping for that request, even if the tag is malformed.
 They are never merged with it or saved into the file. Without `data`, `/_/api/` uses the
 embedded `api` tag as before. An empty, malformed, or repeated `data` parameter returns
@@ -1192,7 +1213,7 @@ The response uses the same rules as the request. GET and POST return the source 
 with an `ETag` header.
 
 ```bash
-curl -X POST 'http://127.0.0.1:52341/_/api/notes.htmlclay' \
+curl -X POST 'http://notes-3f2a.localhost:24190/_/api/notes.htmlclay' \
   -H 'Content-Type: application/json' \
   -d '{"title":"Groceries","items":[{"text":"eggs","done":"no"}]}'
 ```
@@ -1230,7 +1251,8 @@ Who can write:
   header. A token for a different file is refused. `same-site` and cross-site requests are `403`.
 - The file must be one HTML Clay has open, or an HTML Clay file inside a trusted folder, which
   is registered on the spot. Anything else is `403 Not writable`, with the same answer whether or
-  not the file exists. A trusted file hosted on another project's port is `409` naming that origin.
+  not the file exists. A trusted file that belongs to another folder is `409` naming that folder's
+  address.
 - Bodies must be `application/json` (`415`) and at most 1 MB (`413`).
 
 ## Versions and backups
@@ -1281,10 +1303,10 @@ only a folder you control completely.
 
 Opening one file explicitly gives its page read access to its own folder, so relative CSS,
 scripts, images and links work, and gives that one document a save token. A trusted folder is
-broader and persistent: it gets one stable localhost origin, every `.htmlclay` file inside it can
-auto-register as editable including files added later, relative links work across the project,
-browser storage stays on one origin, and bookmarks survive restarts while the remembered port is
-still free.
+broader and persistent: it gets one stable hostname on the app's one port, every `.htmlclay` file
+inside it can auto-register as editable including files added later, relative links work across the
+project, browser storage stays on that hostname, and bookmarks survive restarts while the port is
+still the one they were made on.
 
 Always refused, trusted or not: anything outside your home folder, dotfiles and dot-directories
 such as `.env`, `.git`, and `.ssh`, HTML Clay's own settings and version history, and directory
@@ -1364,11 +1386,11 @@ The two that most change how you should build:
   (`org.freedesktop.portal.FileChooser`), which needs no helper binary.
 
 Also true, and load-bearing when you reason about the bridge: the server listens on loopback, so
-any process running as your user can reach `127.0.0.1:<port>`. Saving requires the per-file
-token, but the top-level serve route returns a currently-open file by path with no token, so a
-malicious local process, or a page you already have open, can read other open documents. This is
-inherent to the localhost-bridge model. HTML Clay serves only files you have explicitly opened,
-and nothing is exposed off the machine.
+any process running as your user can reach the app's port on loopback, under any of its hostnames.
+Saving requires the per-file token, but the top-level serve route returns a currently-open file by
+path with no token, so a malicious local process, or a page you already have open, can read other
+open documents. This is inherent to the localhost-bridge model. HTML Clay serves only files you have
+explicitly opened, and nothing is exposed off the machine.
 
 
 ## Live sync
@@ -1398,6 +1420,13 @@ log is `<os-config-dir>/htmlclay/htmlclay.log`, rotated at 10 MB. Versions are i
 ```json
 {
   "startOnLogin": false,
+  "port": 24190,
+  "siteSlugs": {
+    "/Users/you/projects/notes": "notes-3f2a"
+  },
+  "retiredSlugs": [
+    "notes-8e14"
+  ],
   "sitePorts": {
     "/Users/you/projects/notes": 54321
   },
@@ -1407,8 +1436,15 @@ log is `<os-config-dir>/htmlclay/htmlclay.log`, rotated at 10 MB. Versions are i
 }
 ```
 
-`sitePorts` remembers the port each origin was served on, keyed by its anchor folder, and is what
-the `htmlclay wire` CLI reads to find an origin. The trusted-folder list keeps the on-disk key
+`port` is the one port every folder is served on, chosen on the first launch and bound again at every
+startup. `siteSlugs` remembers the hostname each folder answers at, keyed by its anchor folder, and
+is what the `htmlclay wire` CLI reads to find an origin; a label is chosen once and never changes.
+`retiredSlugs` are labels that were once issued and then given up, which are never issued again, so
+no folder can inherit another's browser storage.
+
+`sitePorts` is the legacy record from the per-folder-port model, kept only so an old
+`127.0.0.1:<port>` bookmark redirects to the folder's hostname while that port is free; nothing new
+is ever written to it. The trusted-folder list keeps the on-disk key
 `workspaceFolders` from the version that introduced it; renaming the key would make older configs
 fail to parse, and the corrupt-config path would then reset every other setting. `identity` is the
 folder's fingerprint at the moment you trusted it. An entry recorded before Windows could

@@ -1274,9 +1274,9 @@
 
     <section>
 <h2 id="read-with-rules-in-the-request">Read with rules in the request</h2>
-<p>Replace <code>PORT</code> with the port in your open tab&#39;s address. Your tab&#39;s address looks like <code>http://127.0.0.1:PORT/todo.htmlclay</code>.</p>
+<p>Replace <code>notes-3f2a</code> with the hostname in your open tab&#39;s address. Your tab&#39;s address looks like <code>http://notes-3f2a.localhost:24190/todo.htmlclay</code>. The port is the same for every folder.</p>
 <p>Run this in your terminal:</p>
-<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">base='http://127.0.0.1:PORT'
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">base='http://notes-3f2a.localhost:24190'
 curl --get &quot;$base/todo.htmlclay&quot; \
   --data-urlencode 'data={&quot;title&quot;:&quot;h1&quot;,&quot;items&quot;:&quot;.todo[]&quot;}'</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 <p>Keep that terminal open for the following examples.</p>
@@ -1402,7 +1402,7 @@ curl &quot;$api&quot;</code></pre></div><button class="copybtn" type="button">Co
 <p>A program on your computer can read and write through this API. If you can open the page in your browser, you can read it through the API.</p>
 <p>A trusted folder is one you have allowed HTML Clay to save files in. Writes require an opened file, or a <code>.htmlclay</code> file in a trusted folder.</p>
 <p>A save token is the identifier HTML Clay gives a page to let it save its file. A browser page sends the target file&#39;s token in a <code>Save-Token</code> header. A program on your computer needs no token.</p>
-<p>Other websites cannot read the API through your browser. HTML Clay sends no CORS permission headers and refuses requests from other websites that try to write. A page HTML Clay serves on the same port can read it.</p>
+<p>Other websites cannot read the API through your browser. HTML Clay sends no CORS permission headers and refuses requests from other websites that try to write. A page HTML Clay serves at the same address can read it.</p>
 <p><a href="https://hyperclaylocal.com">Hyperclay Local</a> serves the same URLs for the files in its folder, for reads and writes.</p>
     </section>
 

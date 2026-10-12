@@ -907,7 +907,7 @@
           <h3>The folder keeps a stable address</h3>
           <p>Every <span class="filechip">.htmlclay</span> file inside opens editable without another prompt, including files added later. Relative links work like they do on any static site.</p>
           <div class="mini-list">
-            <div><b>Stable after a restart.</b> HTML Clay remembers the local port.</div>
+            <div><b>Stable after a restart.</b> HTML Clay remembers the folder’s hostname and the port.</div>
             <div><b>Browser storage stays put.</b> Cookies and browser storage keep the same origin.</div>
             <div><b>Trust ends immediately.</b> Untrusting the folder closes its origin and invalidates its save tokens.</div>
           </div>
@@ -1066,7 +1066,7 @@
 
         <div class="code-window">
           <div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>terminal</span></div>
-          <pre tabindex="0"><code><span class="prompt">$</span> curl http://127.0.0.1:52341/_/api/notes.htmlclay
+          <pre tabindex="0"><code><span class="prompt">$</span> curl http://notes-3f2a.localhost:24190/_/api/notes.htmlclay
 <span class="output">{"title":"Hello","items":["one","two"]}</span></code></pre>
         </div>
 

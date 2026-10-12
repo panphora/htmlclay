@@ -368,14 +368,17 @@ htmlclay wire send   <file> --type <type> ...       send one frame, payload on s
 htmlclay wire where  <file>                         print the origin serving <file>
 ```
 
-Flags may sit on either side of the file. `--port <n>` names the origin directly,
-which is how you reach a file whose folder HTML Clay does not remember a port for:
-read the port off the page's own address bar. `serve` uses raw mode unless you
-pass `--protocol=jsonl`.
+Flags may sit on either side of the file. `--origin <url>` names an HTML Clay
+site's address as the browser shows it, such as
+`http://notes-3f2a.localhost:24190`; `--port <n>` names a Hyperclay Local origin,
+which has no hostname. Either one reaches a file whose folder HTML Clay remembers
+no origin for: copy the address out of the page's own address bar. `serve` uses
+raw mode unless you pass `--protocol=jsonl`.
 
-Discovery reads HTML Clay's remembered ports first, then the folders Hyperclay
+Discovery reads HTML Clay's remembered hostnames first, then the folders Hyperclay
 Local publishes for the same purpose. When both apps serve the same file, the
-command cannot tell which origin you meant, so it exits 8 and asks for `--port`.
+command cannot tell which origin you meant, so it exits 8 and asks for `--origin`
+or `--port`.
 
 `listen` is an observer unless you pass `--handler`. The handler slot is exclusive
 (one program per file) and it also keeps HTML Clay watching the file while no tab
@@ -392,7 +395,7 @@ appears when you come back.
 | 5 | another program holds the handler slot |
 | 6 | refused |
 | 7 | sent, and nothing was attached to take it |
-| 8 | both HTML Clay and Hyperclay Local serve that file, so pass `--port` |
+| 8 | both HTML Clay and Hyperclay Local serve that file, so pass `--origin` or `--port` |
 
 ## What keeps this safe
 
@@ -402,10 +405,10 @@ every request and cannot forge either, and a local process sends neither. That i
 the entire classifier. There is no token to leak and no header to copy.
 
 **A page may only reach its own file.** Requests are addressed by the file's
-absolute path, and a page can only name the file it was served from. `same-site`
-is rejected, not admitted: HTML Clay serves one loopback origin per project tree,
-and every one is same-site with every other, so admitting it would let one
-project's page drive another project's wire.
+absolute path, and a page can only name the file it was served from. Anything but
+`same-origin` is rejected: HTML Clay serves one hostname per project tree, and
+admitting `same-site` or `cross-site` would let one project's page drive another
+project's wire.
 
 **Only a program may be a handler.** A page can send and observe. It cannot claim
 the handler slot, so an open tab cannot impersonate your agent.

@@ -7,6 +7,11 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ### Added
 
+- **One port, an address per folder.** HTML Clay serves every folder from one port, 24190 unless it
+  is taken, at `http://<folder>-<four characters>.localhost:24190/`. The address is chosen once per folder
+  and never changes, so bookmarks survive restarts and opening a file again lands on the same page
+  data. If another program holds the port at launch, a dialog names it and offers to quit it, move
+  HTML Clay to a new port, or quit.
 - **AI editing is built in.** Select text in any HTML file that loads ClayJS, press ⌘J, and say
   what you want: HTML Clay runs Claude Code, Fable or Codex on your computer with no tools, and the
   rewrite appears in place until you keep or revert it. It is on by default, needs no declaration
@@ -27,9 +32,19 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ### Changed
 
+- **Old `127.0.0.1:<port>` bookmarks redirect to the new address while their port is free.** Browser
+  storage written under an old address does not carry over; the first launch says so once.
+- **`htmlclay wire` takes `--origin` for an HTML Clay address**; `--port` is for Hyperclay Local.
+- **Links between folders work under the default referrer policy**; a page that sets `no-referrer`
+  cannot link to another folder.
 - **The document-programs prompt no longer remembers a refusal.** Deny, Return, Escape, closing it or letting it time out applies to that open only, and the next double click asks again. Refusals stored by earlier versions are dropped. If exactly one program with that name is allowed for any document, a document that refused it now uses it without asking. The prompt shows the program path behind each name and asks which one when several share a name.
 - **`no-data` and `editor-ui` regions are invisible to the data API**, on reads as well as writes,
   matching hyper-html-api.
+
+### Note
+
+- **Downgrading to 1.13 drops `port`, `siteSlugs` and `retiredSlugs` from `config.json`** on its next
+  save (unknown fields are discarded), so the addresses are chosen afresh on the next upgrade.
 
 ## [1.9.0] - 2026-08-30
 
