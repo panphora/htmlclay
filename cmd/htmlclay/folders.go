@@ -77,7 +77,7 @@ func (a *app) bringLive(canonical string) {
 	}
 
 	// Build outside a.mu: it is the one call here that can block on a stalled mount.
-	s := a.buildSite(canonical, canonical, filepath.Base(canonical), true)
+	s := a.buildSite(canonical, canonical, true)
 
 	a.mu.Lock()
 	// Re-check everything the first pass established. An untrust or a quit can land

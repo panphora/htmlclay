@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -155,12 +154,12 @@ func (a *app) trustedLive(absPath string) bool {
 }
 
 // buildSite assembles a site without publishing it, so a caller can still abandon it
-// cleanly if registration fails. name is what the slug's readable part is made from.
+// cleanly if registration fails.
 // The slug is allocated here, in memory; the caller saves the config when it publishes.
-func (a *app) buildSite(anchor, key, name string, trusted bool) *site {
+func (a *app) buildSite(anchor, key string, trusted bool) *site {
 	a.mu.Lock()
 	fresh := a.rt.cfg.SiteSlug(key) == ""
-	slug := a.slugForLocked(key, name)
+	slug := a.slugForLocked(key)
 	a.mu.Unlock()
 	sessions := session.NewManagerWithHome(a.rt.home)
 	sessions.SetGuard(a.rt.guard)
@@ -208,13 +207,12 @@ func (a *app) buildSite(anchor, key, name string, trusted bool) *site {
 }
 
 // originKey names what a file's slug is remembered under. A file loose in home anchors at
-// home like every other such file, so its own path is the key and its stem the name.
-func (a *app) originKey(absPath, anchor string) (key, name string) {
+// home like every other such file, so its own path is the key.
+func (a *app) originKey(absPath, anchor string) string {
 	if anchor == a.rt.home {
-		base := filepath.Base(absPath)
-		return absPath, strings.TrimSuffix(base, filepath.Ext(base))
+		return absPath
 	}
-	return anchor, filepath.Base(anchor)
+	return anchor
 }
 
 // discardPendingLocked closes a site that was built and never published, and drops its
@@ -327,8 +325,8 @@ func (a *app) route(absPath string, via session.Provenance) (*site, string, bool
 	a.mu.Unlock()
 
 	anchor, trusted := a.anchorFor(absPath)
-	key, name := a.originKey(absPath, anchor)
-	pending := a.buildSite(anchor, key, name, trusted)
+	key := a.originKey(absPath, anchor)
+	pending := a.buildSite(anchor, key, trusted)
 
 	a.mu.Lock()
 	// Another open may have produced a usable site while we were building.
@@ -422,7 +420,7 @@ func (a *app) startSites() {
 			a.rt.logger.Printf("Trusted folder %s is covered by %s; its remembered origin uses navigation recovery", tf.Path, anchor)
 			continue
 		}
-		s := a.buildSite(tf.Path, tf.Path, filepath.Base(tf.Path), true)
+		s := a.buildSite(tf.Path, tf.Path, true)
 		a.mu.Lock()
 		a.publishLocked(s)
 		a.saveConfig("startup for " + s.slug)

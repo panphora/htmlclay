@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,9 @@ type Config struct {
 	// untrusted, or the entry was evicted). They are never issued again, so no folder can
 	// inherit another's browser storage, and their addresses answer the recovery page.
 	RetiredSlugs []string `json:"retiredSlugs,omitempty"`
+	// NextSiteNumber is the number the next new slug gets, c<n>. It only grows, so a label
+	// is never issued twice and no folder inherits another's browser storage.
+	NextSiteNumber int `json:"nextSiteNumber,omitempty"`
 	// SitePorts is the pre-hostname record of the loopback port each origin was served on.
 	// Kept so an old bookmark can be redirected: startup binds each remembered port that is
 	// still free with a redirect to the folder's hostname, and drops the entry the first
@@ -375,6 +379,10 @@ func (c *Config) SiteKeyForSlug(slug string) (string, bool) {
 func (c *Config) SlugInUse(slug string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.slugInUseLocked(slug)
+}
+
+func (c *Config) slugInUseLocked(slug string) bool {
 	for _, s := range c.SiteSlugs {
 		if s == slug {
 			return true
@@ -386,6 +394,27 @@ func (c *Config) SlugInUse(slug string) bool {
 		}
 	}
 	return false
+}
+
+// AllocateSiteSlug records and returns key's slug: the next numbered label, c1, c2, ...,
+// skipping any label already issued or retired. The counter only grows.
+func (c *Config) AllocateSiteSlug(key string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := max(c.NextSiteNumber, 1)
+	for {
+		slug := "c" + strconv.Itoa(n)
+		n++
+		if c.slugInUseLocked(slug) {
+			continue
+		}
+		if c.SiteSlugs == nil {
+			c.SiteSlugs = make(map[string]string)
+		}
+		c.SiteSlugs[key] = slug
+		c.NextSiteNumber = n
+		return slug
+	}
 }
 
 // RememberSiteSlug records key's slug. The caller has checked SlugInUse.
@@ -458,6 +487,22 @@ func (c *Config) retireLocked(slug string) {
 		}
 	}
 	c.RetiredSlugs = append(c.RetiredSlugs, slug)
+}
+
+var numberedSlug = regexp.MustCompile(`^c[1-9][0-9]*$`)
+
+// retireNamedSlugs moves a config from the earlier <folder>-<4 hex> labels to numbered
+// ones: each label of the old shape is retired, and its key gets the next number when its
+// site is next built.
+func (c *Config) retireNamedSlugs() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, slug := range c.SiteSlugs {
+		if !numberedSlug.MatchString(slug) {
+			c.retireLocked(slug)
+			delete(c.SiteSlugs, key)
+		}
+	}
 }
 
 // dedupeSiteSlugs keeps one key per slug value. A trusted folder's entry wins, then the
@@ -850,6 +895,7 @@ func LoadFrom(baseDir string, identity func(string) string) (*Config, Result, er
 	res.PinnedIdentities = cfg.backfillIdentities(identity)
 	res.DroppedHelperPrograms, res.DroppedHelperDecisions = cfg.normalizeHelpers()
 	cfg.capSitePorts()
+	cfg.retireNamedSlugs()
 	cfg.dedupeSiteSlugs()
 	cfg.capSiteSlugs()
 	return cfg, res, nil

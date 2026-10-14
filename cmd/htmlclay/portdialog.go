@@ -5,17 +5,22 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/panphora/htmlclay/internal/platform"
 )
 
-// defaultPorts is the order a launch with no remembered port tries. Below 32768, so
-// outside the ephemeral range on Linux (32768-60999), macOS and Windows (49152-65535),
-// none of the ports local dev servers take by habit, and 200 apart so no single Hyper-V or
-// WSL exclusion range (they come in blocks of 100) covers two. Fixed and in order so two
-// machines that both lose 24190 land on the same second choice.
-var defaultPorts = []int{24190, 24390, 24590, 24790, 24990, 25190, 25390, 25590, 25790, 25990}
+// defaultPorts is the order a first launch tries: easy to remember, below every system's
+// ephemeral range (Linux 32768-60999, macOS and Windows 49152-65535), and none a known
+// default of another program (IANA leaves 25252, 27272 and 29292 unassigned; 24242 and
+// 26262 are registered to products rarely seen). More than 100 apart, so no single
+// Hyper-V or WSL exclusion block (100 ports) covers two.
+var defaultPorts = []int{25252, 27272, 29292, 24242, 26262}
+
+// oldDefaultPorts are the 1.13.1 and 1.13.2 candidates. A config that remembers one moves
+// to defaultPorts once, on its next launch.
+var oldDefaultPorts = []int{24190, 24390, 24590, 24790, 24990, 25190, 25390, 25590, 25790, 25990}
 
 // boundPort is the one port held on both loopback stacks. v6 is nil on a machine with no
 // IPv6 loopback.
@@ -70,20 +75,26 @@ const (
 // startListener binds the app's port and starts the one HTTP server. It returns false
 // when the app should exit: the user chose to, or no port could be bound at all.
 //
-// A first launch takes the first free port in the candidate list and says nothing. A
-// later launch that finds its remembered port held asks, because the port is part of
-// every bookmark and every page's browser storage, and moving it silently would lose
-// both without a word.
+// A first launch, or one remembering an old default port, takes the first free port in the
+// candidate list. A later launch that finds its remembered port held asks, because the
+// port is part of every bookmark and every page's browser storage, and moving it silently
+// would lose both without a word.
 func (a *app) startListener() bool {
 	remembered := a.rt.cfg.Port()
-	if remembered == 0 {
+	upgrading := slices.Contains(oldDefaultPorts, remembered)
+	if remembered == 0 || upgrading {
 		b := a.bindFirstFree(0)
+		if b == nil && upgrading {
+			if held, err := bindLoopback(remembered); err == nil {
+				b = held
+			}
+		}
 		if b == nil {
 			a.reportNoPort()
 			return false
 		}
 		a.adoptPort(b)
-		if len(a.rt.cfg.SitePortList()) > 0 {
+		if upgrading || len(a.rt.cfg.SitePortList()) > 0 {
 			a.announceHostnames(b.port)
 		}
 		return true
@@ -175,12 +186,11 @@ func (a *app) adoptPort(b *boundPort) {
 	a.rt.logger.Printf("Listening on port %d (127.0.0.1 and ::1=%v)", b.port, b.v6 != nil)
 }
 
-// announceHostnames is the one-time upgrade notice for a config that still carries
-// per-folder ports: the addresses changed shape, old bookmarks redirect, page data does not
-// follow.
+// announceHostnames is the one-time notice for a config upgraded from per-folder ports or
+// from the old default port: the addresses changed, and page data does not follow.
 func (a *app) announceHostnames(port int) {
-	msg := fmt.Sprintf("HTML Clay now serves every folder from one port, %d, with its own address per folder, such as http://notes-3f2a.localhost:%d/.\n\n"+
-		"Old bookmarks redirect to the new address for as long as their old port is free. Anything a page stored in the browser (localStorage) under an old address is not carried over.", port, port)
+	msg := fmt.Sprintf("HTML Clay now serves every folder from port %d, each at its own numbered address, such as http://c1.localhost:%d/.\n\n"+
+		"Bookmarks to older addresses may stop working, and anything a page stored in the browser (localStorage) under an old address is not carried over.", port, port)
 	go func() {
 		if err := a.informUser("HTML Clay", msg); err != nil {
 			a.rt.logger.Printf("Could not show the hostname notice: %v", err)

@@ -580,8 +580,8 @@ func TestPortAndSlugsRoundTrip(t *testing.T) {
 	one := filepath.Join(base, "one")
 	two := filepath.Join(base, "two")
 	cfg.SetPort(24190)
-	cfg.RememberSiteSlug(one, "one")
-	cfg.RememberSiteSlug(two, "two")
+	cfg.RememberSiteSlug(one, "c1")
+	cfg.RememberSiteSlug(two, "c2")
 	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +593,7 @@ func TestPortAndSlugsRoundTrip(t *testing.T) {
 	if got := loaded.Port(); got != 24190 {
 		t.Fatalf("remembered port = %d, want 24190", got)
 	}
-	for key, slug := range map[string]string{one: "one", two: "two"} {
+	for key, slug := range map[string]string{one: "c1", two: "c2"} {
 		got, ok := loaded.SiteKeyForSlug(slug)
 		if !ok || got != key {
 			t.Fatalf("SiteKeyForSlug(%q) = %q, %v; want %q, true", slug, got, ok, key)
@@ -603,22 +603,22 @@ func TestPortAndSlugsRoundTrip(t *testing.T) {
 		}
 	}
 
-	if got := loaded.ForgetSiteSlug(one); got != "one" {
-		t.Fatalf("ForgetSiteSlug returned %q, want %q", got, "one")
+	if got := loaded.ForgetSiteSlug(one); got != "c1" {
+		t.Fatalf("ForgetSiteSlug returned %q, want %q", got, "c1")
 	}
-	if !loaded.SlugInUse("one") {
+	if !loaded.SlugInUse("c1") {
 		t.Error("a forgotten slug must stay in use, or the next folder inherits its browser storage")
 	}
-	if _, ok := loaded.SiteKeyForSlug("one"); ok {
+	if _, ok := loaded.SiteKeyForSlug("c1"); ok {
 		t.Error("a forgotten slug must have no key")
 	}
 
-	loaded.RestoreSiteSlug(one, "one")
-	if got, ok := loaded.SiteKeyForSlug("one"); !ok || got != one {
-		t.Errorf("after RestoreSiteSlug, SiteKeyForSlug(\"one\") = %q, %v; want %q, true", got, ok, one)
+	loaded.RestoreSiteSlug(one, "c1")
+	if got, ok := loaded.SiteKeyForSlug("c1"); !ok || got != one {
+		t.Errorf("after RestoreSiteSlug, SiteKeyForSlug(\"c1\") = %q, %v; want %q, true", got, ok, one)
 	}
 	for _, s := range loaded.RetiredSlugs {
-		if s == "one" {
+		if s == "c1" {
 			t.Error("a restored slug must not be retired")
 		}
 	}
@@ -636,11 +636,11 @@ func TestSiteSlugsAreCappedButTrustedFoldersSurvive(t *testing.T) {
 
 	trusted := t.TempDir()
 	cfg.AddTrustedFolder(trusted, "")
-	cfg.RememberSiteSlug(trusted, "trusted")
+	cfg.RememberSiteSlug(trusted, "c1")
 	adHoc := map[string]string{}
 	for i := 0; i < 70; i++ {
 		key := filepath.Join(base, fmt.Sprintf("adhoc-%02d", i))
-		slug := fmt.Sprintf("adhoc-%02d", i)
+		slug := fmt.Sprintf("c%d", i+2)
 		adHoc[key] = slug
 		cfg.RememberSiteSlug(key, slug)
 	}
@@ -656,8 +656,8 @@ func TestSiteSlugsAreCappedButTrustedFoldersSurvive(t *testing.T) {
 	if got := len(slugs); got != siteSlugCap {
 		t.Errorf("remembered slugs = %d, want %d", got, siteSlugCap)
 	}
-	if got := slugs[trusted]; got != "trusted" {
-		t.Errorf("a trusted folder's slug must never be evicted: got %q, want %q", got, "trusted")
+	if got := slugs[trusted]; got != "c1" {
+		t.Errorf("a trusted folder's slug must never be evicted: got %q, want %q", got, "c1")
 	}
 	for key, slug := range adHoc {
 		if _, kept := slugs[key]; kept {
@@ -693,6 +693,90 @@ func TestRetiredSlugsAreNeverReissued(t *testing.T) {
 	for _, slug := range []string{"slug-000", "slug-299"} {
 		if !cfg.SlugInUse(slug) {
 			t.Errorf("%s must stay in use after 300 retirements", slug)
+		}
+	}
+}
+
+// A config from the earlier <folder>-<4 hex> labels moves to numbered ones on load: each
+// old label is retired, and its key gets the next number when its site is next built.
+func TestNamedSlugsAreRetiredOnLoad(t *testing.T) {
+	base := t.TempDir()
+	writeConfigJSON(t, base, `{"siteSlugs":{"/a":"notes-3f2a","/b":"c2"},"nextSiteNumber":3}`)
+
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if got := cfg.SiteSlug("/a"); got != "" {
+		t.Errorf("SiteSlug(/a) = %q, want none: its old label was retired", got)
+	}
+	if got := cfg.SiteSlug("/b"); got != "c2" {
+		t.Errorf("SiteSlug(/b) = %q, want c2", got)
+	}
+	if !cfg.SlugInUse("notes-3f2a") {
+		t.Error("a retired label must stay in use, or another folder inherits its browser storage")
+	}
+	if got := cfg.AllocateSiteSlug("/a"); got != "c3" {
+		t.Errorf("AllocateSiteSlug(/a) = %q, want c3", got)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatalf("reload error: %v", err)
+	}
+	if got := reloaded.AllocateSiteSlug("/c"); got != "c4" {
+		t.Errorf("the counter must survive a save and reload: got %q, want c4", got)
+	}
+}
+
+// A label that was issued and then dropped is in neither siteSlugs nor retiredSlugs, so the
+// counter is the only record that its number was used.
+func TestCounterIsTheRecordOfADroppedLabel(t *testing.T) {
+	base := t.TempDir()
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	if got := cfg.AllocateSiteSlug("/a"); got != "c1" {
+		t.Fatalf("first label = %q, want c1", got)
+	}
+	cfg.DropSiteSlug("/a")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatalf("reload error: %v", err)
+	}
+	if got := reloaded.AllocateSiteSlug("/b"); got != "c2" {
+		t.Fatalf("after a dropped c1 and a reload the next label = %q, want c2", got)
+	}
+}
+
+// Old-shape labels are retired before the cap runs, so they never push numbered labels out.
+func TestNamedSlugsDoNotCrowdOutNumberedOnesUnderTheCap(t *testing.T) {
+	base := t.TempDir()
+	slugs := map[string]string{}
+	for i := 1; i <= 10; i++ {
+		slugs[fmt.Sprintf("/n%02d", i)] = fmt.Sprintf("c%d", i)
+	}
+	for i := 0; i < siteSlugCap; i++ {
+		slugs[fmt.Sprintf("/old%02d", i)] = fmt.Sprintf("old-%04x", i)
+	}
+	raw, err := json.Marshal(map[string]any{"siteSlugs": slugs, "nextSiteNumber": 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConfigJSON(t, base, string(raw))
+	cfg, _, err := LoadFrom(base, noIdentity)
+	if err != nil {
+		t.Fatalf("load error: %v", err)
+	}
+	for i := 1; i <= 10; i++ {
+		if got := cfg.SiteSlug(fmt.Sprintf("/n%02d", i)); got != fmt.Sprintf("c%d", i) {
+			t.Errorf("numbered label /n%02d = %q, want c%d", i, got, i)
 		}
 	}
 }
@@ -1364,23 +1448,23 @@ func TestDuplicateSlugsKeepTheTrustedOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeConfigJSON(t, base, fmt.Sprintf(`{"workspaceFolders":[{"path":%q}],"siteSlugs":{%q:"dup-0001",%q:"dup-0001",%q:"gam-0002"}}`,
+	writeConfigJSON(t, base, fmt.Sprintf(`{"workspaceFolders":[{"path":%q}],"siteSlugs":{%q:"c1",%q:"c1",%q:"c2"}}`,
 		beta, alpha, beta, gamma))
 
 	cfg, _, err := LoadFrom(base, noIdentity)
 	if err != nil {
 		t.Fatalf("load error: %v", err)
 	}
-	if got := cfg.SiteSlug(beta); got != "dup-0001" {
-		t.Errorf("trusted folder slug = %q, want dup-0001", got)
+	if got := cfg.SiteSlug(beta); got != "c1" {
+		t.Errorf("trusted folder slug = %q, want c1", got)
 	}
 	if got := cfg.SiteSlug(alpha); got != "" {
 		t.Errorf("the losing key kept its slug: %q, want none", got)
 	}
-	if got := cfg.SiteSlug(gamma); got != "gam-0002" {
-		t.Errorf("an unrelated key lost its slug: %q, want gam-0002", got)
+	if got := cfg.SiteSlug(gamma); got != "c2" {
+		t.Errorf("an unrelated key lost its slug: %q, want c2", got)
 	}
-	if !cfg.SlugInUse("dup-0001") {
+	if !cfg.SlugInUse("c1") {
 		t.Error("the label is still issued, so it must stay in use")
 	}
 }

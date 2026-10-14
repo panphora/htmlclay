@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/panphora/htmlclay/internal/server"
 )
@@ -252,6 +253,69 @@ func TestStartListenerTriesCandidatesInOrder(t *testing.T) {
 	}
 	if log := read(); !strings.Contains(log, fmt.Sprintf("Port %d is not available", taken)) {
 		t.Fatalf("the log should name the port it could not take:\n%s", log)
+	}
+}
+
+// A config remembering one of the old default ports is treated like a first launch once:
+// it takes the first free new default, saves it, and says the addresses changed.
+func TestStartListenerMovesOffAnOldDefaultPort(t *testing.T) {
+	a := buildTestApp(t, t.TempDir(), t.TempDir())
+	a.rt.cfg.SetPort(24190)
+	a.rt.portCandidates = []int{0}
+	notices := make(chan string, 1)
+	a.rt.notify = func(title, message string) error {
+		notices <- message
+		return nil
+	}
+	if !a.startListener() {
+		t.Fatal("the app should move off the old default port")
+	}
+	t.Cleanup(a.shutdown)
+	if a.rt.port == 24190 {
+		t.Fatalf("the app kept the old default port %d", a.rt.port)
+	}
+	if got := a.rt.cfg.Port(); got != a.rt.port {
+		t.Fatalf("remembered port = %d, want the bound port %d", got, a.rt.port)
+	}
+	select {
+	case msg := <-notices:
+		if !strings.Contains(msg, "c1.localhost") {
+			t.Fatalf("the notice should show a numbered address:\n%s", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the user was never told the addresses changed")
+	}
+}
+
+func TestStartListenerKeepsTheOldPortWhenNoNewOneIsFree(t *testing.T) {
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	taken := held.Addr().(*net.TCPAddr).Port
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	saved := oldDefaultPorts
+	oldDefaultPorts = []int{old}
+	t.Cleanup(func() { oldDefaultPorts = saved })
+
+	a := buildTestApp(t, t.TempDir(), t.TempDir())
+	a.rt.cfg.SetPort(old)
+	a.rt.portCandidates = []int{taken}
+	a.rt.notify = func(string, string) error { return nil }
+	if !a.startListener() {
+		t.Fatal("an upgrading app with no free new port must fall back to its old port, not quit")
+	}
+	t.Cleanup(a.shutdown)
+	if a.rt.port != old {
+		t.Fatalf("bound %d, want the old remembered port %d", a.rt.port, old)
 	}
 }
 

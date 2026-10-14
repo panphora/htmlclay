@@ -168,7 +168,7 @@ User double-clicks .htmlclay file
   → OS launches HTML Clay (registered handler for .htmlclay)
     → App picks the file's origin: the trusted folder containing it, else its own folder
       → App serves the folder at its own hostname on the app's one port, and mints a session token
-        → App opens the default browser at http://<folder>-<4 letters>.localhost:24190/
+        → App opens the default browser at http://c<n>.localhost:25252/
           → Browser loads file from the loopback server
             → User edits, hits save
               → JS reads savetoken, calls POST /_/save/{token}
@@ -218,22 +218,22 @@ extraction rules as the [Hyperclay](https://hyperclay.com) platform. Two ways in
 
 ```bash
 # You supply the rules
-curl --get 'http://notes-3f2a.localhost:24190/notes.htmlclay' \
+curl --get 'http://c1.localhost:25252/notes.htmlclay' \
   --data-urlencode 'data={title:"h1",items:".todo[]"}'
 
 # The file supplies its own, from a tag inside it
-curl 'http://notes-3f2a.localhost:24190/_/api/notes.htmlclay'
+curl 'http://c1.localhost:25252/_/api/notes.htmlclay'
 ```
 
-Replace `notes-3f2a` with the hostname in your tab's address bar; the port is the same for every
+Replace `c1` with the hostname in your tab's address bar; the port is the same for every
 folder. Browsers and `curl` resolve `*.localhost` to loopback by themselves. Other programs ask
 the system resolver, which macOS answers, Linux answers with systemd-resolved, and Windows usually
 does not (PowerShell's `Invoke-RestMethod` fails with "remote name could not be resolved"). A
-program can skip the hostname entirely: `127.0.0.1:24190/_/api/<path>` reaches whichever open folder
+program can skip the hostname entirely: `127.0.0.1:25252/_/api/<path>` reaches whichever open folder
 serves that file, for any caller that is not a browser (no `Origin`, no `Sec-Fetch-Site`):
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:24190/_/api/Documents/notes/notes.htmlclay
+Invoke-RestMethod http://127.0.0.1:25252/_/api/Documents/notes/notes.htmlclay
 ```
 
 The path is relative to your home folder, the same path the address bar shows. If no open folder
@@ -283,16 +283,16 @@ of the refusal is written down rather than guessed at.
 Caller supplied rules work on both URL forms, for GET and POST. No embedded tag is required:
 
 ```bash
-curl --get 'http://notes-3f2a.localhost:24190/soup.htmlclay' \
+curl --get 'http://c1.localhost:25252/soup.htmlclay' \
   --data-urlencode 'data={title:h1}'
 
 curl --request POST \
-  'http://notes-3f2a.localhost:24190/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
+  'http://c1.localhost:25252/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
   --header 'Content-Type: application/json' \
   --data '{"title":"Lunch"}'
 ```
 
-Replace `notes-3f2a` with the hostname in your tab's address bar; the port is the same for every
+Replace `c1` with the hostname in your tab's address bar; the port is the same for every
 folder. The same requests work with `/_/api/soup.htmlclay?data=%7Btitle%3Ah1%7D`, and with `.html`
 files.
 Supplied rules replace the embedded mapping for that request, even if the tag is malformed.
@@ -307,7 +307,7 @@ POST JSON to the same `/_/api/` address and HTML Clay writes it into the file th
 `api` rules tag. The body has the same shape a GET returns:
 
 ```bash
-curl -X POST 'http://notes-3f2a.localhost:24190/_/api/notes.htmlclay' \
+curl -X POST 'http://c1.localhost:25252/_/api/notes.htmlclay' \
   -H 'Content-Type: application/json' \
   -d '{"title":"Groceries","items":[{"text":"eggs","done":"no"}]}'
 ```
@@ -377,13 +377,14 @@ Stored at `<os-config-dir>/htmlclay/config.json` (`~/Library/Application Support
 ```json
 {
   "startOnLogin": false,
-  "port": 24190,
+  "port": 25252,
   "siteSlugs": {
-    "/Users/you/projects/notes": "notes-3f2a"
+    "/Users/you/projects/notes": "c1"
   },
   "retiredSlugs": [
-    "notes-8e14"
+    "c2"
   ],
+  "nextSiteNumber": 3,
   "sitePorts": {
     "/Users/you/projects/notes": 54321
   },
@@ -395,8 +396,9 @@ Stored at `<os-config-dir>/htmlclay/config.json` (`~/Library/Application Support
 
 `port` is the one port every folder is served on, chosen on the first launch and kept. `siteSlugs`
 remembers the hostname each folder answers at, keyed by its anchor folder, so an address survives a
-restart: the label is chosen once and never changes. `retiredSlugs` are labels that were once issued
-and then given up, which are never issued again.
+restart: the label is chosen once and never changes. Labels are numbered, `c1`, `c2`, and so on, in the
+order folders are first served, and `nextSiteNumber` is the next one. `retiredSlugs` are labels that were
+once issued and then given up, which are never issued again.
 
 `sitePorts` is the legacy record from the per-folder-port model, kept only so an old
 `127.0.0.1:<port>` bookmark redirects to the folder's hostname while that port is free. Nothing new

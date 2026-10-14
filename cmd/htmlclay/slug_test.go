@@ -1,50 +1,50 @@
 package main
 
 import (
-	"fmt"
 	"path/filepath"
-	"regexp"
 	"testing"
 
 	"github.com/panphora/htmlclay/internal/server"
 )
 
-func TestSlugBase(t *testing.T) {
-	for in, want := range map[string]string{
-		"w4": "w4", "Notes": "notes", "My Project (2026)": "my-project-2026", "日記": "site",
-		"--weird--": "weird", "a_b.c": "a-b-c",
-		"this-folder-name-is-much-longer-than-the-cap": "this-folder-name-is-much",
-	} {
-		if got := slugBase(in); got != want {
-			t.Errorf("slugBase(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestSlugIsStableUniqueAndNeverRetired(t *testing.T) {
 	home, _ := resolveSymlinks(t.TempDir())
 	a := buildTestApp(t, home, t.TempDir())
+	firstKey := filepath.Join(home, "notes")
+	secondKey := filepath.Join(home, "other", "notes")
 	a.mu.Lock()
-	first := a.slugForLocked(filepath.Join(home, "notes"), "notes")
-	again := a.slugForLocked(filepath.Join(home, "notes"), "notes")
-	other := a.slugForLocked(filepath.Join(home, "other", "notes"), "notes")
+	first := a.slugForLocked(firstKey)
+	again := a.slugForLocked(firstKey)
+	other := a.slugForLocked(secondKey)
 	a.mu.Unlock()
-	if first != again {
+	if first != "c1" {
+		t.Fatalf("the first slug = %q, want c1", first)
+	}
+	if again != first {
 		t.Fatalf("a key must keep its slug: %q then %q", first, again)
 	}
-	if first == other {
-		t.Fatalf("two keys must not share a slug: %q", first)
+	if other != "c2" {
+		t.Fatalf("the second key's slug = %q, want c2", other)
 	}
-	if !regexp.MustCompile(`^notes-[0-9a-f]{4}$`).MatchString(first) || !server.ValidSlug(first) {
-		t.Fatalf("slug shape: %q", first)
+	if retired := a.rt.cfg.ForgetSiteSlug(firstKey); retired != "c1" {
+		t.Fatalf("ForgetSiteSlug returned %q, want c1", retired)
 	}
-	retired := a.rt.cfg.ForgetSiteSlug(filepath.Join(home, "notes"))
-	for i := 0; i < 200; i++ {
-		a.mu.Lock()
-		got := a.slugForLocked(filepath.Join(home, fmt.Sprintf("n%d", i), "notes"), "notes")
-		a.mu.Unlock()
-		if got == retired {
-			t.Fatalf("a retired slug was reissued: %q", got)
+	a.mu.Lock()
+	afterForget := a.slugForLocked(filepath.Join(home, "third"))
+	a.mu.Unlock()
+	if afterForget != "c3" {
+		t.Fatalf("a retired label must never be reissued: got %q, want c3", afterForget)
+	}
+	a.rt.cfg.RememberSiteSlug("/manual", "c4")
+	a.mu.Lock()
+	skipped := a.slugForLocked(filepath.Join(home, "fourth"))
+	a.mu.Unlock()
+	if skipped != "c5" {
+		t.Fatalf("a label already issued must be skipped: got %q, want c5", skipped)
+	}
+	for _, slug := range []string{first, again, other, afterForget, skipped} {
+		if !server.ValidSlug(slug) {
+			t.Fatalf("slug %q is not a valid label", slug)
 		}
 	}
 }
