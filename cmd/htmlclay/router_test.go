@@ -319,6 +319,73 @@ func TestStartListenerKeepsTheOldPortWhenNoNewOneIsFree(t *testing.T) {
 	}
 }
 
+func TestStartListenerFallsBackToARandomPortWhenEveryCandidateIsTaken(t *testing.T) {
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	taken := held.Addr().(*net.TCPAddr).Port
+	free := freeTestPort(t)
+
+	a := buildTestApp(t, t.TempDir(), t.TempDir())
+	a.rt.portCandidates = []int{taken}
+	a.rt.randomPort = func() int { return free }
+	if !a.startListener() {
+		t.Fatal("with every candidate taken the app must fall back to a random port, not quit")
+	}
+	t.Cleanup(a.shutdown)
+	if a.rt.port != free {
+		t.Fatalf("bound %d, want the random port %d", a.rt.port, free)
+	}
+	if got := a.rt.cfg.Port(); got != free {
+		t.Fatalf("saved port %d, want the random port %d so addresses stay the same", got, free)
+	}
+}
+
+func TestStartListenerQuitsOnlyWhenRandomPortsAreTakenToo(t *testing.T) {
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	taken := held.Addr().(*net.TCPAddr).Port
+
+	a := buildTestApp(t, t.TempDir(), t.TempDir())
+	a.rt.portCandidates = []int{taken}
+	tries := 0
+	a.rt.randomPort = func() int { tries++; return taken }
+	notices := make(chan string, 1)
+	a.rt.notify = func(title, message string) error {
+		notices <- message
+		return nil
+	}
+	if a.startListener() {
+		t.Cleanup(a.shutdown)
+		t.Fatal("the app bound a port although every candidate and random pick was taken")
+	}
+	if tries != randomPortTries {
+		t.Fatalf("tried %d random ports, want %d", tries, randomPortTries)
+	}
+	select {
+	case msg := <-notices:
+		if !strings.Contains(msg, "could not find a free port") {
+			t.Fatalf("notice = %q", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no notice that no port could be found")
+	}
+}
+
+func TestRandomPortStaysInTheSafeRange(t *testing.T) {
+	for range 5000 {
+		p := randomPort()
+		if p < 10000 || p > 32767 || p == 10080 {
+			t.Fatalf("randomPort() = %d, want 10000-32767 and never 10080", p)
+		}
+	}
+}
+
 // The bare host is how a program that cannot resolve *.localhost reaches a folder:
 // a /_/api/ request with neither Origin nor Sec-Fetch-Site is a local process, and it
 // is routed to whichever live site serves the file. A browser page is not, and keeps

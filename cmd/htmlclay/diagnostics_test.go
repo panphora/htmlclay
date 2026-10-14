@@ -361,6 +361,38 @@ func TestOccupiedPortDialogDenyExitsWithoutBinding(t *testing.T) {
 	}
 }
 
+func TestUseANewPortFallsBackToARandomPort(t *testing.T) {
+	home, _ := resolveSymlinks(t.TempDir())
+	cfgBase := t.TempDir()
+	first := newTestAppWithConfigDir(t, home, cfgBase)
+	held := first.rt.port
+	first.shutdown()
+	requirePortFree(t, held)
+
+	blocker, err := net.Listen("tcp", server.LoopbackHosts(held)[0])
+	if err != nil {
+		t.Fatalf("occupy the remembered port %d: %v", held, err)
+	}
+	defer blocker.Close()
+
+	free := freeTestPort(t)
+	second := buildTestApp(t, home, cfgBase)
+	second.rt.portCandidates = []int{held}
+	second.rt.randomPort = func() int { return free }
+	second.rt.portOwner = func(int) (int, string, bool) { return 4242, "blocker", true }
+	second.rt.confirmPort = func(string, string, platform.ConfirmLabels) (platform.ConfirmChoice, error) {
+		return platform.ConfirmAllowOnce, nil
+	}
+	second.rt.notify = func(string, string) error { return nil }
+	if !second.startListener() {
+		t.Fatal("Use a New Port with no free candidate must fall back to a random port")
+	}
+	t.Cleanup(second.shutdown)
+	if second.rt.port != free {
+		t.Fatalf("bound %d, want the random port %d", second.rt.port, free)
+	}
+}
+
 func TestUsabilityDiagnosticsShadowedOriginLogsBothAnchorsWithoutRequests(t *testing.T) {
 	home, _ := resolveSymlinks(t.TempDir())
 	proj := filepath.Join(home, "proj")

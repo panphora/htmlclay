@@ -65,6 +65,8 @@ type appRuntime struct {
 	// portOwner and quitProcess override the port-owner lookup and the quit request.
 	portOwner   func(port int) (pid int, name string, ok bool)
 	quitProcess func(pid int, force bool) error
+	// randomPort overrides the last-resort random port pick. Production leaves it nil.
+	randomPort func() int
 	// afterLookup, when set, runs in the router between finding a live site and arming it.
 	// Tests use it to change state inside that window.
 	afterLookup func(*site)

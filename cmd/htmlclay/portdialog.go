@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"slices"
@@ -12,10 +13,11 @@ import (
 )
 
 // defaultPorts is the order a first launch tries: plain numbers people can read and type,
-// below every system's ephemeral range (Linux 32768-60999, macOS and Windows 49152-65535),
-// none on the browsers' blocked-port lists, and more than 100 apart so no single Hyper-V or
-// WSL exclusion block (100 ports) covers two.
-var defaultPorts = []int{7777, 3333, 9999, 5555, 4444}
+// with no common program using them by default, below every system's ephemeral range
+// (Linux 32768-60999, macOS and Windows 49152-65535), none on the browsers' blocked-port
+// lists, and more than 100 apart so no single Hyper-V or WSL exclusion block (100 ports)
+// covers two. If all are taken, bindRandom picks one.
+var defaultPorts = []int{1212, 4545, 9797, 3434, 1111}
 
 // oldDefaultPorts are the 1.13.1 and 1.13.2 candidates. A config that remembers one moves
 // to defaultPorts once, on its next launch.
@@ -89,6 +91,9 @@ func (a *app) startListener() bool {
 			}
 		}
 		if b == nil {
+			b = a.bindRandom(0)
+		}
+		if b == nil {
 			a.reportNoPort()
 			return false
 		}
@@ -113,6 +118,9 @@ func (a *app) startListener() bool {
 			}
 		case portMove:
 			moved := a.bindFirstFree(remembered)
+			if moved == nil {
+				moved = a.bindRandom(remembered)
+			}
 			if moved == nil {
 				a.reportNoPort()
 				return false
@@ -148,9 +156,45 @@ func (a *app) bindFirstFree(skip int) *boundPort {
 	return nil
 }
 
+// randomPortTries is how many random ports a launch tries once every candidate is taken.
+const randomPortTries = 20
+
+// randomPort picks the last-resort port: 10000-32767, so below every system's ephemeral
+// range and clear of the low ports programs take by default, and never 10080, which
+// browsers refuse to load.
+func randomPort() int {
+	for {
+		if p := 10000 + rand.IntN(32768-10000); p != 10080 {
+			return p
+		}
+	}
+}
+
+// bindRandom is the fallback once every candidate is taken. The port it finds is saved
+// like any other, so the addresses stay the same from then on.
+func (a *app) bindRandom(skip int) *boundPort {
+	pick := randomPort
+	if a.rt.randomPort != nil {
+		pick = a.rt.randomPort
+	}
+	for range randomPortTries {
+		p := pick()
+		if p != 0 && p == skip {
+			continue
+		}
+		b, err := bindLoopback(p)
+		if err == nil {
+			a.rt.logger.Printf("Every candidate port was taken; using random port %d", b.port)
+			return b
+		}
+		a.rt.logger.Printf("Random port %d is not available: %v", p, err)
+	}
+	return nil
+}
+
 func (a *app) reportNoPort() {
-	a.rt.logger.Printf("No port could be bound; tried %v", a.rt.portCandidates)
-	msg := fmt.Sprintf("HTML Clay could not find a free port. It tried %v on this computer and every one was in use.", a.rt.portCandidates)
+	a.rt.logger.Printf("No port could be bound; tried %v and %d random ports", a.rt.portCandidates, randomPortTries)
+	msg := fmt.Sprintf("HTML Clay could not find a free port. It tried %v and %d random ports on this computer, and every one was in use.", a.rt.portCandidates, randomPortTries)
 	if err := a.notifyUser("HTML Clay can't start", msg); err != nil {
 		a.rt.logger.Printf("Could not notify about the missing port: %v", err)
 	}

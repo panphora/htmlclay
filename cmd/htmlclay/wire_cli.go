@@ -503,10 +503,10 @@ func wireOriginCandidate(origin string) (wireCandidate, error) {
 	}
 	host, p, err := net.SplitHostPort(u.Host)
 	if err != nil {
-		return wireCandidate{}, fmt.Errorf("--origin %q needs a port, like http://htmlclay.localhost:7777", origin)
+		return wireCandidate{}, fmt.Errorf("--origin %q needs a port, like http://htmlclay.localhost:1212", origin)
 	}
 	if host == "" {
-		return wireCandidate{}, fmt.Errorf("--origin %q has no hostname, like http://htmlclay.localhost:7777", origin)
+		return wireCandidate{}, fmt.Errorf("--origin %q has no hostname, like http://htmlclay.localhost:1212", origin)
 	}
 	port, err := strconv.Atoi(p)
 	if err != nil || port <= 0 || port > 65535 {
@@ -987,7 +987,7 @@ func wireReadStream(body io.Reader, lastID string, onFrame func(raw []byte, f wi
 func wireWhereCmd(env *wireEnv, args []string) int {
 	fs := wireFlagSet(env, "where")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
-	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://htmlclay.localhost:7777; HTML Clay sites only")
+	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://htmlclay.localhost:1212; HTML Clay sites only")
 	operands, err := wireParse(fs, args)
 	if err != nil {
 		return wireExitUsage
@@ -1055,7 +1055,7 @@ func wireListenCmd(env *wireEnv, args []string) int {
 	fs := wireFlagSet(env, "listen")
 	handler := fs.Bool("handler", false, "take the exclusive handler slot and keep the file watched")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
-	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://htmlclay.localhost:7777; HTML Clay sites only")
+	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://htmlclay.localhost:1212; HTML Clay sites only")
 	operands, err := wireParse(fs, args)
 	if err != nil {
 		return wireExitUsage
@@ -1104,7 +1104,7 @@ func wireSendCmd(env *wireEnv, args []string) int {
 	id := fs.String("id", "", "request id (default: a fresh uuid)")
 	text := fs.String("text", "", "free-form text")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
-	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://htmlclay.localhost:7777; HTML Clay sites only")
+	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://htmlclay.localhost:1212; HTML Clay sites only")
 	operands, err := wireParse(fs, args)
 	if err != nil {
 		return wireExitUsage
@@ -1260,7 +1260,7 @@ func wireServeCmd(env *wireEnv, args []string) int {
 
 	fs := wireFlagSet(env, "serve")
 	port := fs.Int("port", 0, "the origin's loopback port, instead of looking one up")
-	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://htmlclay.localhost:7777; HTML Clay sites only")
+	origin := fs.String("origin", "", "the site's address as the browser shows it, e.g. http://htmlclay.localhost:1212; HTML Clay sites only")
 	protocol := fs.String("protocol", "raw", "helper output protocol: raw or jsonl")
 	operands, err := wireParse(fs, args[:sep])
 	if err != nil {

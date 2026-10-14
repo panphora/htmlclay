@@ -370,7 +370,7 @@ htmlclay wire where  <file>                         print the origin serving <fi
 
 Flags may sit on either side of the file. `--origin <url>` names an HTML Clay
 site's address as the browser shows it, such as
-`http://htmlclay.localhost:7777`; `--port <n>` names a Hyperclay Local origin,
+`http://htmlclay.localhost:1212`; `--port <n>` names a Hyperclay Local origin,
 which has no hostname; HTML Clay's own port looks the file's hostname up on it. Either one reaches a file whose folder HTML Clay remembers
 no origin for: copy the address out of the page's own address bar. `serve` uses
 raw mode unless you pass `--protocol=jsonl`.
