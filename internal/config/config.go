@@ -43,8 +43,9 @@ type Config struct {
 	// untrusted, or the entry was evicted). They are never issued again, so no folder can
 	// inherit another's browser storage, and their addresses answer the recovery page.
 	RetiredSlugs []string `json:"retiredSlugs,omitempty"`
-	// NextSiteNumber is the number the next new slug gets, c<n>. It only grows, so a label
-	// is never issued twice and no folder inherits another's browser storage.
+	// NextSiteNumber is the number the next new slug gets: 1 is htmlclay, 2 is htmlclay1, and so
+	// on. It only grows, so a label is never issued twice and no folder inherits another's
+	// browser storage.
 	NextSiteNumber int `json:"nextSiteNumber,omitempty"`
 	// SitePorts is the pre-hostname record of the loopback port each origin was served on.
 	// Kept so an old bookmark can be redirected: startup binds each remembered port that is
@@ -396,14 +397,14 @@ func (c *Config) slugInUseLocked(slug string) bool {
 	return false
 }
 
-// AllocateSiteSlug records and returns key's slug: the next numbered label, c1, c2, ...,
-// skipping any label already issued or retired. The counter only grows.
+// AllocateSiteSlug records and returns key's slug: the next label in the htmlclay, htmlclay1,
+// htmlclay2, ... sequence, skipping any label already issued or retired. The counter only grows.
 func (c *Config) AllocateSiteSlug(key string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := max(c.NextSiteNumber, 1)
 	for {
-		slug := "c" + strconv.Itoa(n)
+		slug := numberedSlugFor(n)
 		n++
 		if c.slugInUseLocked(slug) {
 			continue
@@ -489,7 +490,15 @@ func (c *Config) retireLocked(slug string) {
 	c.RetiredSlugs = append(c.RetiredSlugs, slug)
 }
 
-var numberedSlug = regexp.MustCompile(`^c[1-9][0-9]*$`)
+var numberedSlug = regexp.MustCompile(`^htmlclay([1-9][0-9]*)?$`)
+
+// numberedSlugFor maps counter value n (from 1) to its label: htmlclay, htmlclay1, htmlclay2, ...
+func numberedSlugFor(n int) string {
+	if n == 1 {
+		return "htmlclay"
+	}
+	return "htmlclay" + strconv.Itoa(n-1)
+}
 
 // retireNamedSlugs moves a config from the earlier <folder>-<4 hex> labels to numbered
 // ones: each label of the old shape is retired, and its key gets the next number when its

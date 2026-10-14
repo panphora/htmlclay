@@ -7,8 +7,8 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ### Added
 
-- **One port, an address per folder.** HTML Clay serves every folder from one port, 25252 unless it
-  is taken, at a numbered address such as `http://c1.localhost:25252/`. The address is chosen once per folder
+- **One port, an address per folder.** HTML Clay serves every folder from one port, 7777 unless it
+  is taken, at an address such as `http://htmlclay.localhost:7777/`. The address is chosen once per folder
   and never changes, so bookmarks survive restarts and opening a file again lands on the same page
   data. If another program holds the port at launch, a dialog names it and offers to quit it, move
   HTML Clay to a new port, or quit.
@@ -32,10 +32,11 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ### Changed
 
-- **Folder addresses are numbered, and the default port is 25252.** The 1.13.1 addresses, such as
-  `notes-3f2a.localhost:24190`, become `c1.localhost:25252`, `c2.localhost:25252` and so on, in the order
-  folders are first served. The move happens once, on the first launch of this version; bookmarks to the
-  1.13.1 addresses stop working and page data stored in the browser under them starts over.
+- **Folder addresses are htmlclay, htmlclay1, htmlclay2, and the default port is 7777.** The 1.13.1
+  addresses, such as `notes-3f2a.localhost:24190`, become `htmlclay.localhost:7777`,
+  `htmlclay1.localhost:7777` and so on, in the order folders are first served. The move happens once, on
+  the first launch of this version; bookmarks to the 1.13.1 addresses stop working and page data stored in
+  the browser under them starts over.
 - **Old `127.0.0.1:<port>` bookmarks redirect to the new address while their port is free.** Browser
   storage written under an old address does not carry over; the first launch says so once.
 - **`htmlclay wire` takes `--origin` for an HTML Clay address**; `--port` is for Hyperclay Local.

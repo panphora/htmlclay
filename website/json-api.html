@@ -1274,9 +1274,9 @@
 
     <section>
 <h2 id="read-with-rules-in-the-request">Read with rules in the request</h2>
-<p>Replace <code>c1</code> with the hostname in your open tab&#39;s address. Your tab&#39;s address looks like <code>http://c1.localhost:25252/todo.htmlclay</code>. The port is the same for every folder.</p>
+<p>Replace <code>htmlclay</code> with the hostname in your open tab&#39;s address. Your tab&#39;s address looks like <code>http://htmlclay.localhost:7777/todo.htmlclay</code>. The port is the same for every folder.</p>
 <p>Run this in your terminal:</p>
-<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">base='http://c1.localhost:25252'
+<div class="copywrap"><div class="code-window"><div class="code-bar"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Terminal</span></div><pre tabindex="0"><code class="language-bash">base='http://htmlclay.localhost:7777'
 curl --get &quot;$base/todo.htmlclay&quot; \
   --data-urlencode 'data={&quot;title&quot;:&quot;h1&quot;,&quot;items&quot;:&quot;.todo[]&quot;}'</code></pre></div><button class="copybtn" type="button">Copy</button></div>
 <p>Keep that terminal open for the following examples.</p>

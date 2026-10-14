@@ -201,7 +201,7 @@ CDN. HTML Clay never injects a script into your page; the page brings its own.
 ```
 
 Save it as plain text with a `.htmlclay` extension, put it anywhere inside your home folder, and
-double-click it. It opens at an address like `http://c1.localhost:25252/my-list.htmlclay`,
+double-click it. It opens at an address like `http://htmlclay.localhost:7777/my-list.htmlclay`,
 its folder's own hostname on the app's one port. You can also open it from a terminal with
 `htmlclay my-list.htmlclay`.
 
@@ -250,7 +250,7 @@ User double-clicks a .htmlclay file
     -> App picks the file's origin: the trusted folder containing it, else its own folder
       -> App serves the folder at its own hostname on the app's one port, bound on 127.0.0.1 and
          ::1, and mints a session token
-        -> App opens the system default browser at http://c<n>.localhost:25252/<relative path>
+        -> App opens the system default browser at http://htmlclay<n>.localhost:7777/<relative path>
           -> Server injects savetoken into the <html> tag on the way out
             -> Page edits, saves: POST /_/save/{token} with the whole document as the body
               -> Server writes to a temp file, fsyncs, renames it over the target
@@ -263,7 +263,7 @@ Facts that matter when you are reasoning about this:
 - One origin per folder. A trusted folder is served at its own hostname on the app's one port, and
   each folder a loose file was opened from gets a hostname of its own. Two folders are therefore two
   browser origins and cannot read each other.
-- **The port is fixed per computer, 25252 unless taken; the hostname is fixed per folder.** The port
+- **The port is fixed per computer, 7777 unless taken; the hostname is fixed per folder.** The port
   is chosen on the first launch and bound again at every startup, before any file is opened, and the
   hostname is chosen once per folder and never changes. Both live in `config.json`, so a bookmarked
   address still answers after a restart. `52341` throughout this file is illustrative; the addresses
@@ -352,7 +352,7 @@ is deliberately outside that guard, because it admits local processes, which att
 header.
 
 Two global gates sit in front of everything. The `Host` header must be a
-`c<n>.localhost:<port>` name the app issued, or one of the bare loopback spellings
+`htmlclay<n>.localhost:<port>` name the app issued, or one of the bare loopback spellings
 `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>`, which get a fixed page saying nothing is
 served there. Any request with `Sec-Fetch-Site: cross-site` is refused unless it is an eligible
 top-level navigation from an origin this process serves. Two folders' hostnames are cross-site to
@@ -536,7 +536,7 @@ htmlclay wire serve ~/notes/page.htmlclay -- ./my-agent.sh
 The CLI answers with one line and waits:
 
 ```
-[wire] attached as handler to http://c1.localhost:25252 (/Users/you/notes/page.htmlclay)
+[wire] attached as handler to http://htmlclay.localhost:7777 (/Users/you/notes/page.htmlclay)
 ```
 
 `my-agent.sh` runs once per request. The request envelope arrives on stdin and the file's path
@@ -585,9 +585,9 @@ Flags may sit on either side of the file argument. Exactly one file operand is r
 and exits 1. It always takes the handler role, so it has no `--handler` flag.
 
 `--origin <url>` names an HTML Clay site's address as the browser shows it, such as
-`http://c1.localhost:25252`. Use it to reach a file whose folder HTML Clay remembers no
+`http://htmlclay.localhost:7777`. Use it to reach a file whose folder HTML Clay remembers no
 origin for, such as a file loose in your home directory: copy the address out of the page's own
-address bar. `--port <n>` names a Hyperclay Local origin, which has no hostname; HTML Clay's own port (25252)
+address bar. `--port <n>` names a Hyperclay Local origin, which has no hostname; HTML Clay's own port (7777)
 looks the file's hostname up on that port instead. Passing both is a usage error. Otherwise the CLI discovers the origin from `siteSlugs` in `config.json`, trying
 ancestor anchors first, shortest first, then any legacy per-folder port the config still remembers.
 
@@ -610,7 +610,7 @@ It prints the server's acknowledgement.
 `where` prints one JSON line:
 
 ```json
-{"file":"/Users/you/notes/page.htmlclay","origin":"http://c1.localhost:25252","anchor":"/Users/you/notes","state":"live"}
+{"file":"/Users/you/notes/page.htmlclay","origin":"http://htmlclay.localhost:7777","anchor":"/Users/you/notes","state":"live"}
 ```
 
 `anchor` is the literal string `--origin` or `--port` when one of those was passed. `state` is `live`
@@ -1040,25 +1040,25 @@ extraction rules as the Hyperclay platform. Two URL forms, with caller supplied 
 You supply the rules, and the document's own rules tag is ignored:
 
 ```bash
-curl --get 'http://c1.localhost:25252/notes.htmlclay' \
+curl --get 'http://htmlclay.localhost:7777/notes.htmlclay' \
   --data-urlencode 'data={title:"h1",items:".todo[]"}'
 ```
 
 Without `?data=`, the file supplies its own:
 
 ```bash
-curl 'http://c1.localhost:25252/_/api/notes.htmlclay'
+curl 'http://htmlclay.localhost:7777/_/api/notes.htmlclay'
 ```
 
-Replace `c1` with the hostname in your tab's address bar; the port is the same for every
+Replace `htmlclay` with the hostname in your tab's address bar; the port is the same for every
 folder. Browsers and `curl` resolve `*.localhost` to loopback by themselves. Other programs ask
 the system resolver, which macOS answers, Linux answers with systemd-resolved, and Windows usually
 does not (PowerShell's `Invoke-RestMethod` fails with "remote name could not be resolved"). A
-program can skip the hostname entirely: `127.0.0.1:25252/_/api/<path>` reaches whichever open folder
+program can skip the hostname entirely: `127.0.0.1:7777/_/api/<path>` reaches whichever open folder
 serves that file, for any caller that is not a browser (no `Origin`, no `Sec-Fetch-Site`):
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:25252/_/api/Documents/notes/notes.htmlclay
+Invoke-RestMethod http://127.0.0.1:7777/_/api/Documents/notes/notes.htmlclay
 ```
 
 The path is relative to your home folder, the same path the address bar shows. If no open folder
@@ -1197,16 +1197,16 @@ The full ledger, with the measurement behind every row, is
 Caller supplied rules work on both URL forms, for GET and POST. No embedded tag is required:
 
 ```bash
-curl --get 'http://c1.localhost:25252/soup.htmlclay' \
+curl --get 'http://htmlclay.localhost:7777/soup.htmlclay' \
   --data-urlencode 'data={title:h1}'
 
 curl --request POST \
-  'http://c1.localhost:25252/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
+  'http://htmlclay.localhost:7777/soup.htmlclay?data=%7Btitle%3Ah1%7D' \
   --header 'Content-Type: application/json' \
   --data '{"title":"Lunch"}'
 ```
 
-Replace `c1` with the hostname in your tab's address bar; the port is the same for every
+Replace `htmlclay` with the hostname in your tab's address bar; the port is the same for every
 folder. The same requests work with `/_/api/soup.htmlclay?data=%7Btitle%3Ah1%7D`, and with `.html`
 files.
 Supplied rules replace the embedded mapping for that request, even if the tag is malformed.
@@ -1222,7 +1222,7 @@ The response uses the same rules as the request. GET and POST return the source 
 with an `ETag` header.
 
 ```bash
-curl -X POST 'http://c1.localhost:25252/_/api/notes.htmlclay' \
+curl -X POST 'http://htmlclay.localhost:7777/_/api/notes.htmlclay' \
   -H 'Content-Type: application/json' \
   -d '{"title":"Groceries","items":[{"text":"eggs","done":"no"}]}'
 ```
@@ -1429,12 +1429,12 @@ log is `<os-config-dir>/htmlclay/htmlclay.log`, rotated at 10 MB. Versions are i
 ```json
 {
   "startOnLogin": false,
-  "port": 25252,
+  "port": 7777,
   "siteSlugs": {
-    "/Users/you/projects/notes": "c1"
+    "/Users/you/projects/notes": "htmlclay1"
   },
   "retiredSlugs": [
-    "c2"
+    "htmlclay"
   ],
   "nextSiteNumber": 3,
   "sitePorts": {
@@ -1450,8 +1450,9 @@ log is `<os-config-dir>/htmlclay/htmlclay.log`, rotated at 10 MB. Versions are i
 startup. `siteSlugs` remembers the hostname each folder answers at, keyed by its anchor folder, and
 is what the `htmlclay wire` CLI reads to find an origin; a label is chosen once and never changes.
 `retiredSlugs` are labels that were once issued and then given up, which are never issued again, so
-no folder can inherit another's browser storage. Labels are numbered, `c1`, `c2`, and so on, in the
-order folders are first served, and `nextSiteNumber` is the next one; a number is never reused.
+no folder can inherit another's browser storage. Labels are `htmlclay`, then `htmlclay1`, `htmlclay2`,
+and so on, in the order folders are first served, and `nextSiteNumber` is the next one; a number is
+never reused.
 
 `sitePorts` is the legacy record from the per-folder-port model, kept only so an old
 `127.0.0.1:<port>` bookmark redirects to the folder's hostname while that port is free; nothing new

@@ -11,12 +11,11 @@ import (
 	"github.com/panphora/htmlclay/internal/platform"
 )
 
-// defaultPorts is the order a first launch tries: easy to remember, below every system's
-// ephemeral range (Linux 32768-60999, macOS and Windows 49152-65535), and none a known
-// default of another program (IANA leaves 25252, 27272 and 29292 unassigned; 24242 and
-// 26262 are registered to products rarely seen). More than 100 apart, so no single
-// Hyper-V or WSL exclusion block (100 ports) covers two.
-var defaultPorts = []int{25252, 27272, 29292, 24242, 26262}
+// defaultPorts is the order a first launch tries: plain numbers people can read and type,
+// below every system's ephemeral range (Linux 32768-60999, macOS and Windows 49152-65535),
+// none on the browsers' blocked-port lists, and more than 100 apart so no single Hyper-V or
+// WSL exclusion block (100 ports) covers two.
+var defaultPorts = []int{7777, 3333, 9999, 5555, 4444}
 
 // oldDefaultPorts are the 1.13.1 and 1.13.2 candidates. A config that remembers one moves
 // to defaultPorts once, on its next launch.
@@ -189,7 +188,7 @@ func (a *app) adoptPort(b *boundPort) {
 // announceHostnames is the one-time notice for a config upgraded from per-folder ports or
 // from the old default port: the addresses changed, and page data does not follow.
 func (a *app) announceHostnames(port int) {
-	msg := fmt.Sprintf("HTML Clay now serves every folder from port %d, each at its own numbered address, such as http://c1.localhost:%d/.\n\n"+
+	msg := fmt.Sprintf("HTML Clay now serves every folder from port %d, each at its own address, such as http://htmlclay.localhost:%d/.\n\n"+
 		"Bookmarks to older addresses may stop working, and anything a page stored in the browser (localStorage) under an old address is not carried over.", port, port)
 	go func() {
 		if err := a.informUser("HTML Clay", msg); err != nil {

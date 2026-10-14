@@ -279,7 +279,7 @@ func TestStartListenerMovesOffAnOldDefaultPort(t *testing.T) {
 	}
 	select {
 	case msg := <-notices:
-		if !strings.Contains(msg, "c1.localhost") {
+		if !strings.Contains(msg, "htmlclay.localhost") {
 			t.Fatalf("the notice should show a numbered address:\n%s", msg)
 		}
 	case <-time.After(5 * time.Second):
