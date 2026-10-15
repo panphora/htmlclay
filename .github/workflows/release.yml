@@ -468,26 +468,19 @@ jobs:
 
       # Immutable keys: the version is in every name, and each feed url also
       # carries the sha256, so a rebuild of the same version never meets a cached
-      # copy of the old bytes. Read back from the bucket and compared, so the feed
-      # below only ever names bytes R2 really holds.
+      # copy of the old bytes. A key that already holds these bytes is skipped; one
+      # that holds other bytes fails the release, because a feed already published
+      # may name them (scripts/r2-put-immutable.sh). Read back from the bucket and
+      # compared, so the feed below only ever names bytes R2 really holds.
       - name: Upload update artifacts
         env:
           VERSION: ${{ inputs.version }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          export ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           for file in updates/*; do
-            filename=$(basename "$file")
-            key="update/${VERSION}/${filename}"
-            echo "Uploading $key..."
-            aws s3 cp "$file" "s3://${R2_BUCKET}/${key}" \
-              --endpoint-url "$ENDPOINT" \
-              --content-type "application/octet-stream" \
-              --cache-control "public, max-age=31536000, immutable"
-            aws s3 cp "s3://${R2_BUCKET}/${key}" "$RUNNER_TEMP/readback" \
-              --endpoint-url "$ENDPOINT"
-            cmp "$file" "$RUNNER_TEMP/readback"
+            bash src/scripts/r2-put-immutable.sh "$file" "update/${VERSION}/$(basename "$file")" application/octet-stream
           done
 
       # After every artifact, before the receipt. The archive copy is what a bad
@@ -519,8 +512,8 @@ jobs:
             --cache-control "public, max-age=60"
           echo "Published update/stable.json for ${VERSION}"
 
-      # After the Windows and Linux feed, before the receipt: the archive, read
-      # back, then the appcast that names it. The versioned appcast copy is what
+      # After the Windows and Linux feed, before the receipt: the archive, put
+      # once and read back like the update artifacts, then the appcast that names it. The versioned appcast copy is what
       # a bad one is rolled back from; update/macos/appcast.xml is what installed
       # apps read, so it caches for a minute.
       - name: Publish the Sparkle update
@@ -538,15 +531,8 @@ jobs:
           test -f sparkle/appcast.xml
           grep -q "<sparkle:version>${VERSION}</sparkle:version>" sparkle/appcast.xml
 
-          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          key="update/${VERSION}/$(basename "$ZIP")"
-          aws s3 cp "$ZIP" "s3://${R2_BUCKET}/${key}" \
-            --endpoint-url "$ENDPOINT" \
-            --content-type "application/zip" \
-            --cache-control "public, max-age=31536000, immutable"
-          aws s3 cp "s3://${R2_BUCKET}/${key}" "$RUNNER_TEMP/sparkle-readback" \
-            --endpoint-url "$ENDPOINT"
-          cmp "$ZIP" "$RUNNER_TEMP/sparkle-readback"
+          export ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          bash src/scripts/r2-put-immutable.sh "$ZIP" "update/${VERSION}/$(basename "$ZIP")" application/zip
 
           aws s3 cp sparkle/appcast.xml "s3://${R2_BUCKET}/update/${VERSION}/appcast.xml" \
             --endpoint-url "$ENDPOINT" \
