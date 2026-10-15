@@ -96,8 +96,11 @@ type appRuntime struct {
 	// rather than snapshotted at buildSite, so set it before opening any site.
 	notify func(title, message string) error
 	// writesInFlight counts the requests that can change a file, so an update
-	// restart can wait for the ones already sent. See countWrites.
+	// restart can wait for the ones already sent. writesClosed, guarded by
+	// writesMu, refuses new ones while it does. See countWrites.
 	writesInFlight atomic.Int64
+	writesMu       sync.Mutex
+	writesClosed   bool
 	// quitForUpdate overrides how an applied update ends the process. Production
 	// leaves it nil and quits the tray, which runs the ordinary shutdown.
 	quitForUpdate func()
@@ -105,6 +108,11 @@ type appRuntime struct {
 	// on Sparkle's quit event. Production leaves it nil and startSparkleUpdater
 	// fills in the real framework; tests set a fake.
 	sparkle *sparkleState
+	// held, while set, holds every request until startup has built the sites
+	// and restored the update handoff, so a request can never register a file
+	// under a fresh token before its old one comes back. main sets it before
+	// binding; tests that do not set it serve at once.
+	held atomic.Pointer[chan struct{}]
 }
 
 type app struct {
@@ -143,6 +151,9 @@ type app struct {
 	// updating is set while an update restart is under way, so a second click
 	// on Restart to Update cannot start another.
 	updating atomic.Bool
+	// restartingForUpdate is set by startListener when this launch is the new
+	// version of an update that is applying.
+	restartingForUpdate bool
 }
 
 func migrateConfigDir() {
@@ -234,16 +245,24 @@ func main() {
 	// Bind the one port before argv is processed, asking the user what to do if it is held,
 	// then build every live trusted folder's site, so a URL bookmarked before the last quit
 	// answers on the first launch after it.
+	a.holdRequests()
 	if !a.startListener() {
+		if a.restartingForUpdate {
+			a.rt.logger.Close()
+			a.rt.si.Unlock()
+			os.Exit(1)
+		}
 		return
 	}
 	a.startSites()
 	// An update restart left the previous process's sessions behind; take them
 	// back before anything else can register, so every tab that was open keeps
 	// saving at the address it already has. An ordinary launch finds no file.
+	// Requests already accepted wait in holdRequests until this is done.
 	if _, err := a.restoreUpdateHandoff(filepath.Join(a.rt.configDir, updateHandoffFile)); err != nil {
 		a.rt.logger.Printf("Update handoff ignored: %v", err)
 	}
+	a.releaseRequests()
 	markUpdateHealth(update.HealthServing)
 
 	args := flag.Args()

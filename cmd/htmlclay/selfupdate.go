@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,8 +26,10 @@ var releaseInfoURL = update.DefaultVersionURL
 
 // The restart waits for a moment with no write request in flight, so a save
 // already on the wire lands in this process rather than failing against a
-// closed port. A request still running after updateQuietLimit cancels the
-// restart instead of being cut off; the person can click again.
+// closed port. Then it stops admitting writes and waits for the ones already
+// admitted to finish. A request still running after updateQuietLimit cancels
+// the restart instead of being cut off, and admission reopens; the person can
+// click again.
 var (
 	updateQuietFor   = 500 * time.Millisecond
 	updateQuietLimit = 5 * time.Second
@@ -152,11 +155,12 @@ func (a *app) applyUpdate(r update.Ready, installPath string) error {
 }
 
 // restartForUpdate is what every update restart shares. In order: ask when an
-// AI edit or a program is running, wait for in-flight writes to land, hand the
-// open sessions to target in the handoff file, then call install with its path.
-// Until install returns nil every failure removes the handoff and leaves this
-// process running as it was; after that the app stays marked as updating, so a
-// second click cannot start another restart.
+// AI edit or a program is running, wait for in-flight writes to land and stop
+// admitting new ones, hand the open sessions to target in the handoff file, then
+// call install with its path. Until install returns nil every failure removes
+// the handoff, reopens writes and leaves this process running as it was; after
+// that the app stays marked as updating with writes closed, so a second click
+// cannot start another restart and no save can land after the handoff.
 func (a *app) restartForUpdate(target string, install func(handoffPath string) error) error {
 	if !a.updating.CompareAndSwap(false, true) {
 		return errors.New("an update restart is already under way")
@@ -164,6 +168,7 @@ func (a *app) restartForUpdate(target string, install func(handoffPath string) e
 	exiting := false
 	defer func() {
 		if !exiting {
+			a.reopenWrites()
 			a.updating.Store(false)
 		}
 	}()
@@ -176,6 +181,9 @@ func (a *app) restartForUpdate(target string, install func(handoffPath string) e
 		}
 	}
 	if !waitQuiet(&a.rt.writesInFlight, updateQuietFor, updateQuietLimit) {
+		return errUpdateBusy
+	}
+	if !a.drainWrites(updateQuietLimit) {
 		return errUpdateBusy
 	}
 
@@ -210,7 +218,8 @@ func (a *app) runningWork() int {
 // countWrites wraps the one HTTP handler and counts requests that can change
 // a file: saves, uploads, restores. Reads are left out on purpose, because the
 // live-sync and wire streams are GETs that stay open for as long as a tab
-// does, and counting them would mean the app is never quiet.
+// does, and counting them would mean the app is never quiet. While an update
+// restart has writes closed, a write is refused with a retriable 503 instead.
 func (a *app) countWrites(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -218,9 +227,64 @@ func (a *app) countWrites(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		a.rt.writesInFlight.Add(1)
+		if !a.admitWrite() {
+			refuseWriteWhileRestarting(w)
+			return
+		}
 		defer a.rt.writesInFlight.Add(-1)
 		next.ServeHTTP(w, r)
+	})
+}
+
+// admitWrite counts one write in, unless writes are closed. The check and the
+// count happen under one lock, so once drainWrites has closed admission the
+// count can only fall.
+func (a *app) admitWrite() bool {
+	a.rt.writesMu.Lock()
+	defer a.rt.writesMu.Unlock()
+	if a.rt.writesClosed {
+		return false
+	}
+	a.rt.writesInFlight.Add(1)
+	return true
+}
+
+// drainWrites closes admission and waits up to limit for every admitted write
+// to finish. On timeout it reopens admission and reports false, so the app
+// keeps running as it was.
+func (a *app) drainWrites(limit time.Duration) bool {
+	a.rt.writesMu.Lock()
+	a.rt.writesClosed = true
+	a.rt.writesMu.Unlock()
+	deadline := time.Now().Add(limit)
+	for a.rt.writesInFlight.Load() != 0 {
+		if time.Now().After(deadline) {
+			a.reopenWrites()
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
+}
+
+func (a *app) reopenWrites() {
+	a.rt.writesMu.Lock()
+	a.rt.writesClosed = false
+	a.rt.writesMu.Unlock()
+}
+
+// refuseWriteWhileRestarting answers a write that arrived after the restart
+// closed admission. ClayJS treats a 503 like a lost connection: the page stays
+// dirty and the next save sends it again, by then to the new version.
+func refuseWriteWhileRestarting(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "2")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":      false,
+		"msg":     "HTML Clay is restarting to finish an update, so nothing was saved. Try again in a few seconds.",
+		"msgType": "error",
+		"code":    "restarting",
 	})
 }
 

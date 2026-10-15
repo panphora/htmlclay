@@ -227,6 +227,7 @@ func (a *app) installWithSparkle(target, handoff string) error {
 		if txid != "" {
 			update.ClearState(update.UpdatesDir(a.rt.configDir), txid)
 		}
+		a.reopenWrites()
 		a.updating.Store(false)
 		a.reportRestartFailure(target, errors.New(reason))
 	}()

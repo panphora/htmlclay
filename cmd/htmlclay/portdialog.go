@@ -6,10 +6,12 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"time"
 
 	"github.com/panphora/htmlclay/internal/platform"
+	"github.com/panphora/htmlclay/internal/update"
 )
 
 // defaultPorts is the order a first launch tries: plain numbers people can read and type,
@@ -81,6 +83,10 @@ const (
 // port is part of every bookmark and every page's browser storage, and moving it silently
 // would lose both without a word.
 func (a *app) startListener() bool {
+	if port, ok := a.updateRestartPort(); ok {
+		a.restartingForUpdate = true
+		return a.bindForUpdate(port)
+	}
 	remembered := a.rt.cfg.Port()
 	upgrading := slices.Contains(oldDefaultPorts, remembered)
 	if remembered == 0 || upgrading {
@@ -138,6 +144,44 @@ func (a *app) startListener() bool {
 			a.rt.logger.Printf("Exiting: port %d is taken and nothing was chosen to change", remembered)
 			return false
 		}
+	}
+}
+
+// updatePortWait is how long an update restart retries its port. The process
+// it replaces has exited, but the port can take a moment to come free.
+var updatePortWait = 5 * time.Second
+
+// updateRestartPort returns the port an update restart must serve on, and false
+// for every launch that is not one: the port is the handoff's, the address every
+// open tab is on, falling back to the remembered port when there is no handoff.
+func (a *app) updateRestartPort() (int, bool) {
+	st, err := update.ReadState(update.UpdatesDir(a.rt.configDir))
+	if err != nil || st == nil || st.Phase != update.PhaseApplying || st.To != version {
+		return 0, false
+	}
+	port := handoffPort(filepath.Join(a.rt.configDir, updateHandoffFile))
+	if port == 0 {
+		port = a.rt.cfg.Port()
+	}
+	return port, port != 0
+}
+
+// bindForUpdate binds port and nothing else. No dialog, no other port: a new
+// version that cannot serve at the old addresses has failed, and exiting
+// without reporting serving is what lets the supervisor put the old one back.
+func (a *app) bindForUpdate(port int) bool {
+	deadline := time.Now().Add(updatePortWait)
+	for {
+		b, err := bindLoopback(port)
+		if err == nil {
+			a.adoptPort(b)
+			return true
+		}
+		if time.Now().After(deadline) {
+			a.rt.logger.Printf("Update restart: port %d is still taken after %s (%v); exiting so the previous version comes back", port, updatePortWait, err)
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -210,7 +254,7 @@ func (a *app) adoptPort(b *boundPort) {
 		a.saveConfig("choosing the port")
 	}
 	a.rt.httpServer = &http.Server{
-		Handler:           a.countWrites(http.HandlerFunc(a.serveHost)),
+		Handler:           a.afterStartup(a.countWrites(http.HandlerFunc(a.serveHost))),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -227,6 +271,35 @@ func (a *app) adoptPort(b *boundPort) {
 		}(ln)
 	}
 	a.rt.logger.Printf("Listening on port %d (127.0.0.1 and ::1=%v)", b.port, b.v6 != nil)
+}
+
+// holdRequests makes every request wait until releaseRequests. Called before
+// the port is bound, so no request is ever served from a half-built startup.
+func (a *app) holdRequests() {
+	ch := make(chan struct{})
+	a.rt.held.Store(&ch)
+}
+
+// releaseRequests lets held requests through, once and for all.
+func (a *app) releaseRequests() {
+	if ch := a.rt.held.Swap(nil); ch != nil {
+		close(*ch)
+	}
+}
+
+// afterStartup holds a request while startup is still restoring sessions. A
+// client that gives up while held is dropped without an answer.
+func (a *app) afterStartup(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ch := a.rt.held.Load(); ch != nil {
+			select {
+			case <-*ch:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // announceHostnames is the one-time notice for a config upgraded from per-folder ports or

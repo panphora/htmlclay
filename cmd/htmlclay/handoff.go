@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/platform"
 	"github.com/panphora/htmlclay/internal/session"
 )
 
@@ -46,12 +47,21 @@ type updateHandoffSite struct {
 	Trusted      bool                 `json:"trusted"`
 	Files        []updateHandoffEntry `json:"files"`
 	GrantedRoots []string             `json:"grantedRoots,omitempty"`
+	// GrantIdentities maps each granted root to its directory's identity when
+	// the handoff was written. A grant whose folder no longer has it, or that
+	// has none recorded, is not restored.
+	GrantIdentities map[string]string `json:"grantIdentities,omitempty"`
 }
 
 type updateHandoffEntry struct {
 	Path  string             `json:"path"`
 	Via   session.Provenance `json:"via"`
 	Token string             `json:"token"`
+	// Identity is the file's volume and file id (platform.DirIdentity) when the
+	// handoff was written, after the drain. A file replaced at the same path
+	// since then has another one, and its token is not restored. An entry
+	// without one is refused.
+	Identity string `json:"identity,omitempty"`
 }
 
 // writeUpdateHandoff captures every live site's registrations and grants into
@@ -84,14 +94,18 @@ func (a *app) writeUpdateHandoff(path, targetVersion string) error {
 			continue
 		}
 		entry := updateHandoffSite{
-			Key:          s.key,
-			Slug:         s.slug,
-			Anchor:       s.anchor,
-			Trusted:      s.trusted,
-			GrantedRoots: snap.GrantedRoots,
+			Key:             s.key,
+			Slug:            s.slug,
+			Anchor:          s.anchor,
+			Trusted:         s.trusted,
+			GrantedRoots:    snap.GrantedRoots,
+			GrantIdentities: map[string]string{},
+		}
+		for _, root := range snap.GrantedRoots {
+			entry.GrantIdentities[root] = platform.DirIdentity(root)
 		}
 		for _, r := range snap.Registrations {
-			entry.Files = append(entry.Files, updateHandoffEntry{Path: r.Path, Via: r.Via, Token: r.Token})
+			entry.Files = append(entry.Files, updateHandoffEntry{Path: r.Path, Via: r.Via, Token: r.Token, Identity: platform.DirIdentity(r.Path)})
 		}
 		h.Sites = append(h.Sites, entry)
 	}
@@ -130,6 +144,20 @@ func writePrivateFile(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+// handoffPort returns the port in the handoff at path without consuming it, or
+// 0 when there is no handoff written for this version.
+func handoffPort(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var h updateHandoff
+	if json.Unmarshal(data, &h) != nil || h.TargetVersion != version {
+		return 0
+	}
+	return h.Port
 }
 
 // restoreUpdateHandoff reads the handoff at path, deletes it, and rebuilds the
@@ -243,7 +271,8 @@ func (a *app) restoreHandoffSite(entry updateHandoffSite) int {
 // restoreHandoffFiles re-registers each file under its old token and then
 // reinstalls the site's grants. Each file is validated on its own: it must sit
 // under the site's anchor, must not have moved under a trusted folder's origin,
-// and must pass RestoreRegistration, which re-runs every Register check.
+// must still be the same file (its recorded identity), and must pass
+// RestoreRegistration, which re-runs every Register check.
 func (a *app) restoreHandoffFiles(s *site, entry updateHandoffSite) int {
 	n := 0
 	for _, f := range entry.Files {
@@ -256,6 +285,10 @@ func (a *app) restoreHandoffFiles(s *site, entry updateHandoffSite) int {
 				a.rt.logger.Printf("Update handoff: %s is inside a trusted folder now; skipping it", f.Path)
 				continue
 			}
+		}
+		if f.Identity == "" || platform.DirIdentity(f.Path) != f.Identity {
+			a.rt.logger.Printf("Update handoff: %s is not the file the tab opened (identity changed or not recorded); skipping it", f.Path)
+			continue
 		}
 		if _, err := s.sessions.RestoreRegistration(f.Path, f.Via, f.Token); err != nil {
 			a.rt.logger.Printf("Update handoff: could not restore %s: %v", f.Path, err)
@@ -272,6 +305,10 @@ func (a *app) restoreHandoffFiles(s *site, entry updateHandoffSite) int {
 		// whose path now resolves somewhere else is dropped, never followed.
 		if resolved, err := resolveSymlinks(root); err != nil || resolved != root {
 			a.rt.logger.Printf("Update handoff: the grant on %s no longer resolves to itself; skipping it", root)
+			continue
+		}
+		if id := entry.GrantIdentities[root]; id == "" || platform.DirIdentity(root) != id {
+			a.rt.logger.Printf("Update handoff: the folder granted at %s is not the one approved (identity changed or not recorded); skipping it", root)
 			continue
 		}
 		if err := s.sessions.GrantCanonicalRoot(root); err != nil {
