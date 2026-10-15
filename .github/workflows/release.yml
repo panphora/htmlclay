@@ -311,12 +311,45 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          UPDATE_CHANNEL: stable
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         run: bash packaging/macos/build.sh --universal
 
       - uses: actions/upload-artifact@v4
         with:
           name: dist-HTMLClay-universal.dmg
           path: HTMLClay-*.dmg
+
+      # Sparkle's signed archive and appcast. Releases keep working before the
+      # key exists: with neither half set, the artifact holds only a SKIPPED
+      # marker, no appcast is published, and the app keeps linking to the
+      # download page. With only one half set the release fails, because an
+      # app carrying a public key whose feed is never published, or a feed no
+      # app can verify, is a half-done setup.
+      - name: Sign the Sparkle update
+        env:
+          VERSION: ${{ inputs.version }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          mkdir -p sparkle-out
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ] && [ -z "$SPARKLE_PUBLIC_ED_KEY" ]; then
+            echo "::notice title=Sparkle feed skipped::Neither SPARKLE_ED_PRIVATE_KEY nor SPARKLE_PUBLIC_ED_KEY is set, so this release publishes no macOS appcast."
+            touch sparkle-out/SKIPPED
+            exit 0
+          fi
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ] || [ -z "$SPARKLE_PUBLIC_ED_KEY" ]; then
+            echo "::error::Set both the SPARKLE_ED_PRIVATE_KEY secret and the SPARKLE_PUBLIC_ED_KEY repository variable, or neither."
+            exit 1
+          fi
+          bash packaging/macos/sparkle-appcast.sh "$VERSION" "HTMLClay-${VERSION}-universal.app.zip" sparkle-out
+
+      # Its own artifact name, matching neither dist-* nor update-*, so the
+      # archive never lands in SHA256SUMS, the receipt or the signed feed.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sparkle-macos
+          path: sparkle-out/
 
   # ── Upload to R2 ──
   upload:
@@ -335,6 +368,11 @@ jobs:
           pattern: update-*
           path: updates
           merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sparkle-macos
+          path: sparkle
 
       # Checked out into src/ rather than the workspace root, where checkout
       # would empty the folder and take the downloads with it.
@@ -480,6 +518,45 @@ jobs:
             --content-type "application/json" \
             --cache-control "public, max-age=60"
           echo "Published update/stable.json for ${VERSION}"
+
+      # After the Windows and Linux feed, before the receipt: the archive, read
+      # back, then the appcast that names it. The versioned appcast copy is what
+      # a bad one is rolled back from; update/macos/appcast.xml is what installed
+      # apps read, so it caches for a minute.
+      - name: Publish the Sparkle update
+        env:
+          VERSION: ${{ inputs.version }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          if [ -f sparkle/SKIPPED ]; then
+            echo "::notice title=Sparkle feed skipped::No macOS appcast was built for this release."
+            exit 0
+          fi
+          ZIP="sparkle/HTMLClay-${VERSION}-universal.app.zip"
+          test -f "$ZIP"
+          test -f sparkle/appcast.xml
+          grep -q "<sparkle:version>${VERSION}</sparkle:version>" sparkle/appcast.xml
+
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          key="update/${VERSION}/$(basename "$ZIP")"
+          aws s3 cp "$ZIP" "s3://${R2_BUCKET}/${key}" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/zip" \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp "s3://${R2_BUCKET}/${key}" "$RUNNER_TEMP/sparkle-readback" \
+            --endpoint-url "$ENDPOINT"
+          cmp "$ZIP" "$RUNNER_TEMP/sparkle-readback"
+
+          aws s3 cp sparkle/appcast.xml "s3://${R2_BUCKET}/update/${VERSION}/appcast.xml" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/xml" \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp sparkle/appcast.xml "s3://${R2_BUCKET}/update/macos/appcast.xml" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/xml" \
+            --cache-control "public, max-age=60"
+          echo "Published update/macos/appcast.xml for ${VERSION}"
 
       - name: Upload release-info.json
         env:
