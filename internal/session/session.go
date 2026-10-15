@@ -485,6 +485,15 @@ func generateToken() (string, error) {
 }
 
 func (m *Manager) Register(absPath string, via Provenance) (*File, error) {
+	return m.register(absPath, via, "")
+}
+
+// register is the one registration path. An empty token mints a fresh one, which
+// is every ordinary registration; a non-empty token is a capability carried over
+// from the previous process by an update handoff (see RestoreRegistration), and is
+// installed exactly as given. Both run every check below, so a restored token can
+// never reach a file an ordinary open would be refused.
+func (m *Manager) register(absPath string, via Provenance, token string) (*File, error) {
 	cleaned, err := resolveAndValidate(absPath, m.homeDir)
 	if err != nil {
 		return nil, err
@@ -512,8 +521,14 @@ func (m *Manager) Register(absPath string, via Provenance) (*File, error) {
 		return nil, fmt.Errorf("path %q is in a forbidden location", cleaned)
 	}
 
-	if token, ok := m.byPath[cleaned]; ok {
-		f := m.byToken[token]
+	if existing, ok := m.byPath[cleaned]; ok {
+		// A restore may land on a path something already registered this run.
+		// Accumulating onto the same token is harmless; a different token is not,
+		// because one file must never answer to two save tokens.
+		if token != "" && token != existing {
+			return nil, fmt.Errorf("path %q is already registered under another token", cleaned)
+		}
+		f := m.byToken[existing]
 		f.via |= via
 		if via.Has(ViaOsOpen) {
 			_ = m.installReadRoot(filepath.Dir(cleaned), rootOpened)
@@ -521,9 +536,12 @@ func (m *Manager) Register(absPath string, via Provenance) (*File, error) {
 		return f, nil
 	}
 
-	token, err := generateToken()
-	if err != nil {
-		return nil, err
+	if token == "" {
+		if token, err = generateToken(); err != nil {
+			return nil, err
+		}
+	} else if _, taken := m.byToken[token]; taken {
+		return nil, fmt.Errorf("token for %q is already in use", cleaned)
 	}
 
 	relPath, err := filepath.Rel(m.homeDir, cleaned)
@@ -557,6 +575,94 @@ func (m *Manager) Register(absPath string, via Provenance) (*File, error) {
 		_ = m.installReadRoot(filepath.Dir(cleaned), rootOpened)
 	}
 	return f, nil
+}
+
+// wellFormedToken reports whether token has exactly the shape generateToken
+// produces: 32 bytes in unpadded base64url, in canonical form. A restored token
+// is checked against it so a tampered handoff cannot install a short or
+// guessable capability.
+func wellFormedToken(token string) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != 32 {
+		return false
+	}
+	return base64.RawURLEncoding.EncodeToString(raw) == token
+}
+
+// RestoreRegistration re-registers absPath under the token it held in the
+// previous process, so a tab opened before an update restart keeps saving
+// after it. It is not a way to mint a capability: the token must be well
+// formed and unused, the provenance must be one Register could have recorded,
+// and the path must still be a regular file that resolves to exactly absPath.
+// A path that now resolves elsewhere (a component swapped for a symlink while
+// the app was down) is refused rather than followed, because the capability
+// was granted for the file at that path and nothing else. Every Register check
+// (home containment, hidden components, the guard, revocation) runs as well.
+func (m *Manager) RestoreRegistration(absPath string, via Provenance, token string) (*File, error) {
+	if !wellFormedToken(token) {
+		return nil, fmt.Errorf("restored token for %q is malformed", absPath)
+	}
+	if via == 0 || via&^(ViaOsOpen|ViaTrusted) != 0 {
+		return nil, fmt.Errorf("restored provenance %d for %q is not valid", via, absPath)
+	}
+	cleaned, err := resolveAndValidate(absPath, m.homeDir)
+	if err != nil {
+		return nil, err
+	}
+	if cleaned != absPath {
+		return nil, fmt.Errorf("path %q now resolves to %q", absPath, cleaned)
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		return nil, fmt.Errorf("cannot stat %q: %w", cleaned, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("path %q is not a regular file", cleaned)
+	}
+	return m.register(cleaned, via, token)
+}
+
+// RestorableRegistration is one registration as an update handoff carries it,
+// token included. It is a capability: it exists only to be written to the
+// private handoff file and read back by the next process.
+type RestorableRegistration struct {
+	Path  string
+	Via   Provenance
+	Token string
+}
+
+// Snapshot is everything a site's session manager holds that a restart would
+// otherwise lose: every registration with its token, and every granted read
+// root. Opened roots are not listed because restoring a ViaOsOpen registration
+// reinstalls them, and the trusted root is not listed because the site arms it
+// on its first request.
+type Snapshot struct {
+	Registrations []RestorableRegistration
+	GrantedRoots  []string
+}
+
+// Snapshot returns the manager's restorable state. A revoked manager returns an
+// empty snapshot, because a closed site has nothing left to hand over.
+func (m *Manager) Snapshot() Snapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var snap Snapshot
+	if m.revoked {
+		return snap
+	}
+	for path, token := range m.byPath {
+		snap.Registrations = append(snap.Registrations, RestorableRegistration{
+			Path:  path,
+			Via:   m.byToken[token].via,
+			Token: token,
+		})
+	}
+	for dir, rr := range m.readRoots {
+		if rr.granted {
+			snap.GrantedRoots = append(snap.GrantedRoots, dir)
+		}
+	}
+	return snap
 }
 
 // RegistrationInfo is a snapshot of one registration, for the tray and for

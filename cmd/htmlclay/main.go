@@ -216,6 +216,12 @@ func main() {
 		return
 	}
 	a.startSites()
+	// An update restart left the previous process's sessions behind; take them
+	// back before anything else can register, so every tab that was open keeps
+	// saving at the address it already has. An ordinary launch finds no file.
+	if _, err := a.restoreUpdateHandoff(filepath.Join(a.rt.configDir, updateHandoffFile)); err != nil {
+		a.rt.logger.Printf("Update handoff ignored: %v", err)
+	}
 
 	args := flag.Args()
 	if len(args) > 0 {
