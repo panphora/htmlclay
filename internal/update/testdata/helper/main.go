@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/panphora/htmlclay/internal/update"
@@ -26,7 +27,7 @@ func main() {
 		}
 		return
 	}
-	os.WriteFile(filepath.Join(os.Getenv("HTMLCLAY_TEST_MARKERS"), "launched-"+version), []byte(mode), 0o644)
+	os.WriteFile(filepath.Join(os.Getenv("HTMLCLAY_TEST_MARKERS"), "launched-"+version), []byte(strings.Join(append([]string{mode}, os.Args[1:]...), " ")), 0o644)
 	switch mode {
 	case "serve":
 		update.MarkHealth(dir, version, update.HealthStarted)

@@ -368,3 +368,35 @@ func TestFinishRefusesWithoutAnApplyingState(t *testing.T) {
 		t.Fatalf("a stale state gave %v", err)
 	}
 }
+
+// A supervisor that cannot start undoes the swap without losing the update:
+// the old binary is back at the install path, the new one is back at its
+// staged path, and applying again works.
+func TestApplyKeepsTheStagedBinaryWhenTheSupervisorCannotStart(t *testing.T) {
+	f := newFixture(t, "serve")
+	defer func(s func(string, ...string) (*exec.Cmd, error)) { startSupervisor = s }(startSupervisor)
+	startSupervisor = func(string, ...string) (*exec.Cmd, error) { return nil, errors.New("no supervisor") }
+	params := ApplyParams{From: "1.0.0", To: "2.0.0", InstallPath: f.install, StagedPath: f.staged, OldPID: exitedPID(t, 300*time.Millisecond)}
+	if _, err := Apply(f.updates, params); err == nil {
+		t.Fatal("Apply succeeded without a supervisor")
+	}
+	if !sameContent(t, f.install, helper(t, "1.0.0", "idle")) {
+		t.Fatal("the old binary is not back at the install path")
+	}
+	if !sameContent(t, f.staged, helper(t, "2.0.0", "serve")) {
+		t.Fatal("the staged update was destroyed by the undo")
+	}
+	if st, _ := ReadState(f.updates); st != nil {
+		t.Fatalf("state %+v left behind", st)
+	}
+
+	startSupervisor = startDetached
+	params.OldPID = exitedPID(t, 300*time.Millisecond)
+	st, err := Apply(f.updates, params)
+	if err != nil {
+		t.Fatalf("applying the kept update again: %v", err)
+	}
+	if done := waitForPhase(t, f.updates, 20*time.Second, PhaseDone, PhaseRolledBack, PhaseRollbackFailed); done.Phase != PhaseDone || done.Txid != st.Txid {
+		t.Fatalf("state %+v, want done", done)
+	}
+}

@@ -14,6 +14,7 @@ type SparkleParams struct {
 	Executable  string
 	OldPID      int
 	HandoffPath string
+	Quit        bool
 }
 
 func BeginSparkle(string, SparkleParams) (*State, error) { return nil, errSparkleNotMac }

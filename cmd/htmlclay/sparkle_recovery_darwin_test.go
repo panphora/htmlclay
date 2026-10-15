@@ -115,3 +115,85 @@ func TestSparkleRestartWithoutABundleSkipsRecovery(t *testing.T) {
 	a.mu.Unlock()
 	a.rt.sparkle.fail("test over")
 }
+
+func waitForSupervisor(t *testing.T, marker string) string {
+	t.Helper()
+	waitFor(t, "the supervisor", func() bool { _, err := os.Stat(marker); return err == nil })
+	got, _ := os.ReadFile(marker)
+	return strings.TrimSpace(string(got))
+}
+
+// Sparkle installs a prepared update on any quit. A plain quit therefore starts
+// a recovery for it too, marked as a quit install and with no handoff, since an
+// ordinary quit hands no session on.
+func TestPlainQuitWithAPreparedUpdateStartsRecovery(t *testing.T) {
+	a, _, _, marker := recoveryTestApp(t)
+	a.onSparkleEvent(sparkle.Event{Kind: sparkle.Ready, Text: "9.9.9"}, make(chan tray.UpdateInfo, 1))
+	a.prepareSparkleQuit()
+	st, _ := update.ReadState(update.UpdatesDir(a.rt.configDir))
+	if st == nil || st.Phase != update.PhaseApplying || st.To != "9.9.9" || !st.Quit || st.HandoffPath != "" || st.OldPID != os.Getpid() {
+		t.Fatalf("state at a plain quit: %+v", st)
+	}
+	if got := waitForSupervisor(t, marker); !strings.HasSuffix(got, " --finish-update") {
+		t.Fatalf("supervisor started as %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(a.rt.configDir, updateHandoffFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a plain quit wrote a session handoff")
+	}
+}
+
+func TestPlainQuitWithNothingPreparedStartsNothing(t *testing.T) {
+	a, _, _, marker := recoveryTestApp(t)
+	a.prepareSparkleQuit()
+	if st, _ := update.ReadState(update.UpdatesDir(a.rt.configDir)); st != nil {
+		t.Fatalf("state %+v written with no prepared update", st)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a supervisor started with no prepared update")
+	}
+}
+
+// Sparkle quitting the app long after the click: the click's handoff and
+// recovery would both have expired by the time the new version starts, so the
+// quit writes a new handoff and starts a new recovery for the same install.
+func TestLateSparkleQuitRenewsTheHandoffAndRecovery(t *testing.T) {
+	a, _, notices, marker := recoveryTestApp(t)
+	defer func(d, f time.Duration) { sparkleInstallTimeout, sparkleRecoveryFresh = d, f }(sparkleInstallTimeout, sparkleRecoveryFresh)
+	sparkleInstallTimeout, sparkleRecoveryFresh = 50*time.Millisecond, 0
+	dir := update.UpdatesDir(a.rt.configDir)
+	handoff := filepath.Join(a.rt.configDir, updateHandoffFile)
+
+	a.onSparkleEvent(sparkle.Event{Kind: sparkle.Ready, Text: "9.9.9"}, make(chan tray.UpdateInfo, 1))
+	a.clickSparkleUpdate("9.9.9")
+	<-notices
+	first, _ := update.ReadState(dir)
+	if first == nil {
+		t.Fatal("the click started no recovery")
+	}
+	if _, err := os.Stat(handoff); err != nil {
+		t.Fatalf("the click's handoff is gone after the timeout: %v", err)
+	}
+	waitForSupervisor(t, marker)
+	os.Remove(marker)
+	backdateHandoff(t, handoff, 50*time.Second)
+
+	a.prepareSparkleQuit()
+	second, _ := update.ReadState(dir)
+	if second == nil || second.Txid == first.Txid || second.Quit || second.HandoffPath != handoff || second.To != "9.9.9" {
+		t.Fatalf("state after the late quit %+v, want a new recovery for the click's install", second)
+	}
+	data, err := os.ReadFile(handoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var h updateHandoff
+	if err := json.Unmarshal(data, &h); err != nil || time.Since(h.Created) > 10*time.Second || h.TargetVersion != "9.9.9" {
+		t.Fatalf("handoff after the late quit %s (%v), want a fresh one", data, err)
+	}
+	waitForSupervisor(t, marker)
+	a.mu.Lock()
+	a.stopping = true
+	a.mu.Unlock()
+	a.rt.sparkle.fail("test over")
+}

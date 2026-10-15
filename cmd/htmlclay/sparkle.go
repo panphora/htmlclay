@@ -15,10 +15,17 @@ import (
 )
 
 // sparkleInstallTimeout bounds the wait between handing the restart to Sparkle
-// and the quit Apple event it sends. Past it the restart counts as failed: the
-// handoff is removed and the row can be clicked again. It stays well under the
-// handoff's own 60 s lifetime.
+// and the quit Apple event it sends. Past it the app reopens writes and tells
+// the person it is still waiting, but keeps the handoff and the recovery state:
+// Sparkle still holds the install request and may yet carry it out. Only a
+// definite failure from Sparkle ends the install.
 var sparkleInstallTimeout = 40 * time.Second
+
+// sparkleRecoveryFresh is how old a click's recovery may be when the app quits
+// for it to still cover that quit. The supervisor waits 60 s for this process
+// to exit and the new version accepts a handoff up to 60 s old; past this the
+// quit path writes both again.
+var sparkleRecoveryFresh = 30 * time.Second
 
 // sparkleFramework is the part of internal/sparkle the app drives, behind an
 // interface so tests can stand in for the framework.
@@ -47,6 +54,12 @@ type sparkleState struct {
 	failed chan string
 	bundle string
 	exe    string
+	// prepared is the version Sparkle holds downloaded and prepared. Sparkle
+	// installs it on any quit, so prepareSparkleQuit starts recovery for it.
+	prepared string
+	// begun is when recovery started for the install a click asked for, and
+	// zero when no click is waiting on Sparkle.
+	begun time.Time
 }
 
 // fail ends a pending install with reason. It does nothing when no install is
@@ -134,6 +147,9 @@ func (a *app) onSparkleEvent(ev sparkle.Event, updateCh chan<- tray.UpdateInfo) 
 			return
 		}
 		a.rt.logger.Printf("Update %s is downloaded and prepared by Sparkle", target)
+		a.rt.sparkle.mu.Lock()
+		a.rt.sparkle.prepared = target
+		a.rt.sparkle.mu.Unlock()
 		updateCh <- tray.UpdateInfo{Version: target, Apply: func() { a.clickSparkleUpdate(target) }}
 	case sparkle.Aborted:
 		a.rt.logger.Printf("Sparkle stopped an update: %s", ev.Text)
@@ -156,9 +172,11 @@ func (a *app) failedSparkleUpdate(target string) string {
 
 // beginSparkleRecovery copies the installed bundle aside and starts the
 // recovery supervisor from the copy, which puts it back if target never
-// reports serving. It returns the update's txid, or "" when recovery could not
-// be set up; the install then goes ahead without it, as a plain quit's does.
-func (a *app) beginSparkleRecovery(target, handoff string) string {
+// reports serving. quit says Sparkle installs on a plain quit and relaunches
+// nothing, so the supervisor checks the new version itself. It returns the
+// update's txid, or "" when recovery could not be set up; the install then goes
+// ahead without it.
+func (a *app) beginSparkleRecovery(target, handoff string, quit bool) string {
 	st := a.rt.sparkle
 	if st.bundle == "" {
 		return ""
@@ -170,6 +188,7 @@ func (a *app) beginSparkleRecovery(target, handoff string) string {
 		Executable:  st.exe,
 		OldPID:      os.Getpid(),
 		HandoffPath: handoff,
+		Quit:        quit,
 	})
 	if err != nil {
 		a.rt.logger.Printf("Installing v%s without recovery: %v", target, err)
@@ -192,44 +211,97 @@ func (a *app) clickSparkleUpdate(target string) {
 
 // installWithSparkle runs Sparkle's immediate install. Sparkle answers by
 // sending this app a quit Apple event, which runs the ordinary shutdown, then
-// installs and relaunches; the new version takes the handoff back. If Sparkle
-// reports a failure, or no quit has started within sparkleInstallTimeout, the
-// handoff and the recovery state are removed and this version keeps running.
+// installs and relaunches; the new version takes the handoff back. Only a
+// definite failure from Sparkle removes the handoff and the recovery state and
+// leaves this version running as it was. If no quit has started within
+// sparkleInstallTimeout, writes reopen and both stay, because Sparkle may still
+// quit the app to install; prepareSparkleQuit renews them at that quit.
 func (a *app) installWithSparkle(target, handoff string) error {
 	st := a.rt.sparkle
-	timeout := sparkleInstallTimeout
 	failed := make(chan string, 1)
 	st.mu.Lock()
 	st.failed = failed
+	st.begun = time.Now()
 	st.mu.Unlock()
-	txid := a.beginSparkleRecovery(target, handoff)
+	txid := a.beginSparkleRecovery(target, handoff, false)
 	a.rt.logger.Printf("Handing the restart to Sparkle to install v%s", target)
 	st.fw.InstallNow()
-	go func() {
-		var reason string
-		select {
-		case reason = <-failed:
-		case <-time.After(timeout):
-			reason = fmt.Sprintf("Sparkle did not restart HTML Clay within %s", timeout)
-		}
-		st.mu.Lock()
-		if st.failed == failed {
-			st.failed = nil
-		}
-		st.mu.Unlock()
-		a.mu.Lock()
-		stopping := a.stopping
-		a.mu.Unlock()
-		if stopping {
-			return
-		}
-		os.Remove(handoff)
-		if txid != "" {
-			update.ClearState(update.UpdatesDir(a.rt.configDir), txid)
-		}
-		a.reopenWrites()
-		a.updating.Store(false)
-		a.reportRestartFailure(target, errors.New(reason))
-	}()
+	go a.awaitSparkleInstall(target, handoff, txid, failed, sparkleInstallTimeout)
 	return nil
+}
+
+func (a *app) awaitSparkleInstall(target, handoff, txid string, failed chan string, timeout time.Duration) {
+	st := a.rt.sparkle
+	var reason string
+	select {
+	case reason = <-failed:
+	case <-time.After(timeout):
+		a.rt.logger.Printf("Sparkle has not restarted HTML Clay within %s; v%s keeps running and the update finishes when Sparkle quits it", timeout, version)
+		a.reopenWrites()
+		msg := fmt.Sprintf("The update to v%s has not started yet, so HTML Clay is still running v%s. It finishes the next time HTML Clay quits.", target, version)
+		if err := a.informUser("HTML Clay", msg); err != nil {
+			a.rt.logger.Printf("Could not show the update notice: %v", err)
+		}
+		reason = <-failed
+	}
+	st.mu.Lock()
+	if st.failed == failed {
+		st.failed = nil
+	}
+	st.begun = time.Time{}
+	st.mu.Unlock()
+	a.mu.Lock()
+	stopping := a.stopping
+	a.mu.Unlock()
+	if stopping {
+		return
+	}
+	os.Remove(handoff)
+	if txid != "" {
+		update.ClearState(update.UpdatesDir(a.rt.configDir), txid)
+	}
+	a.reopenWrites()
+	a.updating.Store(false)
+	a.reportRestartFailure(target, errors.New(reason))
+}
+
+// prepareSparkleQuit runs at every quit, before the shutdown. Sparkle installs
+// a prepared update on any quit, so whenever it holds one this makes sure a
+// recovery supervisor watches that install. After a click the recovery that
+// click started covers the quit while it is fresh; an older one (the quit came
+// late) gets a new handoff and a new recovery, so neither has expired by the
+// time the new version starts. A plain quit gets a recovery that verifies the
+// new version without relaunching it.
+func (a *app) prepareSparkleQuit() {
+	st := a.rt.sparkle
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	target, begun := st.prepared, st.begun
+	st.mu.Unlock()
+	if target == "" {
+		return
+	}
+	if !a.updating.Load() {
+		a.rt.logger.Printf("Quitting with v%s prepared; Sparkle installs it now", target)
+		a.beginSparkleRecovery(target, "", true)
+		return
+	}
+	if !begun.IsZero() && time.Since(begun) < sparkleRecoveryFresh {
+		return
+	}
+	handoff := filepath.Join(a.rt.configDir, updateHandoffFile)
+	if !a.drainWrites(updateQuietLimit) {
+		a.rt.logger.Printf("Quitting for the update to v%s with writes still in flight", target)
+	}
+	if err := a.writeUpdateHandoff(handoff, target); err != nil {
+		a.rt.logger.Printf("Could not renew the session handoff for v%s: %v", target, err)
+		os.Remove(handoff)
+		handoff = ""
+	}
+	st.mu.Lock()
+	st.begun = time.Now()
+	st.mu.Unlock()
+	a.beginSparkleRecovery(target, handoff, false)
 }

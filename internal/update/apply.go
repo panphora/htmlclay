@@ -101,6 +101,11 @@ type State struct {
 	Installer string `json:"installer,omitempty"`
 	// Executable is the app's binary relative to the bundle, set with Installer.
 	Executable string `json:"executable,omitempty"`
+	// Quit is set with Installer when Sparkle installs To on a plain quit. Then
+	// nothing relaunches To, so the supervisor starts it without its tray only to
+	// see it serve, stops it again, and relaunches nothing after a rollback: the
+	// person had quit.
+	Quit bool `json:"quit,omitempty"`
 }
 
 // InstallerSparkle marks a State whose install Sparkle performs.
@@ -252,18 +257,22 @@ func Prepare(dir string, p ApplyParams) (*State, error) {
 	return st, nil
 }
 
+// startSupervisor starts the previous binary as the supervisor. Tests replace it.
+var startSupervisor = startDetached
+
 // Apply is Prepare plus starting the supervisor from the previous binary. When it
 // returns nil the caller must shut down promptly: the supervisor is waiting for
-// OldPID to exit. When the supervisor cannot start, the swap is undone and the
+// OldPID to exit. When the supervisor cannot start, the swap is undone, the new
+// binary goes back to StagedPath so a later click can apply it again, and the
 // caller keeps running the version it already is.
 func Apply(dir string, p ApplyParams) (*State, error) {
 	st, err := Prepare(dir, p)
 	if err != nil {
 		return nil, err
 	}
-	cmd, err := startDetached(st.PreviousPath, finishUpdateArg)
+	cmd, err := startSupervisor(st.PreviousPath, finishUpdateArg)
 	if err != nil {
-		if rbErr := os.Rename(st.PreviousPath, st.InstallPath); rbErr != nil {
+		if rbErr := unswap(p.StagedPath, st.InstallPath, st.PreviousPath); rbErr != nil {
 			return nil, fmt.Errorf("start supervisor: %v; and could not undo the swap: %w", err, rbErr)
 		}
 		os.Remove(filepath.Join(dir, stateFile))
@@ -271,6 +280,20 @@ func Apply(dir string, p ApplyParams) (*State, error) {
 	}
 	cmd.Process.Release()
 	return st, nil
+}
+
+// unswap reverses swapIn: the new binary moves back to staged, then the
+// previous one back to install. If the second move fails the new binary goes
+// back to install, so the install path is never left empty.
+func unswap(staged, install, previous string) error {
+	if err := os.Rename(install, staged); err != nil {
+		return err
+	}
+	if err := os.Rename(previous, install); err != nil {
+		os.Rename(staged, install)
+		return err
+	}
+	return nil
 }
 
 // ClearState removes updates/state.json when it still describes update txid,
@@ -511,9 +534,18 @@ func retargetHandoff(path string, kept []byte, version string) error {
 // or the reason it failed after making sure no process of the new version is left
 // running.
 func watchNewVersion(dir string, st *State, opts SupervisorOptions, logf func(string, ...any)) string {
-	cmd, err := startDetached(st.InstallPath)
+	reason, _, _ := launchAndWatch(dir, st, opts, logf, st.InstallPath)
+	return reason
+}
+
+// launchAndWatch starts exe with args as the new version and returns "" once a
+// process of it reports serving, with the command it started and a channel
+// closed when that command exits. On failure it returns the reason, after
+// making sure no process of the new version is left running.
+func launchAndWatch(dir string, st *State, opts SupervisorOptions, logf func(string, ...any), exe string, args ...string) (string, *exec.Cmd, <-chan struct{}) {
+	cmd, err := startDetached(exe, args...)
 	if err != nil {
-		return fmt.Sprintf("could not launch %s: %v", st.To, err)
+		return fmt.Sprintf("could not launch %s: %v", st.To, err), nil, nil
 	}
 	exited := make(chan struct{})
 	go func() {
@@ -529,7 +561,7 @@ func watchNewVersion(dir string, st *State, opts SupervisorOptions, logf func(st
 	for {
 		if h, _ := readHealth(dir); h != nil && h.Schema == HealthSchema && h.Txid == st.Txid && h.Version == st.To {
 			if h.Phase == HealthServing {
-				return ""
+				return "", cmd, exited
 			}
 			// The person's own launch of the new version won the lock and our
 			// child forwarded to it; that process is the one to judge.
@@ -554,13 +586,13 @@ func watchNewVersion(dir string, st *State, opts SupervisorOptions, logf func(st
 				exitedAt = time.Now()
 			}
 			if watched != childPID || time.Since(exitedAt) >= opts.ExitGrace {
-				return fmt.Sprintf("%s exited before it reported serving", st.To)
+				return fmt.Sprintf("%s exited before it reported serving", st.To), nil, nil
 			}
 		}
 		if time.Now().After(deadline) {
 			reason := fmt.Sprintf("%s did not report serving within %s", st.To, opts.ServingTimeout)
 			stopNewVersion(cmd, exited, watched, childPID)
-			return reason
+			return reason, nil, nil
 		}
 		time.Sleep(opts.Poll)
 	}

@@ -335,3 +335,106 @@ func TestRestoreBundleSwapsAndDeletesTheFailedOne(t *testing.T) {
 	}
 	bundleHolds(t, bundle, "1.0.0", "idle")
 }
+
+// fakeSparkleOnQuit is what Sparkle does with a prepared update on a plain
+// quit: install it once oldPID has exited, and launch nothing.
+func (f sparkleFixture) fakeSparkleOnQuit(t *testing.T, oldPID int) {
+	t.Helper()
+	go func() {
+		waitGone(oldPID, 10*time.Second)
+		time.Sleep(200 * time.Millisecond)
+		if err := unix.RenamexNp(f.incoming, f.bundle, unix.RENAME_SWAP); err != nil {
+			t.Errorf("fake Sparkle could not swap the bundle: %v", err)
+			return
+		}
+		os.RemoveAll(f.incoming)
+	}()
+}
+
+func (f sparkleFixture) quitParams(oldPID int) SparkleParams {
+	p := f.params(oldPID)
+	p.HandoffPath = ""
+	p.Quit = true
+	return p
+}
+
+// A plain quit installs with nothing relaunching the new version, so the
+// supervisor starts it without its tray, sees it serve, and leaves the person's
+// app quit.
+func TestSparkleQuitInstallIsCheckedWithoutARelaunch(t *testing.T) {
+	f := newSparkleFixture(t, "serve")
+	oldPID := exitedPID(t, 100*time.Millisecond)
+	st, err := prepareSparkle(f.updates, f.quitParams(oldPID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Quit {
+		t.Fatalf("state %+v, want a quit install", st)
+	}
+	f.fakeSparkleOnQuit(t, oldPID)
+	var relaunched []string
+	if err := FinishUpdate(f.updates, SupervisorOptions{ServingTimeout: 5 * time.Second, InstallTimeout: 10 * time.Second, Relaunch: relaunchDirect(&relaunched)}); err != nil {
+		t.Fatalf("FinishUpdate = %v\n%s", err, supervisorLogOf(f.updates))
+	}
+	if got, _ := ReadState(f.updates); got == nil || got.Phase != PhaseDone {
+		t.Fatalf("state %+v, want done", got)
+	}
+	bundleHolds(t, f.bundle, "2.0.0", "serve")
+	launched, err := os.ReadFile(filepath.Join(f.markers, "launched-2.0.0"))
+	if err != nil || !strings.Contains(string(launched), "--no-tray") {
+		t.Fatalf("the new version was not checked without its tray: %q %v", launched, err)
+	}
+	if len(relaunched) != 0 {
+		t.Fatalf("relaunched %v after a quit", relaunched)
+	}
+}
+
+// A version installed on a plain quit that fails its check is rolled back and
+// recorded as failed, and nothing is relaunched: the person had quit.
+func TestSparkleQuitInstallThatCrashesIsRolledBackWithoutARelaunch(t *testing.T) {
+	f := newSparkleFixture(t, "crash")
+	oldPID := exitedPID(t, 100*time.Millisecond)
+	st, err := prepareSparkle(f.updates, f.quitParams(oldPID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.fakeSparkleOnQuit(t, oldPID)
+	var relaunched []string
+	if err := FinishUpdate(f.updates, SupervisorOptions{ExitGrace: 200 * time.Millisecond, ServingTimeout: 5 * time.Second, InstallTimeout: 10 * time.Second, Relaunch: relaunchDirect(&relaunched)}); err == nil {
+		t.Fatal("a crashing update finished")
+	}
+	got, _ := ReadState(f.updates)
+	if got == nil || got.Phase != PhaseRolledBack || got.Failed == nil || got.Failed.Version != "2.0.0" {
+		t.Fatalf("state %+v, want rolledBack\n%s", got, supervisorLogOf(f.updates))
+	}
+	bundleHolds(t, f.bundle, "1.0.0", "idle")
+	if _, err := os.Stat(filepath.Dir(st.PreviousPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the failed bundle was left behind")
+	}
+	if len(relaunched) != 0 {
+		t.Fatalf("relaunched %v after a quit", relaunched)
+	}
+	if _, err := os.Stat(filepath.Join(f.markers, "launched-1.0.0")); err == nil {
+		t.Fatal("the old version was started after a quit")
+	}
+}
+
+// Sparkle did not install on the quit after all: nothing changed and nothing
+// is started.
+func TestSparkleQuitWithoutAnInstallStartsNothing(t *testing.T) {
+	f := newSparkleFixture(t, "serve")
+	oldPID := exitedPID(t, 100*time.Millisecond)
+	if _, err := prepareSparkle(f.updates, f.quitParams(oldPID)); err != nil {
+		t.Fatal(err)
+	}
+	var relaunched []string
+	if err := FinishUpdate(f.updates, SupervisorOptions{InstallTimeout: time.Second, Relaunch: relaunchDirect(&relaunched)}); err == nil {
+		t.Fatal("FinishUpdate finished an update that was never installed")
+	}
+	if got, _ := ReadState(f.updates); got != nil {
+		t.Fatalf("state %+v left behind", got)
+	}
+	if len(relaunched) != 0 {
+		t.Fatalf("relaunched %v after a quit", relaunched)
+	}
+}

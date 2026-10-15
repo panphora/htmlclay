@@ -214,21 +214,42 @@ func TestSparkleInstallFailureRemovesTheHandoff(t *testing.T) {
 	a.rt.sparkle.fail("test over")
 }
 
-func TestSparkleInstallThatNeverQuitsTimesOut(t *testing.T) {
+// Sparkle not quitting the app in time is not a failure: it still holds the
+// install request and may quit the app later to carry it out. Writes reopen so
+// the running version keeps saving, but the handoff stays and the app stays
+// marked as updating until Sparkle reports a definite failure.
+func TestSparkleInstallThatNeverQuitsKeepsTheHandoff(t *testing.T) {
 	a, _, notices := sparkleTestApp(t)
 	defer func(d time.Duration) { sparkleInstallTimeout = d }(sparkleInstallTimeout)
 	sparkleInstallTimeout = 50 * time.Millisecond
+	handoff := filepath.Join(a.rt.configDir, updateHandoffFile)
 
 	a.clickSparkleUpdate("9.9.9")
 	msg := <-notices
-	if !strings.Contains(msg, "9.9.9") {
+	if !strings.Contains(msg, "9.9.9") || !strings.Contains(msg, "next time") {
 		t.Fatalf("notice %q", msg)
 	}
-	if _, err := os.Stat(filepath.Join(a.rt.configDir, updateHandoffFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a timed-out install left a handoff behind")
+	if _, err := os.Stat(handoff); err != nil {
+		t.Fatalf("a slow Sparkle lost the handoff: %v", err)
+	}
+	if !a.updating.Load() {
+		t.Fatal("a pending Sparkle install was given up on")
+	}
+	if !a.admitWrite() {
+		t.Fatal("writes stayed closed while Sparkle was slow")
+	}
+	a.rt.writesInFlight.Add(-1)
+
+	a.rt.sparkle.fail("Sparkle has no prepared update")
+	msg = <-notices
+	if !strings.Contains(msg, "still running") {
+		t.Fatalf("notice %q", msg)
+	}
+	if _, err := os.Stat(handoff); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a definite failure left the handoff behind")
 	}
 	if a.updating.Load() {
-		t.Fatal("a timed-out install left the app marked as updating")
+		t.Fatal("a definite failure left the app marked as updating")
 	}
 }
 

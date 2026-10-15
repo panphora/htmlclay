@@ -23,7 +23,9 @@ import (
 // starts a supervisor from that copy. The supervisor touches nothing while the
 // update goes well. If the new version never reports serving, it kills it,
 // swaps the copy back into place and relaunches the previous version.
-// A prepared update that Sparkle installs on a plain quit has no supervisor.
+// A prepared update that Sparkle installs on a plain quit gets a supervisor
+// too (State.Quit): it starts the new version without its tray to check it,
+// and relaunches nothing.
 
 // SparkleParams describes one Sparkle install for BeginSparkle.
 type SparkleParams struct {
@@ -37,6 +39,8 @@ type SparkleParams struct {
 	OldPID int
 	// HandoffPath is the session handoff already written for To, if any.
 	HandoffPath string
+	// Quit says Sparkle installs To on a plain quit and relaunches nothing.
+	Quit bool
 }
 
 // BeginSparkle copies Bundle aside, records the update as applying and starts
@@ -103,6 +107,7 @@ func prepareSparkle(dir string, p SparkleParams) (*State, error) {
 		HandoffPath:  p.HandoffPath,
 		Installer:    InstallerSparkle,
 		Executable:   rel,
+		Quit:         p.Quit,
 	}
 	if err := writeJSONAtomic(filepath.Join(dir, stateFile), st); err != nil {
 		os.RemoveAll(root)
@@ -140,6 +145,9 @@ func finishSparkleUpdate(dir string, st *State, opts SupervisorOptions, logf fun
 		logf("Sparkle did not install %s within %s; %s still holds %s", st.To, opts.InstallTimeout, st.InstallPath, st.From)
 		ClearState(dir, st.Txid)
 		os.RemoveAll(copyDir)
+		if st.Quit {
+			return fmt.Errorf("Sparkle did not install %s", st.To)
+		}
 		if len(runningCopies(filepath.Join(st.InstallPath, st.Executable))) == 0 {
 			if err := retargetHandoff(st.HandoffPath, handoff, st.From); err != nil {
 				logf("could not hand the sessions back to %s: %v", st.From, err)
@@ -154,7 +162,12 @@ func finishSparkleUpdate(dir string, st *State, opts SupervisorOptions, logf fun
 	}
 	logf("Sparkle installed %s at %s", st.To, st.InstallPath)
 
-	reason := waitSparkleServing(dir, st, opts)
+	var reason string
+	if st.Quit {
+		reason = verifyQuitInstall(dir, st, opts, logf)
+	} else {
+		reason = waitSparkleServing(dir, st, opts)
+	}
 	if reason == "" {
 		st.Phase = PhaseDone
 		if err := writeJSONAtomic(filepath.Join(dir, stateFile), st); err != nil {
@@ -180,6 +193,10 @@ func finishSparkleUpdate(dir string, st *State, opts SupervisorOptions, logf fun
 	if err := writeJSONAtomic(filepath.Join(dir, stateFile), st); err != nil {
 		logf("could not save the rollback state: %v", err)
 	}
+	if st.Quit {
+		logf("%s is back and not relaunched, since HTML Clay had been quit", st.From)
+		return fmt.Errorf("update to %s rolled back: %s", st.To, reason)
+	}
 	if err := retargetHandoff(st.HandoffPath, handoff, st.From); err != nil {
 		logf("could not hand the sessions back to %s: %v", st.From, err)
 	}
@@ -189,6 +206,34 @@ func finishSparkleUpdate(dir string, st *State, opts SupervisorOptions, logf fun
 		logf("relaunched %s from %s", st.From, relaunch)
 	}
 	return fmt.Errorf("update to %s rolled back: %s", st.To, reason)
+}
+
+// verifyQuitInstall checks a version Sparkle installed on a plain quit, which
+// nothing relaunches. A launch of the person's own that already reported
+// serving counts. Otherwise it starts the bundle's binary with --no-tray, so
+// no menu bar icon appears, waits for it to report serving, and stops it again,
+// because the person had quit. It returns "" or why the version failed.
+func verifyQuitInstall(dir string, st *State, opts SupervisorOptions, logf func(string, ...any)) string {
+	if h, _ := readHealth(dir); h != nil && h.Schema == HealthSchema && h.Txid == st.Txid && h.Version == st.To && h.Phase == HealthServing {
+		return ""
+	}
+	reason, cmd, exited := launchAndWatch(dir, st, opts, logf, filepath.Join(st.InstallPath, st.Executable), "--no-tray")
+	if reason != "" {
+		return reason
+	}
+	select {
+	case <-exited:
+	default:
+		cmd.Process.Signal(unix.SIGTERM)
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			cmd.Process.Kill()
+			<-exited
+		}
+	}
+	logf("%s started and served; stopped it again since HTML Clay had been quit", st.To)
+	return ""
 }
 
 // waitBundleVersion polls until bundle's CFBundleVersion is want, the sign that
