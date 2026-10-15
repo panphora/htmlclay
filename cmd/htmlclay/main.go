@@ -180,6 +180,7 @@ func main() {
 
 	noTray := flag.Bool("no-tray", false, "Run without system tray (signal-based shutdown)")
 	unregister := flag.Bool("unregister", false, "Remove the file associations and the Start on Login entry, then exit")
+	finishUpdate := flag.Bool("finish-update", false, "Internal: finish an update this binary's previous version started")
 	flag.Parse()
 
 	// Before initConfig, and so before the single-instance lock, on purpose. A
@@ -190,6 +191,11 @@ func main() {
 	if *unregister {
 		os.Exit(runUnregister())
 	}
+	// Also before the lock: the supervisor runs while the process it replaces
+	// still holds it, and it never becomes the app itself.
+	if *finishUpdate {
+		os.Exit(runFinishUpdate())
+	}
 
 	migrateConfigDir()
 
@@ -198,6 +204,8 @@ func main() {
 	a := &app{rt: &appRuntime{}, noTray: *noTray}
 	a.initConfig()
 	defer a.rt.si.Unlock()
+	// Holding the lock makes this the process an update supervisor should judge.
+	markUpdateHealth(update.HealthStarted)
 
 	a.initLogger()
 	defer a.rt.logger.Close()
@@ -222,6 +230,7 @@ func main() {
 	if _, err := a.restoreUpdateHandoff(filepath.Join(a.rt.configDir, updateHandoffFile)); err != nil {
 		a.rt.logger.Printf("Update handoff ignored: %v", err)
 	}
+	markUpdateHealth(update.HealthServing)
 
 	args := flag.Args()
 	if len(args) > 0 {
@@ -502,6 +511,35 @@ func runUnregister() int {
 	fmt.Fprintln(os.Stderr, "[htmlclay] Your files, your trusted folders and your saved versions are untouched.")
 	fmt.Fprintln(os.Stderr, "[htmlclay] Starting HTML Clay again puts them back, so delete the program now if you are done with it.")
 	return code
+}
+
+// runFinishUpdate is the supervisor behind --finish-update. It derives the
+// config dir the way the app does and takes nothing from argv, because the old
+// version spawns it and the new version's state is all it needs.
+func runFinishUpdate() int {
+	configDir, err := config.Dir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[htmlclay] Error resolving config dir: %v\n", err)
+		return 1
+	}
+	if err := update.FinishUpdate(update.UpdatesDir(configDir), update.SupervisorOptions{}); err != nil {
+		fmt.Fprintf(os.Stderr, "[htmlclay] Update not finished: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// markUpdateHealth reports startup progress to an update supervisor. It writes
+// nothing unless an update to this exact version is applying, so an ordinary
+// launch only pays for reading a file that is not there.
+func markUpdateHealth(phase string) {
+	configDir, err := config.Dir()
+	if err != nil {
+		return
+	}
+	if err := update.MarkHealth(update.UpdatesDir(configDir), version, phase); err != nil {
+		fmt.Fprintf(os.Stderr, "[htmlclay] Could not report update health (%s): %v\n", phase, err)
+	}
 }
 
 // warnMissingDialogs turns a silent failure into an instruction. On a desktop
