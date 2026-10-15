@@ -33,6 +33,11 @@ func main() {
 		update.MarkHealth(dir, version, update.HealthServing)
 		time.Sleep(300 * time.Millisecond)
 	case "crash":
+		// Consume the session handoff the way the real app does on startup, so
+		// the rollback test proves the supervisor restores it from its own copy.
+		if p := os.Getenv("HTMLCLAY_TEST_HANDOFF"); p != "" {
+			os.Remove(p)
+		}
 		os.Exit(1)
 	case "hang":
 		update.MarkHealth(dir, version, update.HealthStarted)

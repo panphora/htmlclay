@@ -210,7 +210,7 @@ func (a *app) adoptPort(b *boundPort) {
 		a.saveConfig("choosing the port")
 	}
 	a.rt.httpServer = &http.Server{
-		Handler:           http.HandlerFunc(a.serveHost),
+		Handler:           a.countWrites(http.HandlerFunc(a.serveHost)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,

@@ -116,7 +116,7 @@ jobs:
       - name: Build
         run: |
           GOOS=linux GOARCH=${{ matrix.goarch }} \
-            go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay ./cmd/htmlclay
+            go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }} -X main.updateChannel=stable" -o htmlclay ./cmd/htmlclay
         env:
           CGO_ENABLED: "0"
 
@@ -179,7 +179,7 @@ jobs:
         run: |
           $env:CGO_ENABLED = "0"
           $env:GOARCH = "${{ matrix.goarch }}"
-          go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }}" -o htmlclay.exe ./cmd/htmlclay
+          go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }} -X main.updateChannel=stable" -o htmlclay.exe ./cmd/htmlclay
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: pwsh
 

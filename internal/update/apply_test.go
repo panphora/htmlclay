@@ -290,6 +290,31 @@ func TestFinishRollsBackWhenTheNewVersionExits(t *testing.T) {
 	assertRolledBack(t, f, st, "exited before it reported serving")
 }
 
+// The new version deletes the handoff as it reads it, so a version that dies
+// after reading it must not take the open tabs' sessions with it: the
+// supervisor writes its own copy back, pointed at the version it relaunches.
+func TestFinishRollbackHandsTheSessionsBackToTheOldVersion(t *testing.T) {
+	f := newFixture(t, "crash")
+	handoff := filepath.Join(filepath.Dir(f.updates), "update-handoff.json")
+	if err := os.WriteFile(handoff, []byte(keptHandoff), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HTMLCLAY_TEST_HANDOFF", handoff)
+	st, err := Prepare(f.updates, ApplyParams{From: "1.0.0", To: "2.0.0", InstallPath: f.install, StagedPath: f.staged, OldPID: exitedPID(t, 100*time.Millisecond), HandoffPath: handoff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.HandoffPath != handoff {
+		t.Fatalf("state handoff path %q, want %q", st.HandoffPath, handoff)
+	}
+	before := time.Now().UTC().Add(-time.Second)
+	if err := FinishUpdate(f.updates, SupervisorOptions{ExitGrace: 200 * time.Millisecond, ServingTimeout: 10 * time.Second}); err == nil {
+		t.Fatal("a crashing update finished")
+	}
+	assertRolledBack(t, f, st, "exited before it reported serving")
+	assertRetargeted(t, handoff, "1.0.0", before)
+}
+
 func TestFinishRollsBackWhenServingNeverComes(t *testing.T) {
 	f := newFixture(t, "hang")
 	st, err := Prepare(f.updates, ApplyParams{From: "1.0.0", To: "2.0.0", InstallPath: f.install, StagedPath: f.staged, OldPID: exitedPID(t, 100*time.Millisecond)})

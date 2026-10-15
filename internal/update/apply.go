@@ -89,6 +89,10 @@ type State struct {
 	// Failed is set when the supervisor rolled To back. The updater skips that
 	// version until a newer one appears.
 	Failed *Failure `json:"failed,omitempty"`
+	// HandoffPath is the session handoff the old process wrote for To. On a
+	// rollback the supervisor points it at From instead, so the tabs that were
+	// open keep saving through the version that comes back. Empty means none.
+	HandoffPath string `json:"handoffPath,omitempty"`
 }
 
 type Failure struct {
@@ -196,6 +200,8 @@ type ApplyParams struct {
 	StagedPath string
 	// OldPID is the process that will exit after Apply returns, normally os.Getpid().
 	OldPID int
+	// HandoffPath is the session handoff already written for To, if any.
+	HandoffPath string
 }
 
 // Prepare records the update as applying and swaps the staged binary in. After
@@ -222,6 +228,7 @@ func Prepare(dir string, p ApplyParams) (*State, error) {
 		PreviousPath: previousPathFor(p.InstallPath),
 		Txid:         hex.EncodeToString(txid),
 		Time:         time.Now().UTC(),
+		HandoffPath:  p.HandoffPath,
 	}
 	// State first: a new process that starts after the swap must find it.
 	if err := writeJSONAtomic(filepath.Join(dir, stateFile), st); err != nil {
@@ -356,6 +363,10 @@ func FinishUpdate(dir string, opts SupervisorOptions) error {
 		return fmt.Errorf("update state %s is stale", st.Txid)
 	}
 	logf("finishing update %s: %s -> %s at %s", st.Txid, st.From, st.To, st.InstallPath)
+	// Kept now, before the new version starts, because the new version deletes
+	// the handoff as it reads it, and a version that dies after reading it would
+	// otherwise take every open tab's session down with it.
+	handoff := readHandoff(st.HandoffPath, logf)
 
 	if !waitGone(st.OldPID, opts.OldExitTimeout) {
 		// The old process already swapped the binary and closed its sessions, so
@@ -389,6 +400,9 @@ func FinishUpdate(dir string, opts SupervisorOptions) error {
 	if err := writeJSONAtomic(filepath.Join(dir, stateFile), st); err != nil {
 		logf("could not save the rollback state: %v", err)
 	}
+	if err := retargetHandoff(st.HandoffPath, handoff, st.From); err != nil {
+		logf("could not hand the sessions back to %s: %v", st.From, err)
+	}
 	if cmd, err := startDetached(relaunch); err != nil {
 		logf("could not relaunch %s: %v", relaunch, err)
 	} else {
@@ -396,6 +410,49 @@ func FinishUpdate(dir string, opts SupervisorOptions) error {
 		logf("relaunched %s from %s", st.From, relaunch)
 	}
 	return fmt.Errorf("update to %s rolled back: %s", st.To, reason)
+}
+
+// readHandoff returns the handoff's bytes, or nil when there is none to keep.
+func readHandoff(path string, logf func(string, ...any)) []byte {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logf("could not read the session handoff: %v", err)
+		}
+		return nil
+	}
+	return data
+}
+
+// retargetHandoff writes the kept handoff back with targetVersion set to
+// version and a fresh created time, for the version the rollback relaunches.
+// The new version may already have deleted the file, and the old one only
+// accepts a handoff written for itself within the last minute. Every other
+// field passes through untouched, so this package needs no copy of the
+// handoff's schema. The file holds save tokens, and writeJSONAtomic's temp
+// file is created 0600 before any of them is written.
+func retargetHandoff(path string, kept []byte, version string) error {
+	if path == "" || len(kept) == 0 {
+		return nil
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(kept, &doc); err != nil {
+		return fmt.Errorf("session handoff: %w", err)
+	}
+	target, err := json.Marshal(version)
+	if err != nil {
+		return err
+	}
+	created, err := json.Marshal(time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	doc["targetVersion"] = target
+	doc["created"] = created
+	return writeJSONAtomic(path, doc)
 }
 
 // watchNewVersion launches the new binary and returns "" once it reports serving,

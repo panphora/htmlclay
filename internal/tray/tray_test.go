@@ -483,3 +483,25 @@ func TestProfileSaveFailureAlerts(t *testing.T) {
 		t.Errorf("state after a failed save is %+v, want the zero value", got)
 	}
 }
+
+func TestUpdateRowOffersARestartOnlyWhenStaged(t *testing.T) {
+	title, _ := updateRowText(UpdateInfo{Version: "1.14.0", URL: "https://htmlclay.com/download"})
+	if title != "Update available: v1.14.0" {
+		t.Fatalf("link row title %q", title)
+	}
+	title, _ = updateRowText(UpdateInfo{Version: "1.14.0", Apply: func() {}})
+	if title != "Restart to Update (v1.14.0)" {
+		t.Fatalf("staged row title %q", title)
+	}
+}
+
+func TestClickingAStagedUpdateCallsApply(t *testing.T) {
+	applied := make(chan struct{})
+	tr := &Tray{updateURL: "https://htmlclay.com/download", updateApply: func() { close(applied) }}
+	tr.clickUpdate()
+	select {
+	case <-applied:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the apply hook was never called")
+	}
+}

@@ -41,9 +41,13 @@ var iconTemplateBytes []byte
 //go:embed icon.ico
 var iconICOBytes []byte
 
+// UpdateInfo is what the version row offers. With Apply set the update is
+// downloaded and staged, so the row offers a restart and clicking it calls
+// Apply; without it the row links to URL, the download page.
 type UpdateInfo struct {
 	Version string
 	URL     string
+	Apply   func()
 }
 
 // Row is one entry in a list submenu. Label is what the user sees, Path is what
@@ -114,6 +118,7 @@ type Tray struct {
 	updateCh      <-chan UpdateInfo
 	updateItem    *systray.MenuItem
 	updateURL     string
+	updateApply   func()
 
 	trusted             *TrustedFolderHooks
 	trustedMenu         *listMenu
@@ -450,11 +455,7 @@ func (t *Tray) onReady() {
 			case info := <-t.updateCh:
 				t.showUpdate(info)
 			case <-t.updateItem.ClickedCh:
-				if t.updateURL != "" {
-					if err := browser.OpenURL(t.updateURL); err != nil {
-						fmt.Fprintf(os.Stderr, "[htmlclay] Error opening browser: %v\n", err)
-					}
-				}
+				t.clickUpdate()
 			case <-quitItem.ClickedCh:
 				systray.Quit()
 			}
@@ -618,9 +619,39 @@ func (t *Tray) toggleAIEdit(item *systray.MenuItem) {
 
 func (t *Tray) showUpdate(info UpdateInfo) {
 	t.updateURL = info.URL
-	t.updateItem.SetTitle(fmt.Sprintf("Update available: v%s", info.Version))
-	t.updateItem.SetTooltip("Click to download")
+	t.updateApply = info.Apply
+	title, tooltip := updateRowText(info)
+	t.updateItem.SetTitle(title)
+	t.updateItem.SetTooltip(tooltip)
 	t.updateItem.Enable()
+}
+
+func updateRowText(info UpdateInfo) (title, tooltip string) {
+	if info.Apply != nil {
+		return fmt.Sprintf("Restart to Update (v%s)", info.Version), "Restart HTML Clay now to finish updating"
+	}
+	return fmt.Sprintf("Update available: v%s", info.Version), "Click to download"
+}
+
+// clickUpdate runs the apply hook in its own goroutine, because it may ask
+// for confirmation and waits for saves in flight, and a blocking call here
+// would freeze every other row.
+func (t *Tray) clickUpdate() {
+	if t.updateApply != nil {
+		go t.updateApply()
+		return
+	}
+	if t.updateURL != "" {
+		if err := browser.OpenURL(t.updateURL); err != nil {
+			fmt.Fprintf(os.Stderr, "[htmlclay] Error opening browser: %v\n", err)
+		}
+	}
+}
+
+// Quit ends the tray the way its Quit row does, so the app shuts down through
+// the same onQuit path.
+func Quit() {
+	systray.Quit()
 }
 
 func (t *Tray) onExit() {

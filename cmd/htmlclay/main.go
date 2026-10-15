@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/panphora/htmlclay/internal/config"
@@ -94,6 +95,12 @@ type appRuntime struct {
 	// user's screen. Unlike confirm, this is read live from background goroutines
 	// rather than snapshotted at buildSite, so set it before opening any site.
 	notify func(title, message string) error
+	// writesInFlight counts the requests that can change a file, so an update
+	// restart can wait for the ones already sent. See countWrites.
+	writesInFlight atomic.Int64
+	// quitForUpdate overrides how an applied update ends the process. Production
+	// leaves it nil and quits the tray, which runs the ordinary shutdown.
+	quitForUpdate func()
 }
 
 type app struct {
@@ -129,6 +136,9 @@ type app struct {
 	// one-time upgrade (deleting App Mode's browser profile) can run after the
 	// logger exists rather than during config parsing.
 	loaded config.Result
+	// updating is set while an update restart is under way, so a second click
+	// on Restart to Update cannot start another.
+	updating atomic.Bool
 }
 
 func migrateConfigDir() {
@@ -251,12 +261,14 @@ func main() {
 	})
 
 	updateCh := make(chan tray.UpdateInfo, 1)
-	go func() {
-		if info := update.Check(version, update.DefaultVersionURL); info != nil {
-			a.rt.logger.Printf("Update available: v%s at %s", info.Version, info.URL)
-			updateCh <- tray.UpdateInfo{Version: info.Version, URL: info.URL}
-		}
-	}()
+	if !a.startSelfUpdater(updateCh) {
+		go func() {
+			if info := update.Check(version, update.DefaultVersionURL); info != nil {
+				a.rt.logger.Printf("Update available: v%s at %s", info.Version, info.URL)
+				updateCh <- tray.UpdateInfo{Version: info.Version, URL: info.URL}
+			}
+		}()
+	}
 
 	a.run(updateCh)
 }

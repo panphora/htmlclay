@@ -81,6 +81,10 @@ type Config struct {
 	// Profile is the person HTML Clay names in files it serves, when Enabled. Nil
 	// means never set up, which reads as off. The id survives renames and toggles.
 	Profile *Profile `json:"profile,omitempty"`
+	// Updates set to "off" keeps the self-updater from downloading or applying
+	// anything, for machines whose software is managed some other way. The tray
+	// still links to the download page. Anything else, or nothing, leaves it on.
+	Updates string `json:"updates,omitempty"`
 	baseDir string
 }
 
@@ -627,6 +631,13 @@ func (c *Config) SetStartOnLogin(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.StartOnLogin = v
+}
+
+// SelfUpdateOff reports, under the lock, whether config turned the self-updater off.
+func (c *Config) SelfUpdateOff() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Updates == "off"
 }
 
 // AIEditEnabled reports whether AI editing is on, under the lock. A missing setting

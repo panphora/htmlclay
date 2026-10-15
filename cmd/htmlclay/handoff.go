@@ -56,9 +56,9 @@ type updateHandoffEntry struct {
 
 // writeUpdateHandoff captures every live site's registrations and grants into
 // path, for the process that targetVersion will start. It preserves only
-// capabilities that already exist; it never widens one. Nothing calls it yet
-// except tests: the updater will, after it has drained in-flight work and before
-// it stops this process.
+// capabilities that already exist; it never widens one. applyUpdate calls it
+// after in-flight writes have landed and before it swaps the binary and stops
+// this process.
 func (a *app) writeUpdateHandoff(path, targetVersion string) error {
 	txn := make([]byte, 16)
 	if _, err := rand.Read(txn); err != nil {
