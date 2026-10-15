@@ -90,6 +90,14 @@ func InstallNow() {
 	C.hcSparkleInstallNow()
 }
 
+// CheckNow asks Sparkle for an immediate background check, the same check
+// its schedule runs. A newer update is downloaded and prepared as usual and
+// arrives as a Ready event. When no check starts, because one is running or
+// an update is already prepared, a CheckSkipped event says why.
+func CheckNow() {
+	C.hcSparkleCheckNow()
+}
+
 // InfoString returns a string value from the running bundle's Info.plist, or
 // "" when the key is missing or not a string.
 func InfoString(key string) string {

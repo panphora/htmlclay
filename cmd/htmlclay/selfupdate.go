@@ -65,6 +65,7 @@ func (a *app) startSelfUpdater(updateCh chan<- tray.UpdateInfo) bool {
 	// The restart is offered from the tray, so a run without one has no way to
 	// apply what it would download.
 	if a.noTray {
+		a.updateOff = "HTML Clay is running without its tray"
 		return false
 	}
 	if runtime.GOOS == "darwin" {
@@ -76,6 +77,7 @@ func (a *app) startSelfUpdater(updateCh chan<- tray.UpdateInfo) bool {
 	}
 	if err != nil {
 		a.rt.logger.Printf("Self-update is off: %v", err)
+		a.updateOff = err.Error()
 		return false
 	}
 	feed := update.DefaultFeedURL

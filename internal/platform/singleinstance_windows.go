@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net"
@@ -80,7 +81,14 @@ func (s *tcpSingleInstance) handleConnection(c net.Conn) {
 	defer c.Close()
 	writeBanner(c)
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	data, err := io.ReadAll(io.LimitReader(c, 64<<10))
+	r := bufio.NewReader(io.LimitReader(c, 64<<10))
+	// Every local user can reach this loopback listener, so it takes no
+	// commands at all. Answering keeps a frame from being opened as a path.
+	if isCommandFrame(r) {
+		answerCommand(c, r, "commands are not taken on Windows", nil)
+		return
+	}
+	data, err := io.ReadAll(r)
 	if err != nil || len(data) == 0 {
 		return
 	}
@@ -118,6 +126,26 @@ func (s *tcpSingleInstance) SendFilePath(path string) error {
 	_, err = conn.Write([]byte(path))
 	return err
 }
+
+func (s *tcpSingleInstance) SendCommand(cmd string) (string, error) {
+	data, err := os.ReadFile(s.addrFile)
+	if err != nil {
+		return "", fmt.Errorf("cannot read addr file: %w", err)
+	}
+	addr := strings.TrimSpace(string(data))
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	if !verifyBanner(conn) {
+		return "", fmt.Errorf("peer on %s is not an htmlclay instance", addr)
+	}
+	return exchangeCommand(conn, cmd)
+}
+
+// OnCommand does nothing on Windows, where every command is refused.
+func (s *tcpSingleInstance) OnCommand(func(string) string) {}
 
 func (s *tcpSingleInstance) OnFileReceived(callback func(string)) {
 	s.mu.Lock()

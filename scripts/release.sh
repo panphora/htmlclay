@@ -65,6 +65,7 @@ BUMP_TYPE=""
 EXPLICIT_VERSION=""
 VERSION_LABEL=""
 RESUME=false
+NO_INSTALL=false
 for arg in "$@"; do
   case "$arg" in
     --major) BUMP_TYPE="major" ;;
@@ -85,6 +86,9 @@ for arg in "$@"; do
     # half-typed --version=X.Y.Z, so say so rather than "Unknown argument".
     --version) error "--version needs a value: --version=1.9.0"; exit 1 ;;
     --resume) RESUME=true ;;
+    # hypersave passes this and runs scripts/update-canary.sh itself, last,
+    # under its own timeout. A release run by hand still updates the local app.
+    --no-install) NO_INSTALL=true ;;
     --help|-h)
       echo "Usage: ./scripts/release.sh [--major|--minor|--patch]"
       echo "       ./scripts/release.sh --version=X.Y.Z"
@@ -95,6 +99,7 @@ for arg in "$@"; do
       echo "  --patch        Patch version bump (bug fixes)"
       echo "  --version=     Release exactly this version, e.g. --version=1.9.0"
       echo "  --resume       Finish the release already in the source, without bumping"
+      echo "  --no-install   Do not update the HTML Clay on this Mac (Step 6)"
       echo ""
       echo "If no option is provided, defaults to --patch."
       exit 0
@@ -409,11 +414,25 @@ else
 fi
 
 # ══════════════════════════════════════════════════
-section "Step 6: Install Locally"
+section "Step 6: Update Locally"
 # ══════════════════════════════════════════════════
 
-bash scripts/install-local.sh "${NEW_VERSION}" \
-  || warn "Could not install locally — download it from https://htmlclay.com/#downloads"
+# The canary asks the running app to update itself through Sparkle, and falls
+# back to install-local.sh only when the app cannot take the request. Its last
+# line is a JSON summary; its exit code is 0 updated itself, 10 installed by
+# hand, 1 failed. The release itself is done either way.
+if [ "$NO_INSTALL" = true ]; then
+  info "Skipping the local update (--no-install)"
+elif bash scripts/update-canary.sh "${NEW_VERSION}"; then
+  success "HTML Clay on this Mac updated itself to v${NEW_VERSION}"
+else
+  CANARY_EXIT=$?
+  if [ "$CANARY_EXIT" -eq 10 ]; then
+    success "Installed v${NEW_VERSION} on this Mac from the DMG"
+  else
+    warn "The local update to v${NEW_VERSION} failed; see the line above. Nothing was reinstalled."
+  fi
+fi
 
 # ══════════════════════════════════════════════════
 section "Step 7: Done"

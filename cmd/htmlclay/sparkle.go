@@ -36,6 +36,7 @@ type sparkleFramework interface {
 	Load(frameworkPath string) error
 	Start(events func(sparkle.Event))
 	InstallNow()
+	CheckNow()
 }
 
 type realSparkle struct{}
@@ -45,6 +46,7 @@ func (realSparkle) Writable(bundle string) error     { return sparkle.BundleWrit
 func (realSparkle) Load(path string) error           { return sparkle.Load(path) }
 func (realSparkle) Start(events func(sparkle.Event)) { sparkle.Start(events) }
 func (realSparkle) InstallNow()                      { sparkle.InstallNow() }
+func (realSparkle) CheckNow()                        { sparkle.CheckNow() }
 
 // sparkleState is the framework plus the one install that may be waiting on
 // Sparkle's quit event. bundle and exe are the installed .app and the running
@@ -61,6 +63,17 @@ type sparkleState struct {
 	// begun is when recovery started for the install a click asked for, and
 	// zero when no click is waiting on Sparkle.
 	begun time.Time
+	// startFailed is Sparkle's reason when startUpdater refused.
+	startFailed string
+	// requested is the version update-now asked for and is waiting on Sparkle
+	// to prepare, asked at requestedAt. See update_now.go.
+	requested   string
+	requestedAt time.Time
+	// clicking is set while update-now's click is running, so a resent request
+	// never starts a second one.
+	clicking bool
+	// declined is the version whose update-now restart the person cancelled.
+	declined string
 }
 
 // fail ends a pending install with reason. It does nothing when no install is
@@ -125,6 +138,7 @@ func (a *app) startSparkleUpdater(updateCh chan<- tray.UpdateInfo) bool {
 	}
 	if err != nil {
 		a.rt.logger.Printf("Self-update is off: %v", err)
+		a.updateOff = err.Error()
 		return false
 	}
 	a.rt.logger.Printf("Self-update is on through Sparkle for %s", bundle)
@@ -140,6 +154,9 @@ func (a *app) onSparkleEvent(ev sparkle.Event, updateCh chan<- tray.UpdateInfo) 
 		a.rt.logger.Printf("Sparkle started")
 	case sparkle.StartFailed:
 		a.rt.logger.Printf("Sparkle could not start, so updates link to the download page: %s", ev.Text)
+		a.rt.sparkle.mu.Lock()
+		a.rt.sparkle.startFailed = ev.Text
+		a.rt.sparkle.mu.Unlock()
 		a.checkForUpdateLink(updateCh)
 	case sparkle.Ready:
 		target := ev.Text
@@ -150,13 +167,20 @@ func (a *app) onSparkleEvent(ev sparkle.Event, updateCh chan<- tray.UpdateInfo) 
 		a.rt.logger.Printf("Update %s is downloaded and prepared by Sparkle", target)
 		a.rt.sparkle.mu.Lock()
 		a.rt.sparkle.prepared = target
+		asked := a.rt.sparkle.takeRequest(target)
 		a.rt.sparkle.mu.Unlock()
+		if asked {
+			a.rt.logger.Printf("Installing v%s now, as update-now asked", target)
+			go a.clickForUpdateNow(target)
+		}
 		updateCh <- tray.UpdateInfo{Version: target, Apply: func() { a.clickSparkleUpdate(target) }}
 	case sparkle.Aborted:
 		a.rt.logger.Printf("Sparkle stopped an update: %s", ev.Text)
 		a.rt.sparkle.fail(ev.Text)
 	case sparkle.InstallFailed:
 		a.rt.sparkle.fail(ev.Text)
+	case sparkle.CheckSkipped:
+		a.rt.logger.Printf("Sparkle did not check for updates now: %s", ev.Text)
 	}
 }
 
@@ -199,15 +223,17 @@ func (a *app) beginSparkleRecovery(target, handoff string, quit bool) string {
 	return rec.Txid
 }
 
-// clickSparkleUpdate is the tray's Restart to Update row on macOS.
-func (a *app) clickSparkleUpdate(target string) {
+// clickSparkleUpdate is the tray's Restart to Update row on macOS. update-now
+// runs the same click and reads its result.
+func (a *app) clickSparkleUpdate(target string) error {
 	err := a.restartForUpdate(target, func(handoff string) error {
 		return a.installWithSparkle(target, handoff)
 	})
 	if err == nil || errors.Is(err, errUpdateCancelled) {
-		return
+		return err
 	}
 	a.reportRestartFailure(target, err)
+	return err
 }
 
 // installWithSparkle runs Sparkle's immediate install. Sparkle answers by

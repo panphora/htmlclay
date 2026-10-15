@@ -23,6 +23,8 @@ const (
 	Aborted
 	// InstallFailed: InstallNow found no prepared update to install.
 	InstallFailed
+	// CheckSkipped: CheckNow started no check; Text says why.
+	CheckSkipped
 )
 
 // Event is one report from Sparkle. Events arrive on their own goroutine, never

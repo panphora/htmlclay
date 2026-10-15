@@ -14,6 +14,8 @@ func SetSkip(func(string) string) {}
 
 func InstallNow() {}
 
+func CheckNow() {}
+
 func InfoString(string) string { return "" }
 
 func BundleWritable(string) error { return errNotMac }

@@ -4,6 +4,7 @@
 char *hcSparkleLoad(const char *frameworkPath);
 void hcSparkleStart(void);
 void hcSparkleInstallNow(void);
+void hcSparkleCheckNow(void);
 char *hcSparkleInfoString(const char *key);
 
 #endif

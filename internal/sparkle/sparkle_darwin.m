@@ -10,6 +10,7 @@ enum {
     hcEventReady = 3,
     hcEventAborted = 4,
     hcEventInstallFailed = 5,
+    hcEventCheckSkipped = 6,
 };
 
 // Sparkle's SUNoUpdateError. A check that finds nothing is not worth a log line.
@@ -20,6 +21,9 @@ static const NSInteger hcSUNoUpdateError = 1001;
 @protocol HCSPUUpdater <NSObject>
 - (instancetype)initWithHostBundle:(NSBundle *)hostBundle applicationBundle:(NSBundle *)applicationBundle userDriver:(id)userDriver delegate:(id)delegate;
 - (BOOL)startUpdater:(NSError **)error;
+- (void)checkForUpdatesInBackground;
+@property (nonatomic, readonly) BOOL canCheckForUpdates;
+@property (nonatomic, readonly) BOOL sessionInProgress;
 @end
 
 @protocol HCSPUStandardUserDriver <NSObject>
@@ -131,6 +135,29 @@ void hcSparkleInstallNow(void) {
             return;
         }
         hcDelegate->installNow();
+    });
+}
+
+void hcSparkleCheckNow(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (hcDelegate == nil) {
+            hcSend(hcEventCheckSkipped, @"Sparkle is not started");
+            return;
+        }
+        if (hcDelegate->installNow != nil) {
+            hcSend(hcEventCheckSkipped, @"an update is already prepared");
+            return;
+        }
+        id<HCSPUUpdater> u = hcDelegate->updater;
+        if ([u sessionInProgress]) {
+            hcSend(hcEventCheckSkipped, @"a check is already running");
+            return;
+        }
+        if (![u canCheckForUpdates]) {
+            hcSend(hcEventCheckSkipped, @"Sparkle cannot check right now");
+            return;
+        }
+        [u checkForUpdatesInBackground];
     });
 }
 

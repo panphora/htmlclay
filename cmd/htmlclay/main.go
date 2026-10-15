@@ -154,6 +154,9 @@ type app struct {
 	// restartingForUpdate is set by startListener when this launch is the new
 	// version of an update that is applying.
 	restartingForUpdate bool
+	// updateOff is why startSelfUpdater did not start the updater, and empty
+	// when it did. update-now answers with it.
+	updateOff string
 }
 
 func migrateConfigDir() {
@@ -198,6 +201,10 @@ func main() {
 	// stops at the first non-flag argument, which would leave a subcommand's own
 	// flags unparsed and forward "wire" to openFile as a path.
 	if code, handled := wireDispatch(os.Args); handled {
+		os.Exit(code)
+	}
+	// update-now is a client of the running app too, for the same reasons.
+	if code, handled := updateNowDispatch(os.Args); handled {
 		os.Exit(code)
 	}
 
@@ -287,6 +294,7 @@ func main() {
 	if !a.startSelfUpdater(updateCh) {
 		go a.checkForUpdateLink(updateCh)
 	}
+	a.rt.si.OnCommand(a.handleInstanceCommand)
 
 	a.run(updateCh)
 }

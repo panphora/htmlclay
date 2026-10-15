@@ -79,6 +79,7 @@ func TestAppBundleFor(t *testing.T) {
 type fakeSparkle struct {
 	mu        sync.Mutex
 	installs  int
+	checks    int
 	onInstall func()
 }
 
@@ -87,6 +88,8 @@ func (f *fakeSparkle) Writable(string) error     { return nil }
 func (f *fakeSparkle) Load(string) error         { return nil }
 func (f *fakeSparkle) Start(func(sparkle.Event)) {}
 func (f *fakeSparkle) installCount() int         { f.mu.Lock(); defer f.mu.Unlock(); return f.installs }
+func (f *fakeSparkle) checkCount() int           { f.mu.Lock(); defer f.mu.Unlock(); return f.checks }
+func (f *fakeSparkle) CheckNow()                 { f.mu.Lock(); f.checks++; f.mu.Unlock() }
 func (f *fakeSparkle) InstallNow() {
 	f.mu.Lock()
 	f.installs++

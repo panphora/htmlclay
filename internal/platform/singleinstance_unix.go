@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net"
@@ -22,7 +23,12 @@ type socketSingleInstance struct {
 	mu       sync.Mutex
 	callback func(string)
 	pending  []string
+	command  func(string) string
 }
+
+// peerIsSelf reports whether the process on the other end of c runs as this
+// user. Tests replace it.
+var peerIsSelf = peerUIDIsSelf
 
 func NewSingleInstance(configDir string) SingleInstance {
 	return &socketSingleInstance{
@@ -117,7 +123,19 @@ func (s *socketSingleInstance) handleConnection(c net.Conn) {
 	defer c.Close()
 	writeBanner(c)
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	data, err := io.ReadAll(io.LimitReader(c, 64<<10))
+	r := bufio.NewReader(io.LimitReader(c, 64<<10))
+	if isCommandFrame(r) {
+		refusal := ""
+		if !peerIsSelf(c) {
+			refusal = "the command did not come from this user"
+		}
+		s.mu.Lock()
+		handler := s.command
+		s.mu.Unlock()
+		answerCommand(c, r, refusal, handler)
+		return
+	}
+	data, err := io.ReadAll(r)
 	if err != nil || len(data) == 0 {
 		return
 	}
@@ -145,6 +163,24 @@ func (s *socketSingleInstance) SendFilePath(path string) error {
 	}
 	_, err = conn.Write([]byte(path))
 	return err
+}
+
+func (s *socketSingleInstance) SendCommand(cmd string) (string, error) {
+	conn, err := net.DialTimeout("unix", s.sockPath, time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	if !verifyBanner(conn) {
+		return "", fmt.Errorf("peer on %s is not an htmlclay instance", s.sockPath)
+	}
+	return exchangeCommand(conn, cmd)
+}
+
+func (s *socketSingleInstance) OnCommand(handler func(string) string) {
+	s.mu.Lock()
+	s.command = handler
+	s.mu.Unlock()
 }
 
 func (s *socketSingleInstance) OnFileReceived(callback func(string)) {
