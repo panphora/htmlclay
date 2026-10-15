@@ -23,6 +23,7 @@ import (
 var (
 	handlerMu sync.Mutex
 	handler   func(Event)
+	skip      func(version string) string
 )
 
 //export goSparkleEvent
@@ -36,6 +37,29 @@ func goSparkleEvent(kind C.int, text *C.char) {
 		// menu bar and Sparkle with it.
 		go h(ev)
 	}
+}
+
+//export goSparkleSkipReason
+func goSparkleSkipReason(version *C.char) *C.char {
+	handlerMu.Lock()
+	s := skip
+	handlerMu.Unlock()
+	if s == nil {
+		return nil
+	}
+	if reason := s(C.GoString(version)); reason != "" {
+		return C.CString(reason)
+	}
+	return nil
+}
+
+// SetSkip registers a check Sparkle runs on the main thread before it
+// downloads an update: a non-empty answer is the reason to skip that version,
+// and Sparkle aborts the cycle with it. It must return quickly.
+func SetSkip(f func(version string) string) {
+	handlerMu.Lock()
+	skip = f
+	handlerMu.Unlock()
 }
 
 // Load opens the Sparkle framework at frameworkPath in this process.

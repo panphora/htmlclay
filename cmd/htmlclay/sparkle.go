@@ -39,11 +39,14 @@ func (realSparkle) Start(events func(sparkle.Event)) { sparkle.Start(events) }
 func (realSparkle) InstallNow()                      { sparkle.InstallNow() }
 
 // sparkleState is the framework plus the one install that may be waiting on
-// Sparkle's quit event.
+// Sparkle's quit event. bundle and exe are the installed .app and the running
+// binary in it; recovery is set up only when bundle is known.
 type sparkleState struct {
 	fw     sparkleFramework
 	mu     sync.Mutex
 	failed chan string
+	bundle string
+	exe    string
 }
 
 // fail ends a pending install with reason. It does nothing when no install is
@@ -111,6 +114,8 @@ func (a *app) startSparkleUpdater(updateCh chan<- tray.UpdateInfo) bool {
 		return false
 	}
 	a.rt.logger.Printf("Self-update is on through Sparkle for %s", bundle)
+	a.rt.sparkle.bundle, a.rt.sparkle.exe = bundle, installPath
+	sparkle.SetSkip(a.failedSparkleUpdate)
 	fw.Start(func(ev sparkle.Event) { a.onSparkleEvent(ev, updateCh) })
 	return true
 }
@@ -138,6 +143,42 @@ func (a *app) onSparkleEvent(ev sparkle.Event, updateCh chan<- tray.UpdateInfo) 
 	}
 }
 
+// failedSparkleUpdate is Sparkle's skip check: the reason to refuse target,
+// or "" to let it through. A version the recovery supervisor rolled back is
+// refused until a newer one is published.
+func (a *app) failedSparkleUpdate(target string) string {
+	st, err := update.ReadState(update.UpdatesDir(a.rt.configDir))
+	if err != nil || st == nil || st.Failed == nil || st.Failed.Version != target {
+		return ""
+	}
+	return fmt.Sprintf("v%s did not start after an earlier update (%s)", target, st.Failed.Reason)
+}
+
+// beginSparkleRecovery copies the installed bundle aside and starts the
+// recovery supervisor from the copy, which puts it back if target never
+// reports serving. It returns the update's txid, or "" when recovery could not
+// be set up; the install then goes ahead without it, as a plain quit's does.
+func (a *app) beginSparkleRecovery(target, handoff string) string {
+	st := a.rt.sparkle
+	if st.bundle == "" {
+		return ""
+	}
+	rec, err := update.BeginSparkle(update.UpdatesDir(a.rt.configDir), update.SparkleParams{
+		From:        version,
+		To:          target,
+		Bundle:      st.bundle,
+		Executable:  st.exe,
+		OldPID:      os.Getpid(),
+		HandoffPath: handoff,
+	})
+	if err != nil {
+		a.rt.logger.Printf("Installing v%s without recovery: %v", target, err)
+		return ""
+	}
+	a.rt.logger.Printf("Recovery for v%s runs from %s", target, rec.PreviousPath)
+	return rec.Txid
+}
+
 // clickSparkleUpdate is the tray's Restart to Update row on macOS.
 func (a *app) clickSparkleUpdate(target string) {
 	err := a.restartForUpdate(target, func(handoff string) error {
@@ -153,7 +194,7 @@ func (a *app) clickSparkleUpdate(target string) {
 // sending this app a quit Apple event, which runs the ordinary shutdown, then
 // installs and relaunches; the new version takes the handoff back. If Sparkle
 // reports a failure, or no quit has started within sparkleInstallTimeout, the
-// handoff is removed and this version keeps running.
+// handoff and the recovery state are removed and this version keeps running.
 func (a *app) installWithSparkle(target, handoff string) error {
 	st := a.rt.sparkle
 	timeout := sparkleInstallTimeout
@@ -161,6 +202,7 @@ func (a *app) installWithSparkle(target, handoff string) error {
 	st.mu.Lock()
 	st.failed = failed
 	st.mu.Unlock()
+	txid := a.beginSparkleRecovery(target, handoff)
 	a.rt.logger.Printf("Handing the restart to Sparkle to install v%s", target)
 	st.fw.InstallNow()
 	go func() {
@@ -182,6 +224,9 @@ func (a *app) installWithSparkle(target, handoff string) error {
 			return
 		}
 		os.Remove(handoff)
+		if txid != "" {
+			update.ClearState(update.UpdatesDir(a.rt.configDir), txid)
+		}
 		a.updating.Store(false)
 		a.reportRestartFailure(target, errors.New(reason))
 	}()

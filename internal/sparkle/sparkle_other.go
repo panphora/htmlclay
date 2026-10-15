@@ -10,6 +10,8 @@ func Load(string) error { return errNotMac }
 
 func Start(func(Event)) {}
 
+func SetSkip(func(string) string) {}
+
 func InstallNow() {}
 
 func InfoString(string) string { return "" }

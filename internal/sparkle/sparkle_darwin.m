@@ -56,6 +56,23 @@ static void hcSend(int kind, NSString *text) {
     return YES;
 }
 
+// Sparkle asks before it downloads an update. A version that failed to start
+// after an earlier install is refused, so Sparkle never prepares it again and
+// a plain quit cannot install it. A newer version is offered as usual.
+- (BOOL)updater:(id)u shouldProceedWithUpdate:(id)item updateCheck:(NSInteger)check error:(NSError **)error {
+    NSString *v = [(id<HCSUAppcastItem>)item versionString];
+    char *reason = goSparkleSkipReason((char *)[(v ?: @"") UTF8String]);
+    if (reason == NULL) {
+        return YES;
+    }
+    NSString *text = [NSString stringWithUTF8String:reason];
+    free(reason);
+    if (error != NULL) {
+        *error = [NSError errorWithDomain:@"com.htmlclay.update" code:1 userInfo:@{NSLocalizedDescriptionKey: text ?: @"skipped"}];
+    }
+    return NO;
+}
+
 - (void)updater:(id)u didAbortWithError:(NSError *)error {
     if ([error.domain isEqualToString:@"SUSparkleErrorDomain"] && error.code == hcSUNoUpdateError) {
         return;

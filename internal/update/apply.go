@@ -19,7 +19,8 @@ import (
 // This file is the Windows and Linux self-update: stage the new binary beside the
 // installed one, swap it in, and hand the restart to a supervisor that runs from
 // the previous binary and rolls the swap back if the new version never reports
-// that it is serving. macOS updates through Sparkle and never calls Apply.
+// that it is serving. macOS updates through Sparkle and never calls Apply; its
+// recovery supervisor (sparkle_darwin.go) shares the state and health files.
 //
 // The state and health files below are a contract between two releases: version
 // N's supervisor drives version N+1's startup. Both schemas are frozen from the
@@ -93,7 +94,17 @@ type State struct {
 	// rollback the supervisor points it at From instead, so the tabs that were
 	// open keep saving through the version that comes back. Empty means none.
 	HandoffPath string `json:"handoffPath,omitempty"`
+	// Installer is InstallerSparkle when Sparkle installs To on macOS. Then
+	// InstallPath is the .app bundle, PreviousPath a copy of it, and the
+	// supervisor neither swaps nor launches anything unless To fails. Empty
+	// means this package swapped the binary itself.
+	Installer string `json:"installer,omitempty"`
+	// Executable is the app's binary relative to the bundle, set with Installer.
+	Executable string `json:"executable,omitempty"`
 }
+
+// InstallerSparkle marks a State whose install Sparkle performs.
+const InstallerSparkle = "sparkle"
 
 type Failure struct {
 	Version string    `json:"version"`
@@ -262,6 +273,16 @@ func Apply(dir string, p ApplyParams) (*State, error) {
 	return st, nil
 }
 
+// ClearState removes updates/state.json when it still describes update txid,
+// and reports whether it did. A later update's state is left alone.
+func ClearState(dir, txid string) bool {
+	st, err := ReadState(dir)
+	if err != nil || st == nil || st.Txid != txid {
+		return false
+	}
+	return os.Remove(filepath.Join(dir, stateFile)) == nil
+}
+
 // ReadState returns updates/state.json, or nil when there is none.
 func ReadState(dir string) (*State, error) {
 	var st State
@@ -321,6 +342,12 @@ type SupervisorOptions struct {
 	ExitGrace time.Duration
 	// Poll is the interval between health reads.
 	Poll time.Duration
+	// InstallTimeout is how long Sparkle has, once the old process exited, to
+	// put To in the bundle. macOS only.
+	InstallTimeout time.Duration
+	// Relaunch starts a bundle after a Sparkle update failed. Nil means
+	// `open -n`. macOS only; tests replace it.
+	Relaunch func(bundle string) error
 }
 
 func (o SupervisorOptions) withDefaults() SupervisorOptions {
@@ -339,13 +366,35 @@ func (o SupervisorOptions) withDefaults() SupervisorOptions {
 	return o
 }
 
+// withSparkleDefaults are the limits when Sparkle installs. The old process
+// quits only once Sparkle's installer asks it to, which the app gives up on
+// after 40 s, and the new version starts only after Sparkle has installed it
+// and relaunched it through LaunchServices.
+func (o SupervisorOptions) withSparkleDefaults() SupervisorOptions {
+	if o.OldExitTimeout <= 0 {
+		o.OldExitTimeout = 60 * time.Second
+	}
+	if o.InstallTimeout <= 0 {
+		o.InstallTimeout = 2 * time.Minute
+	}
+	if o.ServingTimeout <= 0 {
+		o.ServingTimeout = 30 * time.Second
+	}
+	if o.Poll <= 0 {
+		o.Poll = 250 * time.Millisecond
+	}
+	return o
+}
+
 // FinishUpdate is `htmlclay --finish-update`. It runs from the previous binary,
 // detached from the old process, and takes nothing but dir's state.json as
 // input: waits for the old process to exit, launches the new binary, and waits
 // for it to report serving. If it does not, the supervisor kills it, moves the
 // previous binary back, records the failure and relaunches the previous version.
-// It returns nil only when the update finished.
+// It returns nil only when the update finished. A Sparkle install (macOS) goes
+// to finishSparkleUpdate instead.
 func FinishUpdate(dir string, opts SupervisorOptions) error {
+	sparkleOpts := opts.withSparkleDefaults()
 	opts = opts.withDefaults()
 	logf := openSupervisorLog(dir)
 
@@ -361,6 +410,9 @@ func FinishUpdate(dir string, opts SupervisorOptions) error {
 	if age := time.Since(st.Time); age < 0 || age > stateMaxAge {
 		logf("update %s to %s is stale (written %s); leaving it", st.Txid, st.To, st.Time.Format(time.RFC3339))
 		return fmt.Errorf("update state %s is stale", st.Txid)
+	}
+	if st.Installer == InstallerSparkle {
+		return finishSparkleUpdate(dir, st, sparkleOpts, logf)
 	}
 	logf("finishing update %s: %s -> %s at %s", st.Txid, st.From, st.To, st.InstallPath)
 	// Kept now, before the new version starts, because the new version deletes
