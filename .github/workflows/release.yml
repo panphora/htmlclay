@@ -138,10 +138,27 @@ jobs:
           chmod +x "$stage/install.sh" "$stage/install-icon.sh" "$stage/uninstall.sh"
           tar czf "$stage.tar.gz" -C "$stage" .
 
+      # The self-updater's payload is the same binary the tarball holds, gzipped.
+      # -n keeps the file name and time out of the header, so a rebuild of the
+      # same commit gives the same bytes.
+      - name: Update artifact
+        env:
+          VERSION: ${{ inputs.version }}
+          GOARCH: ${{ matrix.goarch }}
+        run: gzip -9 -n -c htmlclay > "htmlclay-${VERSION}-linux-${GOARCH}.gz"
+
+      # Installer artifacts are named dist-*, update payloads update-*, so the
+      # upload job can download them into separate folders: everything in
+      # artifacts/ lands in SHA256SUMS, the receipt and the website stamp.
       - uses: actions/upload-artifact@v4
         with:
-          name: htmlclay-linux-${{ matrix.goarch }}.tar.gz
+          name: dist-htmlclay-linux-${{ matrix.goarch }}.tar.gz
           path: htmlclay-linux-${{ matrix.goarch }}.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-linux-${{ matrix.goarch }}
+          path: htmlclay-${{ inputs.version }}-linux-${{ matrix.goarch }}.gz
 
   # ── Windows: build both architectures, sign with Azure Trusted Signing ──
   build-windows:
@@ -232,10 +249,21 @@ jobs:
             -DestinationPath htmlclay-windows-${{ matrix.goarch }}.zip
         shell: pwsh
 
+      # The self-updater's payload is the signed, timestamped exe the zip holds,
+      # byte for byte.
+      - name: Update artifact
+        run: Copy-Item htmlclay.exe "htmlclay-${{ inputs.version }}-windows-${{ matrix.goarch }}.exe"
+        shell: pwsh
+
       - uses: actions/upload-artifact@v4
         with:
-          name: htmlclay-windows-${{ matrix.goarch }}.zip
+          name: dist-htmlclay-windows-${{ matrix.goarch }}.zip
           path: htmlclay-windows-${{ matrix.goarch }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-windows-${{ matrix.goarch }}
+          path: htmlclay-${{ inputs.version }}-windows-${{ matrix.goarch }}.exe
 
   # ── macOS: build universal binary, sign + notarize with Apple ──
   build-macos:
@@ -287,7 +315,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: HTMLClay-universal.dmg
+          name: dist-HTMLClay-universal.dmg
           path: HTMLClay-*.dmg
 
   # ── Upload to R2 ──
@@ -298,8 +326,62 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: dist-*
           path: artifacts
           merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: update-*
+          path: updates
+          merge-multiple: true
+
+      # Checked out into src/ rather than the workspace root, where checkout
+      # would empty the folder and take the downloads with it.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          path: src
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: src/go.sum
+
+      # Built before anything is uploaded, so a missing or stray update artifact
+      # fails the release while R2 is still untouched. Hashes the exact bytes
+      # that are uploaded below.
+      - name: Build the update feed payload
+        working-directory: src
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          go run ./cmd/mkfeed payload \
+            -version "$VERSION" \
+            -source-sha "$SOURCE_SHA" \
+            -date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$GITHUB_WORKSPACE/updates" > "$GITHUB_WORKSPACE/update-payload.json"
+          cat "$GITHUB_WORKSPACE/update-payload.json"
+
+      # Releases keep working before the signing key exists: no seed, no feed,
+      # and installed apps keep linking to the download page. A seed without its
+      # key id is a half-done setup, so that one fails.
+      - name: Check for the update feed signing key
+        id: feedkey
+        env:
+          HTMLCLAY_UPDATE_SEED: ${{ secrets.HTMLCLAY_UPDATE_SEED }}
+          HTMLCLAY_UPDATE_KEY_ID: ${{ vars.HTMLCLAY_UPDATE_KEY_ID }}
+        run: |
+          if [ -z "$HTMLCLAY_UPDATE_SEED" ]; then
+            echo "::notice title=Update feed skipped::The HTMLCLAY_UPDATE_SEED secret is not set, so this release publishes no signed update feed."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$HTMLCLAY_UPDATE_KEY_ID" ]; then
+            echo "::error::The HTMLCLAY_UPDATE_SEED secret is set but the HTMLCLAY_UPDATE_KEY_ID repository variable is not."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
       # The whole verification story for the Linux tarball, which is unsigned, and
       # useful on the other two as well. Written outside artifacts/ so it cannot
@@ -345,6 +427,59 @@ jobs:
           done
 
           echo "All artifacts uploaded to R2"
+
+      # Immutable keys: the version is in every name, and each feed url also
+      # carries the sha256, so a rebuild of the same version never meets a cached
+      # copy of the old bytes. Read back from the bucket and compared, so the feed
+      # below only ever names bytes R2 really holds.
+      - name: Upload update artifacts
+        env:
+          VERSION: ${{ inputs.version }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          for file in updates/*; do
+            filename=$(basename "$file")
+            key="update/${VERSION}/${filename}"
+            echo "Uploading $key..."
+            aws s3 cp "$file" "s3://${R2_BUCKET}/${key}" \
+              --endpoint-url "$ENDPOINT" \
+              --content-type "application/octet-stream" \
+              --cache-control "public, max-age=31536000, immutable"
+            aws s3 cp "s3://${R2_BUCKET}/${key}" "$RUNNER_TEMP/readback" \
+              --endpoint-url "$ENDPOINT"
+            cmp "$file" "$RUNNER_TEMP/readback"
+          done
+
+      # After every artifact, before the receipt. The archive copy is what a bad
+      # feed is rolled back from; update/stable.json is what installed apps read,
+      # so it caches for a minute like the other files rewritten each release.
+      - name: Sign and publish the update feed
+        if: steps.feedkey.outputs.enabled == 'true'
+        working-directory: src
+        env:
+          VERSION: ${{ inputs.version }}
+          HTMLCLAY_UPDATE_SEED: ${{ secrets.HTMLCLAY_UPDATE_SEED }}
+          HTMLCLAY_UPDATE_KEY_ID: ${{ vars.HTMLCLAY_UPDATE_KEY_ID }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          FEED="$GITHUB_WORKSPACE/stable.json"
+          go run ./cmd/signfeed sign -key-id "$HTMLCLAY_UPDATE_KEY_ID" \
+            "$GITHUB_WORKSPACE/update-payload.json" > "$FEED"
+          go run ./cmd/mkfeed verify -version "$VERSION" "$FEED"
+
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp "$FEED" "s3://${R2_BUCKET}/update/${VERSION}/stable.json" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/json" \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp "$FEED" "s3://${R2_BUCKET}/update/stable.json" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type "application/json" \
+            --cache-control "public, max-age=60"
+          echo "Published update/stable.json for ${VERSION}"
 
       - name: Upload release-info.json
         env:
