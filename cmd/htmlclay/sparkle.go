@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -77,10 +78,10 @@ func (s *sparkleState) fail(reason string) {
 // appBundleFor returns the .app that holds exe, an executable at
 // X.app/Contents/MacOS/name, and false when exe is not inside one.
 func appBundleFor(exe string) (string, bool) {
-	macos := filepath.Dir(exe)
-	contents := filepath.Dir(macos)
-	bundle := filepath.Dir(contents)
-	if filepath.Base(macos) != "MacOS" || filepath.Base(contents) != "Contents" || filepath.Ext(bundle) != ".app" {
+	macos := path.Dir(exe)
+	contents := path.Dir(macos)
+	bundle := path.Dir(contents)
+	if path.Base(macos) != "MacOS" || path.Base(contents) != "Contents" || path.Ext(bundle) != ".app" {
 		return "", false
 	}
 	return bundle, true
