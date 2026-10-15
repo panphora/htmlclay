@@ -19,6 +19,10 @@ import (
 // replace itself with a published release. macOS updates through Sparkle.
 var updateChannel = ""
 
+// releaseInfoURL is the receipt the download-page link reads. Tests point it
+// at a local server.
+var releaseInfoURL = update.DefaultVersionURL
+
 // The restart waits for a moment with no write request in flight, so a save
 // already on the wire lands in this process rather than failing against a
 // closed port. A request still running after updateQuietLimit cancels the
@@ -60,6 +64,9 @@ func (a *app) startSelfUpdater(updateCh chan<- tray.UpdateInfo) bool {
 	if a.noTray {
 		return false
 	}
+	if runtime.GOOS == "darwin" {
+		return a.startSparkleUpdater(updateCh)
+	}
 	installPath, err := update.InstallPath()
 	if err == nil {
 		err = selfUpdateGate(updateChannel, version, runtime.GOOS, len(update.TrustedKeys), a.rt.cfg.SelfUpdateOff(), installPath, update.CheckWritable)
@@ -97,19 +104,60 @@ func (a *app) clickApplyUpdate(r update.Ready, installPath string) {
 	if err == nil || errors.Is(err, errUpdateCancelled) {
 		return
 	}
-	a.rt.logger.Printf("Update to v%s not applied, still running v%s: %v", r.Version, version, err)
-	msg := fmt.Sprintf("HTML Clay could not restart into v%s just now, so it is still running v%s. Try Restart to Update again in a moment.", r.Version, version)
+	a.reportRestartFailure(r.Version, err)
+}
+
+// reportRestartFailure logs a restart that did not happen and tells the person
+// this version is still running.
+func (a *app) reportRestartFailure(target string, err error) {
+	a.rt.logger.Printf("Update to v%s not applied, still running v%s: %v", target, version, err)
+	msg := fmt.Sprintf("HTML Clay could not restart into v%s just now, so it is still running v%s. Try Restart to Update again in a moment.", target, version)
 	if notifyErr := a.informUser("HTML Clay", msg); notifyErr != nil {
 		a.rt.logger.Printf("Could not show the update notice: %v", notifyErr)
 	}
 }
 
-// applyUpdate restarts into a staged update. In order: ask when an AI edit or
-// a program is running, wait for in-flight writes to land, hand the open
-// sessions to the new version, swap the binary and start the supervisor, then
-// quit through the ordinary shutdown. Until the swap succeeds every failure
-// removes the handoff and leaves this process running as it was.
+// checkForUpdateLink is the check every build falls back to when it cannot
+// update itself: it only offers the download page.
+func (a *app) checkForUpdateLink(updateCh chan<- tray.UpdateInfo) {
+	if info := update.Check(version, releaseInfoURL); info != nil {
+		a.rt.logger.Printf("Update available: v%s at %s", info.Version, info.URL)
+		updateCh <- tray.UpdateInfo{Version: info.Version, URL: info.URL}
+	}
+}
+
+// applyUpdate restarts into a staged update: restartForUpdate, then swap the
+// binary, start the supervisor and quit through the ordinary shutdown.
 func (a *app) applyUpdate(r update.Ready, installPath string) error {
+	return a.restartForUpdate(r.Version, func(handoff string) error {
+		_, err := update.Apply(update.UpdatesDir(a.rt.configDir), update.ApplyParams{
+			From:        version,
+			To:          r.Version,
+			InstallPath: installPath,
+			StagedPath:  r.StagedPath,
+			OldPID:      os.Getpid(),
+			HandoffPath: handoff,
+		})
+		if err != nil {
+			return err
+		}
+		a.rt.logger.Printf("Restarting to finish the update to v%s", r.Version)
+		if a.rt.quitForUpdate != nil {
+			a.rt.quitForUpdate()
+		} else {
+			tray.Quit()
+		}
+		return nil
+	})
+}
+
+// restartForUpdate is what every update restart shares. In order: ask when an
+// AI edit or a program is running, wait for in-flight writes to land, hand the
+// open sessions to target in the handoff file, then call install with its path.
+// Until install returns nil every failure removes the handoff and leaves this
+// process running as it was; after that the app stays marked as updating, so a
+// second click cannot start another restart.
+func (a *app) restartForUpdate(target string, install func(handoffPath string) error) error {
 	if !a.updating.CompareAndSwap(false, true) {
 		return errors.New("an update restart is already under way")
 	}
@@ -121,7 +169,7 @@ func (a *app) applyUpdate(r update.Ready, installPath string) error {
 	}()
 
 	if a.runningWork() > 0 {
-		msg := fmt.Sprintf("Restart HTML Clay now to update to v%s?\n\nAn AI edit or a program started by a document is still running, and restarting stops it.", r.Version)
+		msg := fmt.Sprintf("Restart HTML Clay now to update to v%s?\n\nAn AI edit or a program started by a document is still running, and restarting stops it.", target)
 		ok, err := a.confirmTrayChange("HTML Clay", msg, "Restart")
 		if err != nil || !ok {
 			return errUpdateCancelled
@@ -132,29 +180,15 @@ func (a *app) applyUpdate(r update.Ready, installPath string) error {
 	}
 
 	handoff := filepath.Join(a.rt.configDir, updateHandoffFile)
-	if err := a.writeUpdateHandoff(handoff, r.Version); err != nil {
+	if err := a.writeUpdateHandoff(handoff, target); err != nil {
 		os.Remove(handoff)
 		return fmt.Errorf("write the session handoff: %w", err)
 	}
-	_, err := update.Apply(update.UpdatesDir(a.rt.configDir), update.ApplyParams{
-		From:        version,
-		To:          r.Version,
-		InstallPath: installPath,
-		StagedPath:  r.StagedPath,
-		OldPID:      os.Getpid(),
-		HandoffPath: handoff,
-	})
-	if err != nil {
+	if err := install(handoff); err != nil {
 		os.Remove(handoff)
 		return err
 	}
 	exiting = true
-	a.rt.logger.Printf("Restarting to finish the update to v%s", r.Version)
-	if a.rt.quitForUpdate != nil {
-		a.rt.quitForUpdate()
-	} else {
-		tray.Quit()
-	}
 	return nil
 }
 

@@ -101,6 +101,10 @@ type appRuntime struct {
 	// quitForUpdate overrides how an applied update ends the process. Production
 	// leaves it nil and quits the tray, which runs the ordinary shutdown.
 	quitForUpdate func()
+	// sparkle is the macOS updater: the framework seam and the install waiting
+	// on Sparkle's quit event. Production leaves it nil and startSparkleUpdater
+	// fills in the real framework; tests set a fake.
+	sparkle *sparkleState
 }
 
 type app struct {
@@ -262,12 +266,7 @@ func main() {
 
 	updateCh := make(chan tray.UpdateInfo, 1)
 	if !a.startSelfUpdater(updateCh) {
-		go func() {
-			if info := update.Check(version, update.DefaultVersionURL); info != nil {
-				a.rt.logger.Printf("Update available: v%s at %s", info.Version, info.URL)
-				updateCh <- tray.UpdateInfo{Version: info.Version, URL: info.URL}
-			}
-		}()
+		go a.checkForUpdateLink(updateCh)
 	}
 
 	a.run(updateCh)
