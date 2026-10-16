@@ -28,7 +28,7 @@ import (
 // Skipped unless HTMLCLAY_HOST_GATE=1, because it needs node, playwright and a
 // downloaded browser, which is a heavy thing to put in the way of `go test ./...` on a
 // developer's machine. HTMLCLAY_HOST_GATE_RUNNER points at the runner in the
-// malleablehtmlfile repo; HTMLCLAY_HOST_GATE_CWD is a directory with playwright
+// malleabledocument repo; HTMLCLAY_HOST_GATE_CWD is a directory with playwright
 // installed, since the runner resolves it from the caller's directory.
 func TestMalleableHTMLFileHostGate(t *testing.T) {
 	if os.Getenv("HTMLCLAY_HOST_GATE") != "1" {
@@ -36,7 +36,7 @@ func TestMalleableHTMLFileHostGate(t *testing.T) {
 	}
 	runner := os.Getenv("HTMLCLAY_HOST_GATE_RUNNER")
 	if runner == "" {
-		t.Fatal("HTMLCLAY_HOST_GATE_RUNNER must point at malleablehtmlfile/scripts/host-test.mjs")
+		t.Fatal("HTMLCLAY_HOST_GATE_RUNNER must point at malleabledocument/scripts/host-test.mjs")
 	}
 	// Two layouts, the same two the runner resolves for itself. Canonically it sits in
 	// scripts/ with the page one level up; synced into a host repo the two land side by
