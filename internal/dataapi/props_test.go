@@ -79,8 +79,8 @@ func TestPropsMeasuredAgainstJS(t *testing.T) {
 		{"#o2@value", `"two"`},
 		{"#sel@value", `null`},
 
-		// The property branch keeps "", the attribute branch turns it into null.
-		{"#in@data-empty", `null`},
+		// An empty attribute is present, so it reads as "" (hyper-html-api 0.11, attribute presence).
+		{"#in@data-empty", `""`},
 		{"#in@data-k", `"dv"`},
 		{"#in@data-missing", `null`},
 

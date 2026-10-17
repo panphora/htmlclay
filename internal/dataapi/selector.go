@@ -62,7 +62,7 @@ var rejectedPseudos = map[string]string{
 	"odd":         "cascadia has no :odd",
 	"is":          "cascadia has no :is",
 	"where":       "cascadia has no :where",
-	"scope":       "cascadia has no :scope",
+	"scope":       "only a leading :scope followed by a space or > is supported",
 	"parent":      "cascadia has no :parent",
 	"header":      "cascadia has no :header",
 	"selected":    "cascadia has no :selected; use :checked",
@@ -108,6 +108,9 @@ type compiledSelector struct {
 	source string
 	groups []compiledGroup
 
+	// anchored is set when a group began with :scope, so match() must mark the context node.
+	anchored bool
+
 	// foldedAttrs are the attribute names this selector compares case-insensitively, either by
 	// carrying an explicit `i` flag or by being one of the 46 names HTML folds. Collected at compile
 	// time so checkFoldedValues has something cheap to test each matched node against.
@@ -147,20 +150,26 @@ func compileSelector(selector string) (*compiledSelector, error) {
 			"cheerio's parser does not accept it at all, so the two engines read a different selector")
 	}
 
-	groups := scanSelector(selector)
+	// A leading :scope becomes an attribute selector on a marker that match() sets on the context
+	// node for the duration of one query, which is exactly cheerio's reading: the context is the
+	// search root, and `:scope >` means its direct children. Everything after the rewrite goes
+	// through the gate like any other selector.
+	text, anchored := anchorLeadingScope(selector)
+
+	groups := scanSelector(text)
 
 	// Default-deny on the compound alphabet, for the same reason the pseudo list is an allow-list:
 	// a character the scanner does not model is a character the gate would judge without reading.
 	// Whitespace is where the two engines disagree most quietly — U+000B, U+0085 and U+00A0 end a
 	// selector for css-what and continue an identifier for cascadia — so "\v" answered "no matches"
 	// here while cheerio threw. Found by FuzzScanSelector's closure property.
-	if i, bad := unmodelledByte(selector, groups); bad {
-		return nil, fail(unmodelledReason(selector, i))
+	if i, bad := unmodelledByte(text, groups); bad {
+		return nil, fail(unmodelledReason(text, i))
 	}
 
-	cs := &compiledSelector{source: selector, foldedAttrs: map[string]bool{}}
+	cs := &compiledSelector{source: selector, anchored: anchored, foldedAttrs: map[string]bool{}}
 	for _, g := range groups {
-		if err := validateGroup(selector, g, fail); err != nil {
+		if err := validateGroup(text, g, fail); err != nil {
 			return nil, err
 		}
 
@@ -170,7 +179,7 @@ func compileSelector(selector string) (*compiledSelector, error) {
 			}
 		}
 
-		residue, filters, err := peelGroup(selector, g, fail)
+		residue, filters, err := peelGroup(text, g, fail)
 		if err != nil {
 			return nil, err
 		}
@@ -579,6 +588,14 @@ func isChecked(n *html.Node) bool {
 // order without duplicates. Groups are filtered independently because that is what cheerio does:
 // "a:first, b:first" is two firsts, not the first of the union.
 func (cs *compiledSelector) match(ctx *html.Node) ([]*html.Node, error) {
+	if cs.anchored {
+		if ctx.Type != html.ElementNode {
+			return nil, &UnsupportedSelector{Selector: cs.source,
+				Reason: ":scope needs an element as its context; at the top level of the rules, drop it"}
+		}
+		ctx.Attr = append(ctx.Attr, html.Attribute{Key: scopeMarker})
+		defer func() { removeAttr(ctx, scopeMarker) }()
+	}
 	if len(cs.groups) == 1 {
 		g := cs.groups[0]
 		nodes := elementsOnly(cascadia.QueryAll(ctx, g.matcher))
@@ -765,4 +782,43 @@ var caseInsensitiveAttrs = map[string]bool{
 	"rules": true, "scope": true, "scrolling": true, "selected": true, "shape": true,
 	"target": true, "text": true, "type": true, "valign": true, "valuetype": true,
 	"vlink": true,
+}
+
+// scopeMarker is the attribute a leading :scope is rewritten to. match() puts it on the context
+// node only while the query runs.
+const scopeMarker = "data-htmlclay-scope-context"
+
+// anchorLeadingScope rewrites each comma group that starts with :scope followed by a space or >
+// into the marker attribute selector. A :scope anywhere else (alone, before + or ~, or mid-selector)
+// is left as written, and the gate refuses it.
+func anchorLeadingScope(selector string) (string, bool) {
+	var b strings.Builder
+	anchored := false
+	last := 0
+	for _, span := range splitTopLevelCommas(selector) {
+		i := span[0]
+		for i < span[1] && isCSSSpace(selector[i]) {
+			i++
+		}
+		if !strings.HasPrefix(selector[i:span[1]], ":scope") {
+			continue
+		}
+		j := i + len(":scope")
+		k := j
+		for k < span[1] && isCSSSpace(selector[k]) {
+			k++
+		}
+		if k == j && (k >= span[1] || selector[k] != '>') {
+			continue
+		}
+		if k >= span[1] || selector[k] == '+' || selector[k] == '~' {
+			continue
+		}
+		b.WriteString(selector[last:i])
+		b.WriteString("[" + scopeMarker + "]")
+		last = j
+		anchored = true
+	}
+	b.WriteString(selector[last:])
+	return b.String(), anchored
 }

@@ -47,7 +47,8 @@
     "no-undo",
     "no-data",
     "freeze",
-    "editor-ui"
+    "editor-ui",
+    "live"
   ],
   "refusedAttributePrefixes": [
     "on"

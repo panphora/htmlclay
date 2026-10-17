@@ -453,6 +453,8 @@ func FuzzScanSelector(f *testing.F) {
 		// The closure-shaped seeds: syntax one engine reads and the other does not.
 		`p[a!=b]:matches(x)`, `div/*x*/p`, `[a%b]`, `[a%=b]`, `div/*'*/span`, `[id="/*"]`,
 		`[]`, `a,,b`, `[a~=""]`, `p:contains( x )`, `[a=b s]`, `ns|div`, `[ns|a=b]`,
+		// The leading :scope rewrite.
+		`:scope > a`, `:scope a, :scope>b`, `:scope`, `:scope + a`, ` :scope>[x="]"]`, `:scope\>a`,
 	} {
 		f.Add(seed)
 	}

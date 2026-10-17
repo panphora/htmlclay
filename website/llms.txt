@@ -1111,11 +1111,13 @@ the reason.
 Accepted pseudo-classes: `:not`, `:has`, `:nth-child`, `:nth-last-child`, `:nth-of-type`,
 `:nth-last-of-type`, `:first-child`, `:last-child`, `:first-of-type`, `:last-of-type`,
 `:only-child`, `:only-of-type`, `:root`, `:first`, `:last`, `:eq`, `:nth`, `:contains`,
-`:checked`.
+`:checked`, and `:scope` at the start of a nested rule's selector followed by a space or `>`
+(`:scope > section.checklist` matches the context's direct children). A `:scope` anywhere else, or
+in a top-level rule, is refused.
 
 Refused pseudo-classes, each with its own reason: `:matches`, `:matchesown`, `:containsown`,
 `:haschild`, `:lang`, `:enabled`, `:disabled`, `:empty`, `:focus`, `:target`, `:gt`, `:lt`,
-`:even`, `:odd`, `:is`, `:where`, `:scope`, `:parent`, `:header`, `:selected`, `:button`,
+`:even`, `:odd`, `:is`, `:where`, `:parent`, `:header`, `:selected`, `:button`,
 `:submit`, `:text`, `:password`, `:radio`, `:file`, `:image`, `:reset`, `:input`, `:link`,
 `:visited`, `:hover`, `:active`. Pseudo-elements (`::before` and friends) are refused too, as are
 CSS comments and `:has()` whose argument starts with a combinator.

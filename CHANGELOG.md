@@ -7,6 +7,9 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ### Added
 
+- **The data API reads rules that start with `:scope`.** A nested rule such as
+  `:scope > section.checklist` now matches the rows directly inside its context, as ClayJS reads it,
+  so the Kanban template's data opens in HTML Clay instead of failing with "Invalid selector".
 - **One port, an address per folder.** HTML Clay serves every folder from one port, 1212 unless it
   is taken, at an address such as `http://htmlclay.localhost:1212/`. The address is chosen once per folder
   and never changes, so bookmarks survive restarts and opening a file again lands on the same page
@@ -52,6 +55,12 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 - **Downgrading to 1.13 drops `port`, `siteSlugs` and `retiredSlugs` from `config.json`** on its next
   save (unknown fields are discarded), so the addresses are chosen afresh on the next upgrade.
+
+### Fixed
+
+- **An empty attribute reads as `""`, and writing `null` removes it.** The data API matches
+  ClayJS again: a present but empty attribute such as Kanban's `data-done=""` used to read as `null`
+  and could not be written back.
 
 ## [1.9.0] - 2026-08-30
 

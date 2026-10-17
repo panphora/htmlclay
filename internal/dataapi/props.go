@@ -52,7 +52,7 @@ func readPropOrAttr(d *Document, n *html.Node, name string) Value {
 		return v
 	}
 	v, ok := getAttr(n, name)
-	if !ok || v == "" {
+	if !ok {
 		return nil
 	}
 	return v

@@ -2,6 +2,7 @@ package dataapi
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -251,4 +252,57 @@ func TestFindRulesIn(t *testing.T) {
 			t.Errorf("got %s", got)
 		}
 	})
+}
+
+// TestLeadingScopeAnchorsToContext: a leading :scope reads the way cheerio reads it, with the
+// context as the search root. Kanban's checklist rules depend on the `:scope >` form: a card's
+// checklists are its direct children, never a checklist nested deeper.
+func TestLeadingScopeAnchorsToContext(t *testing.T) {
+	root := doc(t, `<article id="card"><section class="checklist" id="a"><ul class="checklist-items"><li id="a1">one</li></ul>`+
+		`<div><section class="checklist" id="deep"></section></div></section><section class="checklist" id="b"></section></article>`)
+	cards, err := Find(root.Root, "#card", FindOpts{})
+	if err != nil || len(cards) != 1 {
+		t.Fatalf("find card: %v %d", err, len(cards))
+	}
+	card := cards[0]
+
+	cases := map[string][]string{
+		":scope > section.checklist":                {"a", "b"},
+		" :scope>section.checklist":                 {"a", "b"},
+		":scope section.checklist":                  {"a", "deep", "b"},
+		":scope > section.checklist > ul > li":      {"a1"},
+		":scope > section.checklist:first":          {"a"},
+		"p, :scope > section.checklist":             {"a", "b"},
+		":scope > section.checklist, :scope > nope": {"a", "b"},
+	}
+	for sel, want := range cases {
+		got, err := Find(card, sel, FindOpts{})
+		if err != nil {
+			t.Errorf("%q: %v", sel, err)
+			continue
+		}
+		var ids []string
+		for _, n := range got {
+			v, _ := attrValue(n, "id")
+			ids = append(ids, v)
+		}
+		if strings.Join(ids, ",") != strings.Join(want, ",") {
+			t.Errorf("%q = %v, want %v", sel, ids, want)
+		}
+	}
+	if _, ok := attrValue(card, scopeMarker); ok {
+		t.Error("the scope marker was left on the context node")
+	}
+
+	for _, sel := range []string{":scope", ":scope + p", ":scope ~ p", "div :scope > p", ":scope.x"} {
+		var unsupported *UnsupportedSelector
+		if _, err := Find(card, sel, FindOpts{}); !errors.As(err, &unsupported) {
+			t.Errorf("%q: got %v, want UnsupportedSelector", sel, err)
+		}
+	}
+
+	var unsupported *UnsupportedSelector
+	if _, err := Find(root.Root, ":scope > html", FindOpts{}); !errors.As(err, &unsupported) {
+		t.Errorf(":scope > from the document: got %v, want UnsupportedSelector", err)
+	}
 }

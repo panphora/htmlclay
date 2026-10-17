@@ -99,3 +99,28 @@ func TestWriteDocumentWithRulesBOM(t *testing.T) {
 		}
 	})
 }
+
+// TestAttributePresenceRoundTrips: an empty attribute is present, so it reads as "" and writing ""
+// keeps it, while writing null removes it. Kanban stores a ticked checklist item as data-done="".
+func TestAttributePresenceRoundTrips(t *testing.T) {
+	src := `<script data-rules-name="api" data-rules-version="1">{"items":["li",{"text":".","done":"@data-done"}]}</script>` +
+		`<ul><li data-done="">a</li><li>b</li></ul>`
+
+	cases := []struct{ data, want string }{
+		{`{"items":[{"text":"a","done":""},{"text":"b","done":null}]}`, `<ul><li data-done="">a</li><li>b</li></ul>`},
+		{`{"items":[{"text":"a","done":null},{"text":"b","done":""}]}`, `<ul><li>a</li><li data-done="">b</li></ul>`},
+	}
+	for _, c := range cases {
+		data, err := decodeJSON(c.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := WriteDocument([]byte(src), data, "api")
+		if err != nil {
+			t.Fatalf("%s: %v", c.data, err)
+		}
+		if !strings.Contains(string(result.HTML), c.want) {
+			t.Errorf("%s:\n got %s\nwant it to contain %s", c.data, result.HTML, c.want)
+		}
+	}
+}
