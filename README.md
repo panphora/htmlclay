@@ -12,7 +12,7 @@ A desktop app that makes self-saving HTML files a native OS feature.
 
 - **Website:** [htmlclay.com](https://htmlclay.com)
 - **File extension:** `.htmlclay`
-- **Format:** a [malleable document](https://malleablehtmlfile.com)
+- **Format:** a [malleable document](https://malleabledocument.com)
 - **Parent platform:** [Hyperclay](https://hyperclay.com)
 
 ### Three names, one idea
@@ -20,7 +20,7 @@ A desktop app that makes self-saving HTML files a native OS feature.
 Worth stating once, because the three get mixed up:
 
 - **The format** is a **malleable document**, and its real extension is `.html`. It is specified at
-  [malleablehtmlfile.com](https://malleablehtmlfile.com) and several programs can host one.
+  [malleabledocument.com](https://malleabledocument.com) and several programs can host one.
 - **HTML Clay** is *this app*. It is one of those programs, not the format.
 - **`.htmlclay`** is an operating system convention. It tells your OS to open the file with HTML Clay,
   the same way `.psd` names Photoshop rather than naming the image format.

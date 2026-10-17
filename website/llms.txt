@@ -24,7 +24,7 @@ the end.
 Three names get confused, so fix them once and never rotate them:
 
 - **malleable document** is the format. Its real extension is `.html`, its specification is at
-  https://malleablehtmlfile.com, and several programs can host one.
+  https://malleabledocument.com, and several programs can host one.
 - **HTML Clay** is this app, one host of that format.
 - **`.htmlclay`** is an operating system convention that tells the OS to open the file with
   HTML Clay, the way `.psd` names Photoshop rather than naming the image format.
@@ -1601,6 +1601,6 @@ The binding text is `LICENSE` in the repository; the standing commitments are `S
 - Security model: https://github.com/panphora/htmlclay/blob/main/SECURITY.md
 - Stability commitments: https://github.com/panphora/htmlclay/blob/main/STABILITY.md
 - ClayJS, the in-page library: https://clayjs.com and https://clayjs.com/llms.txt
-- The file format specification: https://malleablehtmlfile.com
+- The file format specification: https://malleabledocument.com
 - The hosted platform: https://hyperclay.com
 - Security reports: david@storylog.com
