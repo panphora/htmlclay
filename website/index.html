@@ -183,6 +183,13 @@
     .cta .sub { color: var(--muted); font-size: 14px; margin-top: 12px; }
     .cta .sub a { color: var(--muted); }
     .trust { color: var(--muted); font-size: 14px; margin-top: 4px; }
+    .trust-badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; list-style: none; margin: 22px 0 4px; padding: 0; }
+    .trust-badge {
+      display: inline-block; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
+      background: var(--card); color: var(--muted); font-size: 13px; font-weight: 600; text-decoration: none;
+    }
+    a.trust-badge:hover { color: var(--ink); border-color: var(--muted); }
+    a.trust-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
     /* Sections */
     section { padding: 28px 0; }
@@ -451,6 +458,12 @@
       <div class="trust">Free. No account. Works offline.</div>
       <div class="sub" id="download-sub"><a href="#downloads">See all downloads</a></div>
     </div>
+
+    <ul class="trust-badges" aria-label="Why trust HTML Clay">
+      <li><a class="trust-badge" href="https://github.com/panphora/htmlclay">Source available</a></li>
+      <li><span class="trust-badge" title="No usage analytics or telemetry in HTML Clay.">No tracking</span></li>
+      <li><a class="trust-badge" id="platform-trust" href="https://github.com/panphora/htmlclay/blob/main/LICENSE">Free to use</a></li>
+    </ul>
 
     <section>
       <h2>Built like a document</h2>
@@ -833,10 +846,11 @@
       var btn = document.getElementById('download-btn');
       var label = document.getElementById('download-label');
       var sub = document.getElementById('download-sub');
+      var trustBadge = document.getElementById('platform-trust');
 
       var primary = {
-        mac:     { url: macUrl, label: 'Download for macOS', note: 'Universal' },
-        windows: { url: DL + 'htmlclay-windows-amd64.zip', label: 'Download for Windows', note: '64-bit' },
+        mac:     { url: macUrl, label: 'Download for macOS', note: 'Universal', trust: 'Notarized by Apple' },
+        windows: { url: DL + 'htmlclay-windows-amd64.zip', label: 'Download for Windows', note: '64-bit', trust: 'Signed for Windows' },
         linux:   { url: DL + 'htmlclay-linux-amd64.tar.gz', label: 'Download for Linux', note: 'x86_64' }
       };
 
@@ -844,6 +858,10 @@
         btn.href = primary[os].url;
         label.textContent = primary[os].label;
         sub.innerHTML = primary[os].note + ' &middot; <a href="#downloads">all downloads</a>';
+        if (primary[os].trust) {
+          trustBadge.textContent = primary[os].trust;
+          trustBadge.href = '#downloads';
+        }
       } else {
         btn.href = '#downloads';
         btn.removeAttribute('download');
