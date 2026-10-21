@@ -17,6 +17,7 @@ import (
 
 	"github.com/panphora/htmlclay/internal/helper"
 	"github.com/panphora/htmlclay/internal/htmlutil"
+	"github.com/panphora/htmlclay/internal/pageadmission"
 	"github.com/panphora/htmlclay/internal/platform"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/specwire"
@@ -1031,6 +1032,25 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	conversionHeader, hasConversionHeader := listHeader(r, "Page-Conversion")
+	if hasConversionHeader && conversionHeader == "" {
+		f.Unlock()
+		writePageAdmissionError(w, &pageadmission.Refusal{Reason: "invalid-header"})
+		return
+	}
+	decision, admissionErr := pageadmission.CheckWrite(string(current), string(body), conversionHeader)
+	if admissionErr == nil && decision != pageadmission.Ordinary {
+		ifMatch, sent := listHeader(r, "If-Match")
+		if !sent || strings.TrimSpace(ifMatch) == "*" || strings.Contains(ifMatch, ",") ||
+			!specwire.IfMatchSatisfied(ifMatch, current) {
+			admissionErr = &pageadmission.Refusal{Reason: "file-changed"}
+		}
+	}
+	if admissionErr != nil {
+		f.Unlock()
+		writePageAdmissionError(w, admissionErr)
+		return
+	}
 
 	// The backup identity comes from the key resolved at first serve, never from
 	// the bytes on disk or in the body. Deriving it from disk meant that on a first
@@ -1436,6 +1456,11 @@ var specErrorCodes = map[int]string{
 // inside the file and no update ever reaches it. So the old pair does not go away when
 // the new one arrives, the same way the pre-rename save token does not.
 func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
+	code := specErrorCodes[status]
+	writeSaveError(w, status, message, code, "")
+}
+
+func writeSaveError(w http.ResponseWriter, status int, message, code, reason string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	body := map[string]interface{}{
@@ -1443,10 +1468,49 @@ func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
 		"error": message,
 		"msg":   message,
 	}
-	if code, ok := specErrorCodes[status]; ok {
+	if code != "" {
 		body["code"] = code
 	}
+	if reason != "" {
+		body["reason"] = reason
+	}
 	json.NewEncoder(w).Encode(body)
+}
+
+func pageAdmissionFields(err error) (int, string, string) {
+	var format *pageadmission.FormatError
+	if errors.As(err, &format) {
+		return http.StatusConflict, "page-format", ""
+	}
+	var refused *pageadmission.Refusal
+	if !errors.As(err, &refused) {
+		return http.StatusInternalServerError, "", ""
+	}
+	switch refused.Reason {
+	case "invalid-header":
+		return http.StatusBadRequest, "page-conversion-refused", refused.Reason
+	case "invalid-capture":
+		return http.StatusUnprocessableEntity, "page-conversion-refused", refused.Reason
+	case "invalid-source", "ambiguous-source":
+		return http.StatusConflict, "page-conversion-refused", refused.Reason
+	case "implicit-conversion":
+		return http.StatusConflict, "page-conversion-required", refused.Reason
+	case "source-changed":
+		return http.StatusConflict, "page-conversion-stale", refused.Reason
+	case "file-changed":
+		return http.StatusPreconditionRequired, "page-conversion-stale", refused.Reason
+	default:
+		return http.StatusInternalServerError, "", ""
+	}
+}
+
+func writePageAdmissionError(w http.ResponseWriter, err error) {
+	status, code, reason := pageAdmissionFields(err)
+	if status == http.StatusInternalServerError {
+		writeSaveError(w, status, "page write failed", "", "")
+		return
+	}
+	writeSaveError(w, status, err.Error(), code, reason)
 }
 
 // listHeader reports a list-valued header and whether it was sent at all.

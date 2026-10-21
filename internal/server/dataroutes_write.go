@@ -13,6 +13,7 @@ import (
 
 	"github.com/panphora/htmlclay/internal/dataapi"
 	"github.com/panphora/htmlclay/internal/htmlutil"
+	"github.com/panphora/htmlclay/internal/pageadmission"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/specwire"
 	"github.com/panphora/htmlclay/internal/versions"
@@ -266,6 +267,25 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 			s.logger.Printf("Data write of %s failed: %v", f.RelPath, err)
 		}
 		writeWriteError(w, status, body)
+		return
+	}
+	decision, admissionErr := pageadmission.CheckWrite(string(current), string(res.HTML), "")
+	if admissionErr == nil && decision != pageadmission.Ordinary {
+		admissionErr = &pageadmission.Refusal{Reason: "file-changed"}
+	}
+	if admissionErr != nil {
+		f.Unlock()
+		_, code, reason := pageAdmissionFields(admissionErr)
+		if code == "" {
+			code = "page-format"
+		}
+		if reason == "" {
+			reason = code
+		}
+		writeWriteError(w, http.StatusConflict, writeErrorBody{
+			Error: "Page format", Message: admissionErr.Error(),
+			Details: map[string]string{"code": code, "reason": reason},
+		})
 		return
 	}
 

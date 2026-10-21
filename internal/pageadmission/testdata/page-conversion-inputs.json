@@ -1,0 +1,24 @@
+[
+  {
+    "name": "single paragraph",
+    "tags": [["page", {"blocks": {"p": {"t": "paragraph", "pos": "A", "c": "AAAA"}}}]]
+  },
+  {
+    "name": "ordered shards",
+    "tags": [
+      ["page.2", {"blocks": {"p": {"t": "paragraph", "pos": "A", "c": "first"}}}],
+      ["page", {"blocks": {"p": {"t": "paragraph", "pos": "A", "c": "second"}}}]
+    ]
+  },
+  {
+    "name": "integer keys, unicode and tombstones",
+    "tags": [["page", {
+      "blocks": {
+        "2": {"t": "paragraph", "pos": "B", "c": "雪 🌱"},
+        "10": {"t": "paragraph", "pos": "A", "c": "é"},
+        "hidden": {"raw": {"2": [null, true, {"10": 10, "2": 2}], "10": "preserved"}}
+      },
+      "deleted": {"hidden": true}
+    }]]
+  }
+]
