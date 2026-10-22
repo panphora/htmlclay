@@ -237,7 +237,6 @@ func TestHostedOrdinaryWriteMatrix(t *testing.T) {
 func TestHostedConvertedFormatMatrix(t *testing.T) {
 	current := page(tag("page", yjs))
 	broken := []struct{ name, target string }{
-		{"missing page", page(`<article>after</article>`)},
 		{"hybrid value", page(tag("page", hybrid))},
 		{"mixed value", page(tag("page", `{"v":1,"y":{},"blocks":{}}`))},
 		{"deleted envelope", page(tag("page", `{"y":{}}`))},
@@ -250,9 +249,6 @@ func TestHostedConvertedFormatMatrix(t *testing.T) {
 		{"page shard", page(tag("page", yjs), tag("page.1", hybrid))},
 		{"renamed page", page(tag("page.1", yjs))},
 		{"ephemeral page", page(`<script type="application/json" merge="page" clay="live ephemeral">` + yjs + `</script>`)},
-		{"inert page", page(`<template>` + tag("page", yjs) + `</template>`)},
-		{"external script", page(`<script type="application/json" merge="page" clay="live" src="page.json">` + yjs + `</script>`)},
-		{"non-live tag", page(`<script type="application/json" merge="page">` + yjs + `</script>`)},
 		{"malformed JSON", page(tag("page", `{broken`))},
 	}
 	for _, test := range broken {
@@ -262,6 +258,16 @@ func TestHostedConvertedFormatMatrix(t *testing.T) {
 				t.Fatalf("error = %v, want page format", err)
 			}
 		})
+	}
+	for _, target := range []string{
+		page(`<article>after</article>`),
+		page(`<template>` + tag("page", yjs) + `</template>`),
+		page(`<script type="application/json" merge="page" clay="live" src="page.json">` + yjs + `</script>`),
+		page(`<script type="application/json" merge="page">` + yjs + `</script>`),
+	} {
+		if got, err := CheckWrite(current, target, ""); err != nil || got != Ordinary {
+			t.Errorf("a converted file accepts an outside edit without an eligible page tag: %s, %v", got, err)
+		}
 	}
 	for _, target := range []string{
 		page(tag("page", `{"v":1,"y":{"m.0.2":"first","m.1.2":"second"}}`)),
@@ -356,7 +362,7 @@ func TestHostedWriteAdmissionVectors(t *testing.T) {
 	if got, err := CheckWrite(empty, encoded, ""); err != nil || got != Initial {
 		t.Fatalf("encoded names and relaxed JSON use the real live-tag parser: %s, %v", got, err)
 	}
-	for _, target := range []string{empty, old, page(tag("page", `{"v":1,"y":{},"blocks":{}}`)), page(tag("page", yjs), tag("page.1", hybrid)), page(`<template>` + tag("page", yjs) + `</template>`)} {
+	for _, target := range []string{old, page(tag("page", `{"v":1,"y":{},"blocks":{}}`)), page(tag("page", yjs), tag("page.1", hybrid))} {
 		_, err := CheckWrite(converted, target, "")
 		if _, ok := err.(*FormatError); !ok {
 			t.Errorf("already converted files retain one complete Yjs page value: %v", err)
@@ -390,5 +396,76 @@ func TestHostedConversionMetadataVectors(t *testing.T) {
 	}
 	if got, err := conversionBase(" v1 ; base = " + base + " ; source = file "); err != nil || got != base {
 		t.Fatalf("reads a whitespace-normalized file baseline: %q, %v", got, err)
+	}
+}
+
+func TestHostedWriteAdmissionWithoutStoredPageTag(t *testing.T) {
+	article := `<article class="page" data-page="1"><h1 data-id="title"></h1></article>`
+	tagless := page(article)
+	converted := page(tag("page", yjs))
+	base := strings.Repeat("0", 64)
+	for _, test := range []struct {
+		name, current, next, header string
+		want                        Decision
+		format                      bool
+	}{
+		{name: "a stored page tag accepts a save that keeps it", current: converted, next: converted, want: Ordinary},
+		{name: "a stored page tag admits a save without one as an outside edit", current: converted, next: tagless, want: Ordinary},
+		{name: "a stored page tag still refuses a hybrid capture", current: converted, next: page(article, tag("page", hybrid)), format: true},
+		{name: "a stored tagless page document continues without a new capture", current: tagless, next: converted, want: Ordinary},
+		{name: "a stored tagless non-page document still needs an initial capture", current: page(), next: converted, want: Initial},
+		{name: "a conversion header still requires a hybrid source", current: tagless, next: converted, header: "v1; source=file; base=" + base, want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := CheckWrite(test.current, test.next, test.header)
+			if test.format {
+				if _, ok := err.(*FormatError); !ok {
+					t.Fatalf("error = %v, want page format", err)
+				}
+				return
+			}
+			if test.header != "" {
+				reason(t, err, "invalid-source")
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("decision = %s, %v, want %s", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestStripPageTagVectors(t *testing.T) {
+	head := "<!doctype html>\n<html>\n<head>\n" + tag("page.tools", "{}") + "\n</head>\n<body>\n"
+	tail := "\n</body>\n</html>\n"
+	article := `<article class="page" data-page="1"><h1 data-id="title"></h1></article>`
+	source := func(lines ...string) string { return head + strings.Join(lines, "\n") + tail }
+	fixture, err := os.ReadFile("testdata/ypage-template.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, line := range strings.SplitAfter(string(fixture), "\n") {
+		if !strings.HasPrefix(line, `<script type="application/json" merge="page" `) {
+			kept = append(kept, line)
+		}
+	}
+	for _, test := range []struct{ name, source, want string }{
+		{"removes a page tag alone on its line", source(tag("page", yjs), article), source(article)},
+		{"removes only the element when the line holds other markup", source(`<p>before</p>`+tag("page", yjs)+`<p>after</p>`, article), source(`<p>before</p><p>after</p>`, article)},
+		{"leaves a document with no page tag untouched", source(article), source(article)},
+		{"leaves a hybrid page tag untouched", source(tag("page", hybrid), article), source(tag("page", hybrid), article)},
+		{"leaves a renamed hybrid page tag untouched", source(tag("page.1", hybrid), article), source(tag("page.1", hybrid), article)},
+		{"leaves a page tag inside a template untouched", source(`<template>`+tag("page", yjs)+`</template>`, article), source(`<template>`+tag("page", yjs)+`</template>`, article)},
+		{"leaves a page tag with two articles untouched", source(tag("page", yjs), article, article), source(tag("page", yjs), article, article)},
+		{"leaves a page tag inside the article untouched", source(`<article data-page="1">` + tag("page", yjs) + `</article>`), source(`<article data-page="1">` + tag("page", yjs) + `</article>`)},
+		{"removes a page tag whose value contains a closing script sequence", source(tag("page", `{"v":1,"y":{"seed":"a</script"}}`), article), source(article)},
+		{"removes the page tag from the editor template fixture", string(fixture), strings.Join(kept, "")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := StripPageTag(test.source); got != test.want {
+				t.Fatalf("StripPageTag =\n%q\nwant\n%q", got, test.want)
+			}
+		})
 	}
 }

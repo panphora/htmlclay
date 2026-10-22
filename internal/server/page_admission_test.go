@@ -69,7 +69,6 @@ func TestPageAdmissionConvertedSaveRefusalsLeaveNoTrace(t *testing.T) {
 	before := listVersionNames(t, srv, f)
 	for _, test := range []struct{ name, next string }{
 		{"hybrid capture", pageDocument(pageHybrid)},
-		{"removed page store", pageDocument("")},
 		{"mixed capture", pageDocument(pageYJS + pageHybrid)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -91,6 +90,40 @@ func TestPageAdmissionConvertedSaveRefusalsLeaveNoTrace(t *testing.T) {
 				t.Fatalf("refusal replaced receipt with %q", receipt)
 			}
 		})
+	}
+}
+
+func TestPageAdmissionSaveStripsPageTag(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	tools := `<script type="application/json" merge="page.tools" clay="live">{}</script>`
+	document := func(lines ...string) string {
+		return `<!DOCTYPE html><html><head>` + "\n" + strings.Join(lines, "\n") +
+			"\n" + `</head><body><article class="page" data-page="1"><h1 data-id="title"></h1></article></body></html>`
+	}
+	want := document(tools)
+	f := registerPageWithContent(t, srv, "stripped-page.htmlclay", want)
+	w := savePageThroughMux(t, srv, f, document(tools, pageYJS), "", "", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("page save = %d %s", w.Code, w.Body.String())
+	}
+	on := docString(t, f.AbsPath)
+	if on != want || pageadmission.Inspect(on).Kind != "none" ||
+		!strings.Contains(on, `merge="page.tools"`) || !strings.Contains(on, `data-page="1"`) {
+		t.Fatalf("stored bytes = %q", on)
+	}
+	if got := decode(t, w)["etag"]; got != specwire.Etag([]byte(want)) {
+		t.Fatalf("etag = %v, want the stripped stamp", got)
+	}
+}
+
+func TestPageAdmissionOutsideEditWithoutPageTag(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	converted := pageDocument(pageYJS)
+	f := registerPageWithContent(t, srv, "outside-page.htmlclay", converted)
+	tagless := pageDocument("")
+	w := savePageThroughMux(t, srv, f, tagless, "", "", "")
+	if w.Code != http.StatusOK || docString(t, f.AbsPath) != tagless || decode(t, w)["etag"] != specwire.Etag([]byte(tagless)) {
+		t.Fatalf("a save without the page tag is an outside edit: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -221,17 +254,11 @@ func TestPageAdmissionDataAPI(t *testing.T) {
 	}
 	breaking := `<!DOCTYPE html><html><head><script type="application/json" data-rules-name="api" data-rules-version="1">{"body":"body@textContent"}</script></head><body><p>Old</p>` + pageYJS + `</body></html>`
 	g := registerPageWithContent(t, srv, "data-break-page.htmlclay", breaking)
-	before := len(listVersionNames(t, srv, g))
 	w = postDataWrite(t, srv, "/_/api/data-break-page.htmlclay", `{"body":"replacement"}`, nil)
-	if w.Code != 409 {
-		t.Fatalf("data API breaking write = %d %s", w.Code, w.Body.String())
+	if w.Code != 200 {
+		t.Fatalf("data API outside edit = %d %s", w.Code, w.Body.String())
 	}
-	body := decodeWriteError(t, w)
-	if body.Error != "Page format" || !strings.Contains(string(body.Details), `"code":"page-format"`) ||
-		!strings.Contains(string(body.Details), `"reason":"page-format"`) {
-		t.Fatalf("data API page format body = %+v", body)
-	}
-	if docString(t, g.AbsPath) != breaking || len(listVersionNames(t, srv, g)) != before {
-		t.Fatal("data API refusal changed disk or versions")
+	if written := docString(t, g.AbsPath); !strings.Contains(written, "replacement") || pageadmission.Inspect(written).Kind != "none" {
+		t.Fatalf("data API outside edit wrote %q", written)
 	}
 }

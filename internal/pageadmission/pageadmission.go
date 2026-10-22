@@ -290,6 +290,123 @@ func claimsYPage(source string) bool {
 	return false
 }
 
+// StripPageTag removes the page editor's merge state, the one Yjs page tag,
+// from a page document, and the whole line when the tag stands alone on it.
+// Any other input comes back unchanged.
+func StripPageTag(source string) string {
+	if Inspect(source).Kind != "yjs" {
+		return source
+	}
+	start, end, articles := locatePage(source)
+	if start < 0 || articles != 1 {
+		return source
+	}
+	from := strings.LastIndexByte(source[:start], '\n') + 1
+	to := len(source)
+	if nl := strings.IndexByte(source[end:], '\n'); nl >= 0 {
+		to = end + nl + 1
+	}
+	if strings.TrimSpace(source[from:start]) == "" && strings.TrimSpace(source[end:to]) == "" {
+		start, end = from, to
+	}
+	return source[:start] + source[end:]
+}
+
+// pageDocument reports whether source is a page document: exactly one
+// article[data-page] outside template and noscript.
+func pageDocument(source string) bool {
+	_, _, articles := locatePage(source)
+	return articles == 1
+}
+
+func tokenAttributes(z *html.Tokenizer) (string, map[string]string) {
+	name, _ := z.TagName()
+	attrs := map[string]string{}
+	for {
+		key, value, more := z.TagAttr()
+		attrs[string(key)] = string(value)
+		if !more {
+			break
+		}
+	}
+	return string(name), attrs
+}
+
+func pageScript(attrs map[string]string) bool {
+	merge, ok := attrs["merge"]
+	if !ok || merge != "page" {
+		return false
+	}
+	if _, external := attrs["src"]; external {
+		return false
+	}
+	kind := strings.ToLower(strings.TrimSpace(strings.SplitN(attrs["type"], ";", 2)[0]))
+	return containsToken(attrs["clay"], "live") && (kind == "application/json" || strings.HasSuffix(kind, "+json"))
+}
+
+// locatePage finds the byte span of the one Yjs page tag and counts the
+// article[data-page] elements outside template and noscript.
+func locatePage(source string) (start, end, articles int) {
+	start = -1
+	z := html.NewTokenizer(strings.NewReader(source))
+	offset, inert, article := 0, 0, 0
+	matched := 0
+	inside, pending := false, false
+	for {
+		token := z.Next()
+		at := offset
+		offset += len(z.Raw())
+		switch token {
+		case html.ErrorToken:
+			if matched != 1 || inside || end == 0 {
+				return -1, 0, articles
+			}
+			return start, end, articles
+		case html.StartTagToken, html.SelfClosingTagToken:
+			name, attrs := tokenAttributes(z)
+			switch name {
+			case "template", "noscript":
+				if token == html.StartTagToken {
+					inert++
+				}
+			case "article":
+				if token == html.StartTagToken {
+					if inert == 0 {
+						if _, ok := attrs["data-page"]; ok {
+							articles++
+						}
+					}
+					article++
+				}
+			case "script":
+				if token == html.StartTagToken && inert == 0 && !pending && pageScript(attrs) {
+					matched++
+					start = at
+					inside = article > 0
+					pending = true
+				}
+			}
+		case html.EndTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "template", "noscript":
+				if inert > 0 {
+					inert--
+				}
+			case "article":
+				if article > 0 {
+					article--
+				}
+			case "script":
+				if pending {
+					end = offset
+					pending = false
+				}
+			}
+		}
+	}
+}
+
 func utf16Less(a, b string) bool {
 	left, right := utf16.Encode([]rune(a)), utf16.Encode([]rune(b))
 	for i := 0; i < len(left) && i < len(right); i++ {
@@ -446,6 +563,9 @@ func conversionBase(header string) (string, error) {
 // Initial and conversion decisions also require an exact If-Match check by the caller.
 func CheckWrite(current, next, header string) (Decision, error) {
 	before, after := Inspect(current), Inspect(next)
+	if before.Kind == "yjs" && after.Kind == "none" && header == "" {
+		return Ordinary, nil
+	}
 	if before.Kind == "yjs" && after.Kind != "yjs" {
 		return "", &FormatError{}
 	}
@@ -483,6 +603,9 @@ func CheckWrite(current, next, header string) (Decision, error) {
 	}
 	if before.Kind != "none" {
 		return "", &Refusal{Reason: "invalid-source"}
+	}
+	if pageDocument(current) {
+		return Ordinary, nil
 	}
 	return Initial, nil
 }

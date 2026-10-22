@@ -305,7 +305,7 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 	written := current
 	key := ""
 	if res.Changed {
-		written = res.HTML
+		written = []byte(pageadmission.StripPageTag(string(res.HTML)))
 		key, _ = s.ensureHistoryKeyLocked(f, current)
 		if !s.versions.HasHistory(key, f.AbsPath) {
 			if _, bErr := s.versions.Backup(key, f.AbsPath, current); bErr != nil {

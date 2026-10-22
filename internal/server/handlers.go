@@ -1051,6 +1051,7 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		writePageAdmissionError(w, admissionErr)
 		return
 	}
+	body = []byte(pageadmission.StripPageTag(string(body)))
 
 	// The backup identity comes from the key resolved at first serve, never from
 	// the bytes on disk or in the body. Deriving it from disk meant that on a first
