@@ -268,7 +268,13 @@ section "Step 3: Commit & Push"
 if [ "$RESUME" = true ]; then
   info "Version already committed by the run being resumed"
 else
+  if changelog-section --repo . --release "${NEW_VERSION}" --name htmlclay < /dev/null; then
+    success "CHANGELOG.md has the v${NEW_VERSION} section"
+  else
+    warn "changelog-section could not draft the v${NEW_VERSION} section; releasing without one"
+  fi
   git add cmd/htmlclay/main.go website/index.html
+  if [ -f CHANGELOG.md ]; then git add CHANGELOG.md; fi
   git commit -m "chore: release v${NEW_VERSION}"
   success "Committed version bump"
 fi

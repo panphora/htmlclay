@@ -5,36 +5,37 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ## [Unreleased]
 
-### Added
+## [1.13.6] - 2026-10-17
 
+### Added
 - **The data API reads rules that start with `:scope`.** A nested rule such as
   `:scope > section.checklist` now matches the rows directly inside its context, as ClayJS reads it,
   so the Kanban template's data opens in HTML Clay instead of failing with "Invalid selector".
-- **One port, an address per folder.** HTML Clay serves every folder from one port, 1212 unless it
-  is taken, at an address such as `http://htmlclay.localhost:1212/`. The address is chosen once per folder
-  and never changes, so bookmarks survive restarts and opening a file again lands on the same page
-  data. If another program holds the port at launch, a dialog names it and offers to quit it, move
-  HTML Clay to a new port, or quit.
-- **AI editing is built in.** Select text in any HTML file that loads ClayJS, press ⌘J, and say
-  what you want: HTML Clay runs Claude Code, Fable or Codex on your computer with no tools, and the
-  rewrite appears in place until you keep or revert it. It is on by default, needs no declaration
-  or approval prompt, and never takes the document's handler slot. Turn it off with **AI Editing**
-  in the tray. A request needs the document's `Save-Token`, one runs per document at a time, and
-  `@name.ext` context stays inside the document's folder. agy is refused, because it can read files
-  without asking.
-- **AI editing names the agent it runs and falls back when the default program is missing.** The
-  first status names Claude Code, Fable or Codex, and requests that name no agent use the other
-  built in program if the built in default is unavailable; explicit agents never fall back.
-- **`POST /_/api/<file>` writes JSON into a document.** The body is applied through the page's
-  own `api` rules tag, the same map `GET /_/api` reads with, and only content is written: text as
-  text, and attributes that cannot run script. Only the changed elements are rewritten, so every
-  other byte of the file stays as it was. The write is versioned and reaches open tabs like a save.
-  A local program needs nothing extra, and a browser page must send the file's `Save-Token`.
-- **The data API sends an `ETag`**, and a write carrying `If-Match` is refused with `412` when
-  the file changed since it was read.
+
+### Fixed
+- **An empty attribute reads as `""`, and writing `null` removes it.** The data API matches
+  ClayJS again: a present but empty attribute such as Kanban's `data-done=""` used to read as `null`
+  and could not be written back.
+
+## [1.13.5] - 2026-10-15
+
+### Added
+- **`htmlclay update-now` asks the running copy of HTML Clay to update now.** It answers only the app that is the same install, on macOS it starts a Sparkle check and install, and the app advertises the command with `HCUpdateNowCommand`.
 
 ### Changed
+- **A running app is never replaced by an update it refused, after a rollback, or by an older version.** An install interrupted halfway leaves the next run able to finish the swap.
 
+## [1.13.4] - 2026-10-15
+
+### Added
+- **HTML Clay updates itself on Windows and Linux.** A background check verifies a signed update feed, downloads and stages the new version, and the tray row becomes Restart to Update.
+- **On macOS, HTML Clay updates itself through Sparkle.** The tray offers Restart to Update once the update is ready, and falls back to the download link when Sparkle is missing or cannot update this copy.
+- **An update restart keeps saves and open tabs.** Every open document comes back at the address it had, with its save token and grants, and a write that arrives during the restart is answered with a retry.
+- **An update that fails to start puts the previous version back.** That version is skipped from then on, and the open sessions move back with it.
+
+## [1.13.3] - 2026-10-14
+
+### Changed
 - **Folder addresses are htmlclay, htmlclay1, htmlclay2, and the default port is 1212.** The 1.13.1
   addresses, such as `notes-3f2a.localhost:24190`, become `htmlclay.localhost:1212`,
   `htmlclay1.localhost:1212` and so on, in the order folders are first served. The move happens once, on
@@ -42,25 +43,113 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
   the browser under them starts over.
 - **If every default port is taken, HTML Clay picks a random free port** between 10000 and 32767 and keeps it,
   instead of quitting. The defaults are 1212, 4545, 9797, 3434 and 1111.
+
+## [1.13.2] - 2026-10-12
+
+### Added
+- **A program that is not a browser reaches a folder's data API at `127.0.0.1:<port>` without knowing the folder's hostname.** It names the file by the home-relative path the address bar shows, and a path no open folder serves answers `404` with a message saying no folder is open.
+- **`htmlclay wire --port` finds the folder when it is given HTML Clay's own port**, instead of asking for the folder's hostname.
+
+## [1.13.1] - 2026-10-12
+
+### Added
+- **One port, an address per folder.** HTML Clay serves every folder from one port, 1212 unless it
+  is taken, at an address such as `http://htmlclay.localhost:1212/`. The address is chosen once per folder
+  and never changes, so bookmarks survive restarts and opening a file again lands on the same page
+  data. If another program holds the port at launch, a dialog names it and offers to quit it, move
+  HTML Clay to a new port, or quit.
+
+### Changed
 - **Old `127.0.0.1:<port>` bookmarks redirect to the new address while their port is free.** Browser
   storage written under an old address does not carry over; the first launch says so once.
 - **`htmlclay wire` takes `--origin` for an HTML Clay address**; `--port` is for Hyperclay Local.
 - **Links between folders work under the default referrer policy**; a page that sets `no-referrer`
   cannot link to another folder.
-- **The document-programs prompt no longer remembers a refusal.** Deny, Return, Escape, closing it or letting it time out applies to that open only, and the next double click asks again. Refusals stored by earlier versions are dropped. If exactly one program with that name is allowed for any document, a document that refused it now uses it without asking. The prompt shows the program path behind each name and asks which one when several share a name.
-- **`no-data` and `editor-ui` regions are invisible to the data API**, on reads as well as writes,
-  matching hyper-html-api.
+- **The format is called a malleable document** in HTML Clay's own copy, with the old name left in addresses, identifiers and history.
 
 ### Note
-
 - **Downgrading to 1.13 drops `port`, `siteSlugs` and `retiredSlugs` from `config.json`** on its next
   save (unknown fields are discarded), so the addresses are chosen afresh on the next upgrade.
 
 ### Fixed
+- **A double-clicked file or a Start on Login launch no longer opens a terminal window on Windows.** `htmlclay wire` still prints in a terminal.
+- **PowerShell dialogs, the browser launch and an AI editing agent no longer open console windows of their own on Windows.**
+- **Dialogs and prompts come to the front on Windows**, including the error a forwarded open shows and the Trust this folder prompt, which now uses the real button labels.
+- **Trust a Folder on Windows opens the modern Explorer-style picker**, a browser navigation to a path outside the folder gets a plain `403` page instead of a read prompt naming the page, and Stop Trusting labels its refusing button Cancel.
+- **A save on Windows replaces a file another program has open.**
+- **Exporting a file confirms the zip with an ordinary notice**, and says something only when the Downloads folder cannot be opened.
 
-- **An empty attribute reads as `""`, and writing `null` removes it.** The data API matches
-  ClayJS again: a present but empty attribute such as Kanban's `data-done=""` used to read as `null`
-  and could not be written back.
+## [1.13.0] - 2026-10-08
+
+### Added
+- **Export an open file and its attachments as a zip.** A tray submenu lists every open document; choosing one writes `<name>.zip` to Downloads, holding the document and its `assets-<name>` folder under one folder, and opens Downloads.
+- **Uploads live in `~/htmlclay/uploads` and every site serves them at `/_/uploads/`.** A document links its files by host path, so they stay with it when it moves, and a zip export carries them along.
+- **A profile name that travels with your files.** Profile in the tray turns on Use My Profile in Files and sets the name a document reports under `document.people.me` in `/_/meta`, and the id it mints survives renames and toggles.
+- **The Programs menu lists every open document's helpers with their state**, such as allowed, approval needed, denied for this open, or a program file that has gone missing.
+
+### Changed
+- **A bookmark to a remembered port now lands on the folder's current address.** A navigation to a port that no longer serves the folder redirects to where it is served now, and a folder that is no longer trusted keeps its old address on the recovery page.
+- **An uploaded file is never served back as a page.** Uploads refuse web-page and script types, an attachment is sent with `nosniff` and an explicit type, and a page type found inside an `assets-` folder is handed over as a download.
+- **The uploads library is never served as a page**, its names are keyed per folder so a name learned in one folder says nothing about another's, and a symlinked `~/htmlclay` no longer exposes it.
+
+### Fixed
+- **Start on Login works on macOS.** The LaunchAgent is written as plain text, so launchd accepts it and the app starts at login.
+- **A file of exactly the advertised 25 MiB is accepted on upload**, and an upload never lands half written: bytes go to a hidden temporary file and are published in one step inside the document's folder.
+- **An upload's token stays out of the access log.**
+- **Configure an Open File picks the registration whose name matches** when several share the chosen program.
+
+## [1.12.0] - 2026-10-04
+
+### Added
+- **AI editing names the agent it runs and falls back when the default program is missing.** The
+  first status names Claude Code, Fable or Codex, and requests that name no agent use the other
+  built in program if the built in default is unavailable; explicit agents never fall back.
+- **A served document names the version it was served from** in a `documentetag` attribute on `<html>`, so a tab can tell the version it opened from the one on disk now. The attribute is response metadata and is never written to the file.
+
+## [1.11.0] - 2026-10-03
+
+### Added
+- **A write can carry its own rules.** Sending JSON to a document's page address with a `data` parameter writes through those rules instead of the document's `api` rules tag, and sending `data` twice is refused with a message asking for one.
+- **`/_/meta` announces `data-read` and `data-write`**, so a caller can see the JSON API is available before trying it.
+
+## [1.10.1] - 2026-10-01
+
+### Added
+- **AI editing is built in.** Select text in any HTML file that loads ClayJS, press ⌘J, and say
+  what you want: HTML Clay runs Claude Code, Fable or Codex on your computer with no tools, and the
+  rewrite appears in place until you keep or revert it. It is on by default, needs no declaration
+  or approval prompt, and never takes the document's handler slot. Turn it off with **AI Editing**
+  in the tray. A request needs the document's `Save-Token`, one runs per document at a time, and
+  `@name.ext` context stays inside the document's folder. agy is refused, because it can read files
+  without asking.
+- **AI editing keeps `@file` context to ordinary files in the document's folder**, refusing dotfiles, dot folders and HTML Clay's own state, by name and after symlinks.
+- **An AI editing reply stops at 4 MiB.**
+
+## [1.10.0] - 2026-09-28
+
+### Added
+- **`POST /_/api/<file>` writes JSON into a document.** The body is applied through the page's
+  own `api` rules tag, the same map `GET /_/api` reads with, and only content is written: text as
+  text, and attributes that cannot run script. Only the changed elements are rewritten, so every
+  other byte of the file stays as it was. The write is versioned and reaches open tabs like a save.
+  A local program needs nothing extra, and a browser page must send the file's `Save-Token`.
+- **The data API sends an `ETag`**, and a write carrying `If-Match` is refused with `412` when
+  the file changed since it was read.
+- **Trusted folders stay trusted across a macOS reboot.** Folders are pinned by volume and inode rather than by the device number macOS renumbers on mount, and a trusted folder whose folder is gone answers with a page saying it needs approving again.
+
+### Changed
+- **The document-programs prompt no longer remembers a refusal.** Deny, Return, Escape, closing it or letting it time out applies to that open only, and the next double click asks again. Refusals stored by earlier versions are dropped. If exactly one program with that name is allowed for any document, a document that refused it now uses it without asking. The prompt shows the program path behind each name and asks which one when several share a name.
+- **`no-data` and `editor-ui` regions are invisible to the data API**, on reads as well as writes,
+  matching hyper-html-api.
+- **A browser page proves it holds the file's `Save-Token` before the data API looks the file up**, and every failure answers the same way, so a page cannot tell a missing file from one it may not write. A write against a read-only rule answers `400`.
+
+### Fixed
+- **Data API writes land in documents that start with a byte order mark, and in SVG or MathML markup**, whose camelCase names now pair case-insensitively.
+
+## [1.9.1] - 2026-09-24
+
+### Changed
+- **`htmlclay wire` reads the folders Hyperclay Local serves from where that app actually publishes them**, and looks past a remembered folder that does not serve the file, so a file still reaches the app that serves it.
 
 ## [1.9.0] - 2026-08-30
 
