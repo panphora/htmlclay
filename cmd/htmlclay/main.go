@@ -23,7 +23,7 @@ import (
 	"github.com/panphora/htmlclay/internal/versions"
 )
 
-var version = "1.13.6"
+var version = "1.13.7"
 
 //go:embed example.htmlclay
 var exampleHTML []byte

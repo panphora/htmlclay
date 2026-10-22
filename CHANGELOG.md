@@ -5,6 +5,17 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ## [Unreleased]
 
+## [1.13.7] - 2026-10-22
+
+### Added
+- HTML Clay advertises the page extension, so editors mount a writable Yjs page on this host.
+
+### Changed
+- Saving a document that holds a converted page with a hybrid, mixed or missing page capture is refused with the same error codes as hosted Hyperclay, and nothing is written.
+- A hybrid page converts only with a valid `source=file` Page-Conversion header and one current `If-Match` stamp.
+- Saves and data writes no longer store the editor's `merge="page"` tag. Open tabs keep sharing the page through their tab-hosted room, and a fresh open rebuilds the page from its article.
+- A save without the `merge="page"` tag counts as an outside edit, and a stored page document saved with its tag is an ordinary save rather than a first conversion.
+
 ## [1.13.6] - 2026-10-17
 
 ### Added
