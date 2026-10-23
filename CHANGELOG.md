@@ -5,6 +5,16 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ## [Unreleased]
 
+## [1.13.8] - 2026-10-23
+
+### Added
+- A document can link `/tailwindcss/<name>.css` to get a stylesheet built from the classes that document uses, with Tailwind v4.1.17, typography, forms in class mode and the ClayJS ephemeral variant.
+- The Tailwind compiler ships inside the binary and is unpacked on first use, so stylesheets build with no network and the one-file self-update keeps working on Linux and Windows.
+- The stylesheet is built from the page that asked for it, then `<name>.html`, then `<name>.htmlclay`, and only from a registered document or one inside an opened folder. The document itself is never modified.
+- Built stylesheets are cached under the config directory by a fingerprint of the compiler and the document's class list. Builds run one at a time per process and finish even if the request that started them drops.
+- A build that fails answers an empty `no-store` stylesheet and logs the failure once.
+- Paths under `/tailwindcss/` that are not `.css` fall through to the ordinary file handler, so a real `~/tailwindcss/` folder keeps working.
+
 ## [1.13.7] - 2026-10-22
 
 ### Added
