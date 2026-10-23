@@ -48,13 +48,23 @@ mkdir -p "$MACOS" "$RESOURCES" "$FRAMEWORKS"
 # UPDATE_CHANNEL is set only by the release workflow. A local build leaves it
 # empty, so it never updates itself from a published release.
 LDFLAGS="-s -w -X main.version=${VERSION} -X main.updateChannel=${UPDATE_CHANNEL:-}"
+require_tailwind() {
+  go version -m "$1" | grep -q -- '-tags=tailwind_bundle' || { echo "error: $1 was built without the Tailwind bundle" >&2; exit 1; }
+}
 if [ "$UNIVERSAL" = true ]; then
-  CGO_ENABLED=1 GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay-arm64" ./cmd/htmlclay
-  CGO_ENABLED=1 GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay-amd64" ./cmd/htmlclay
+  GOOS= GOARCH= go run ./cmd/fetchtailwind -goos darwin -goarch arm64
+  GOOS= GOARCH= go run ./cmd/fetchtailwind -goos darwin -goarch amd64
+  CGO_ENABLED=1 GOARCH=arm64 go build -tags tailwind_bundle -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay-arm64" ./cmd/htmlclay
+  CGO_ENABLED=1 GOARCH=amd64 go build -tags tailwind_bundle -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay-amd64" ./cmd/htmlclay
+  require_tailwind "$MACOS/htmlclay-arm64"
+  require_tailwind "$MACOS/htmlclay-amd64"
   lipo -create -output "$MACOS/htmlclay" "$MACOS/htmlclay-arm64" "$MACOS/htmlclay-amd64"
   rm -f "$MACOS/htmlclay-arm64" "$MACOS/htmlclay-amd64"
 else
-  CGO_ENABLED=1 go build -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay" ./cmd/htmlclay
+  target_goarch="$(go env GOARCH)"
+  GOOS= GOARCH= go run ./cmd/fetchtailwind -goos darwin -goarch "$target_goarch"
+  CGO_ENABLED=1 go build -tags tailwind_bundle -trimpath -ldflags="$LDFLAGS" -o "$MACOS/htmlclay" ./cmd/htmlclay
+  require_tailwind "$MACOS/htmlclay"
 fi
 
 # Copy Info.plist and inject version using plutil

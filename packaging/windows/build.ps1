@@ -23,11 +23,30 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+$tailwindArch = (go env GOARCH)
+$savedGoarch = $env:GOARCH
+$savedGoos = $env:GOOS
+$env:GOARCH = $null
+$env:GOOS = $null
+go run ./cmd/fetchtailwind -goos windows -goarch $tailwindArch
+$fetchExit = $LASTEXITCODE
+$env:GOARCH = $savedGoarch
+$env:GOOS = $savedGoos
+if ($fetchExit -ne 0) {
+    Write-Error "fetchtailwind failed"
+    exit $fetchExit
+}
+
 $env:CGO_ENABLED = "0"
-go build -trimpath -ldflags="-s -w -X main.version=$($env:VERSION)" -o htmlclay.exe ./cmd/htmlclay
+go build -tags tailwind_bundle -trimpath -ldflags="-s -w -X main.version=$($env:VERSION)" -o htmlclay.exe ./cmd/htmlclay
 if ($LASTEXITCODE -ne 0) {
     Write-Error "go build failed"
     exit $LASTEXITCODE
+}
+
+if (-not (go version -m htmlclay.exe | Select-String -SimpleMatch -- '-tags=tailwind_bundle')) {
+    Write-Error "htmlclay.exe was built without the Tailwind bundle"
+    exit 1
 }
 
 Write-Host "Built htmlclay.exe v$($env:VERSION)"

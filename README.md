@@ -143,6 +143,16 @@ No HTML travels between the two: the page sends a small request, your program ed
 
 See [`docs/wire.md`](docs/wire.md) for the page API, the handler contract, the CLI, and the security model.
 
+## Style a document with Tailwind
+
+Link a stylesheet named `/tailwindcss/<name>.css` and HTML Clay builds it from the classes the document uses, the same way [Hyperclay](https://hyperclay.com) and Hyperclay Local do:
+
+```html
+<link rel="stylesheet" href="/tailwindcss/notes.css">
+```
+
+The stylesheet comes from the page that asked for it, so a document keeps its styles after a rename or a copy, and HTML Clay never edits the link or anything else in your file. It uses Tailwind v4 with the typography and forms (class mode) plugins and an `ephemeral-<word>:` variant for ClayJS's per-tab `ephemeral` attribute. Tailwind's compiler ships inside HTML Clay and runs on your computer: nothing is downloaded, and nothing leaves the machine. The first stylesheet after a change takes about a second to build; after that it comes from a cache until the document changes.
+
 ## Why does this need to exist?
 
 Every other document format has self-saving figured out. Photoshop files open, edit, save. Word documents open, edit, save. Even macro-laden Excel spreadsheets — which execute arbitrary code — open, edit, save.
@@ -204,6 +214,7 @@ This menu is generic; Search's specific contract belongs in its own README.
 | `GET` | `/_/read/{token}` | Return raw file contents |
 | `POST` | `/_/save/{token}` | Write updated HTML back to disk (atomic write) |
 | `GET` | `/_/meta/{token}` | Return file metadata (path, size, modification time) |
+| `GET` | `/tailwindcss/{name}.css` | Tailwind stylesheet compiled from the requesting document (or `{name}.html`, then `{name}.htmlclay`) |
 | `GET` | `/{path}?data={…}` | Extract JSON from the file using rules you supply |
 | `GET` | `/_/api/{path}` | Extract JSON using caller `data` rules, or the embedded mapping |
 | `POST` | `/_/api/{path}` | Write JSON using caller `data` rules, or the embedded mapping |
@@ -344,6 +355,7 @@ internal/session/    Cryptographic token generation, file↔token mapping, held 
 internal/trust/      The rules about which folders may be trusted, and on whose say-so
 internal/dataapi/    Reading a document as JSON, with its vendored conformance corpus
 internal/versions/   Save history: every write keeps a restorable previous version
+internal/tailwind/   Builds a document's Tailwind stylesheet with the bundled Tailwind CLI
 internal/browser/    Opening a URL in the system's default browser
 internal/htmlutil/   Inject/strip savetoken and documentid attributes in <html> tag
 internal/config/     Persist settings to OS config dir (~/Library/Application Support, ~/.config, %APPDATA%)
@@ -444,6 +456,11 @@ To build from a checkout instead:
 ```bash
 # Build the binary
 make build
+
+# Build the binary with the Tailwind compiler bundled (downloads the pinned
+# Tailwind release once; `make build` leaves it out and /tailwindcss/ answers
+# an empty stylesheet)
+make build-tailwind
 
 # Run tests
 make test

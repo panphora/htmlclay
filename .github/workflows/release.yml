@@ -113,10 +113,18 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Fetch Tailwind
+        run: go run ./cmd/fetchtailwind -goos linux -goarch ${{ matrix.goarch }}
+
+      - name: Test the Tailwind bundle
+        if: matrix.goarch == 'amd64'
+        run: go test -tags tailwind_bundle ./internal/tailwind/ -count=1
+
       - name: Build
         run: |
           GOOS=linux GOARCH=${{ matrix.goarch }} \
-            go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }} -X main.updateChannel=stable" -o htmlclay ./cmd/htmlclay
+            go build -tags tailwind_bundle -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }} -X main.updateChannel=stable" -o htmlclay ./cmd/htmlclay
+          go version -m htmlclay | grep -q -- '-tags=tailwind_bundle'
         env:
           CGO_ENABLED: "0"
 
@@ -192,12 +200,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: pwsh
 
+      - name: Fetch Tailwind
+        run: |
+          go run ./cmd/fetchtailwind -goos windows -goarch ${{ matrix.goarch }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        shell: pwsh
+
+      - name: Test the Tailwind bundle
+        if: matrix.goarch == 'amd64'
+        run: go test -tags tailwind_bundle ./internal/tailwind/ -count=1
+        shell: pwsh
+
       - name: Build
         run: |
           $env:CGO_ENABLED = "0"
           $env:GOARCH = "${{ matrix.goarch }}"
-          go build -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }} -X main.updateChannel=stable" -o htmlclay.exe ./cmd/htmlclay
+          go build -tags tailwind_bundle -trimpath -ldflags="-s -w -X main.version=${{ inputs.version }} -X main.updateChannel=stable" -o htmlclay.exe ./cmd/htmlclay
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (go version -m htmlclay.exe | Select-String -SimpleMatch -- '-tags=tailwind_bundle')) { Write-Error "built without the Tailwind bundle"; exit 1 }
         shell: pwsh
 
       - name: Install TrustedSigning module
@@ -304,6 +324,11 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN"
           security default-keychain -s "$KEYCHAIN"
           rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Test the Tailwind bundle
+        run: |
+          go run ./cmd/fetchtailwind -goos darwin -goarch arm64
+          go test -tags tailwind_bundle ./internal/tailwind/ -count=1
 
       - name: Build, sign & notarize (universal)
         env:

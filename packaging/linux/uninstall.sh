@@ -1,10 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# Undoes install.sh. It deliberately does not touch ~/.config/htmlclay: that
-# directory holds the trusted-folder list and every saved version of every file
-# HTML Clay has ever written, which is user data that happens to live next to the
-# program rather than part of the installation.
+# Undoes install.sh. It leaves ~/.config/htmlclay alone except the extracted
+# Tailwind compiler in ~/.config/htmlclay/tailwind, which is a copy of what the
+# binary carried rather than user data. The rest of that directory holds the
+# trusted-folder list and every saved version of every file HTML Clay has ever
+# written, which is user data that happens to live next to the program rather
+# than part of the installation.
 
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -36,6 +38,15 @@ for dir in "$BIN_DIR" "$HOME/.local/bin" /usr/local/bin; do
   echo "Removed $target"
   removed=1
 done
+
+# The extracted Tailwind compiler is a copy of what the binary carried, not user
+# data, so it goes with the program.
+tailwind_dir="$CONFIG_DIR/htmlclay/tailwind"
+if [ -d "$tailwind_dir" ]; then
+  rm -rf "$tailwind_dir"
+  echo "Removed $tailwind_dir"
+  removed=1
+fi
 
 remove "$DATA_DIR/applications/htmlclay.desktop"
 remove "$DATA_DIR/mime/packages/htmlclay-mime.xml"

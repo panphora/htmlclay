@@ -97,6 +97,11 @@ jobs:
         with:
           node-version: "24"
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/htmlclay-build/tailwind
+          key: tailwind-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('internal/tailwind/assets.go') }}
+
       - name: Build the Linux binary the tarball ships
         run: bash packaging/linux/build.sh
 

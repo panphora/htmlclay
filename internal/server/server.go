@@ -73,6 +73,18 @@ type Server struct {
 	openDenied     []string
 	trustDenied    []string
 	autoRegistered int
+
+	// tailwindCompile builds the stylesheet a document links. It is injected so a
+	// test can answer without a compiler, and so a build with no Tailwind binary
+	// still answers the route (with an empty stylesheet).
+	tailwindCompile func(ctx context.Context, html []byte) ([]byte, error)
+	// tailwindMu guards tailwindLogged. Compiles themselves are serialized by the
+	// package-level tailwindCompileMu, because the app builds one Server per folder.
+	tailwindMu sync.Mutex
+	// tailwindLogged is guarded by tailwindMu. It remembers the compiles that
+	// already logged a failure, so a page retrying a broken stylesheet every load
+	// fills the log once.
+	tailwindLogged map[string]bool
 }
 
 // UploadsLibraryDir is the one folder on this computer every upload lands in,
@@ -172,7 +184,10 @@ func newServer(sessions *session.Manager, logger *logging.Logger, store *version
 		watcher:  ls.watcher,
 		coord:    ls.coord,
 		wire:     newWireHub(),
+
+		tailwindLogged: map[string]bool{},
 	}
+	s.tailwindCompile = s.compileTailwind
 	// Not fatal: a server with no home directory still serves every document, it
 	// just cannot store or answer an upload.
 	s.uploadsDir, _ = ResolvedUploadsLibraryDir()
@@ -261,6 +276,11 @@ func newServer(sessions *session.Manager, logger *logging.Logger, store *version
 	// the one per-computer folder rather than read as a file under home. No token:
 	// an <img> carries none. HostValidationMiddleware still wraps the whole mux.
 	mux.HandleFunc("GET /_/uploads/{path...}", s.handleLibraryUpload)
+
+	// A document that links /tailwindcss/<name>.css gets a stylesheet compiled from
+	// that document's own HTML. Registered ahead of the catch-all, which would
+	// otherwise read the name as a file under home and 403 for want of a token.
+	mux.HandleFunc("GET /tailwindcss/{path...}", s.handleTailwind)
 
 	mux.HandleFunc("GET /{path...}", s.handleServeFile)
 

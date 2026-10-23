@@ -1,4 +1,4 @@
-.PHONY: build test clean sync-conformance sync-selector-parity differential dist-macos dist-macos-unsigned dist-linux dist-windows
+.PHONY: build build-tailwind test clean fetch-tailwind sync-conformance sync-selector-parity differential dist-macos dist-macos-unsigned dist-linux dist-windows
 
 # Where the conformance corpus is generated. Only needed by sync-conformance; the vendored copy
 # under internal/dataapi/testdata is checked in so `go test` never needs node or a sibling checkout.
@@ -19,6 +19,18 @@ endif
 
 build:
 	CGO_ENABLED=$(CGO) go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/htmlclay
+ifeq ($(shell uname -s),Darwin)
+	codesign -f -s - $(BINARY)
+endif
+
+# Fetches the pinned Tailwind binary for this machine into internal/tailwind/blobs
+# (gitignored). Release builds do this themselves; run it once to try Tailwind
+# in a local build.
+fetch-tailwind:
+	GOOS= GOARCH= go run ./cmd/fetchtailwind -goos $(shell go env GOOS) -goarch $(shell go env GOARCH)
+
+build-tailwind: fetch-tailwind
+	CGO_ENABLED=$(CGO) go build -tags tailwind_bundle -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/htmlclay
 ifeq ($(shell uname -s),Darwin)
 	codesign -f -s - $(BINARY)
 endif
