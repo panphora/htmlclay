@@ -433,6 +433,7 @@
       text-align: center;
     }
   </style>
+  <script src="https://signal.hyperclay.com/v1.js" defer></script>
 </head>
 <body>
   <main class="wrap">
@@ -455,7 +456,7 @@
     </div>
 
     <div class="cta">
-      <a id="download-btn" class="btn" href="#downloads" download><span id="download-label">Download</span></a>
+      <a id="download-btn" class="btn" href="#downloads" download data-hv-goal="download" data-hv-where="hero" data-hv-os="unknown"><span id="download-label">Download</span></a>
       <div class="trust">Free. No account. Works offline.</div>
       <div class="sub" id="download-sub"><a href="#downloads">See all downloads</a></div>
     </div>
@@ -763,31 +764,31 @@
       <div class="dl">
         <div class="dl-row">
           <div class="os">macOS <span>Universal (Apple Silicon + Intel), signed and notarized</span></div>
-          <div class="filecol"><a class="file" data-mac-dmg href="https://download.htmlclay.com/HTMLClay-1.13.8-universal.dmg" download>HTMLClay-1.13.8-universal.dmg</a>
+          <div class="filecol"><a class="file" data-mac-dmg href="https://download.htmlclay.com/HTMLClay-1.13.8-universal.dmg" download data-hv-goal="download" data-hv-where="list" data-hv-os="mac" data-hv-arch="universal">HTMLClay-1.13.8-universal.dmg</a>
             <code class="dl-hash" data-sha256="HTMLClay-1.13.8-universal.dmg">68bb9d97679184b9af5ca9291131e177fcc4aeff62300240a43849bd152c24cf</code>
           </div>
         </div>
         <div class="dl-row">
           <div class="os">Windows <span>64-bit Intel or AMD, signed</span></div>
-          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-windows-amd64.zip" download>htmlclay-windows-amd64.zip</a>
+          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-windows-amd64.zip" download data-hv-goal="download" data-hv-where="list" data-hv-os="windows" data-hv-arch="amd64">htmlclay-windows-amd64.zip</a>
             <code class="dl-hash" data-sha256="htmlclay-windows-amd64.zip">d02c82e7168e64e36e924ff6b53070a4a1537167524de573c568ab69dd3e3821</code>
           </div>
         </div>
         <div class="dl-row">
           <div class="os">Windows <span>ARM64, signed</span></div>
-          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-windows-arm64.zip" download>htmlclay-windows-arm64.zip</a>
+          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-windows-arm64.zip" download data-hv-goal="download" data-hv-where="list" data-hv-os="windows" data-hv-arch="arm64">htmlclay-windows-arm64.zip</a>
             <code class="dl-hash" data-sha256="htmlclay-windows-arm64.zip">6dcb25662886a59d80af1c8b924f16c40316311dff4f0ed6a7a807d66b109079</code>
           </div>
         </div>
         <div class="dl-row">
           <div class="os">Linux <span>x86_64</span></div>
-          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-linux-amd64.tar.gz" download>htmlclay-linux-amd64.tar.gz</a>
+          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-linux-amd64.tar.gz" download data-hv-goal="download" data-hv-where="list" data-hv-os="linux" data-hv-arch="amd64">htmlclay-linux-amd64.tar.gz</a>
             <code class="dl-hash" data-sha256="htmlclay-linux-amd64.tar.gz">4ec72e90072d42b41654802e466c4b4433c9987debcbe05ad4a6a9b258ceffc2</code>
           </div>
         </div>
         <div class="dl-row">
           <div class="os">Linux <span>ARM64</span></div>
-          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-linux-arm64.tar.gz" download>htmlclay-linux-arm64.tar.gz</a>
+          <div class="filecol"><a class="file" href="https://download.htmlclay.com/htmlclay-linux-arm64.tar.gz" download data-hv-goal="download" data-hv-where="list" data-hv-os="linux" data-hv-arch="arm64">htmlclay-linux-arm64.tar.gz</a>
             <code class="dl-hash" data-sha256="htmlclay-linux-arm64.tar.gz">a8a4dfdee2ba942287f0389b473b3c26f14f38a5abdc1096489001f9b21df173</code>
           </div>
         </div>
@@ -808,7 +809,7 @@
       </p>
       <p class="dl-note">
         <b>Checking what you downloaded.</b> Every file's SHA-256 is listed in
-        <a href="https://download.htmlclay.com/SHA256SUMS">SHA256SUMS</a>. Hash your copy and compare it
+        <a href="https://download.htmlclay.com/SHA256SUMS" data-hv-goal="download" data-hv-where="index" data-hv-os="unknown">SHA256SUMS</a>. Hash your copy and compare it
         with the matching line: <span class="filechip">sha256sum &lt;file&gt;</span> on Linux,
         <span class="filechip">shasum -a 256 &lt;file&gt;</span> on macOS,
         <span class="filechip">certutil -hashfile &lt;file&gt; SHA256</span> on Windows.
@@ -858,6 +859,7 @@
 
       if (primary[os]) {
         btn.href = primary[os].url;
+        btn.dataset.hvOs = os;
         label.textContent = primary[os].label;
         sub.innerHTML = primary[os].note + ' &middot; <a href="#downloads">all downloads</a>';
         if (primary[os].trust) {
