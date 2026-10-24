@@ -469,3 +469,58 @@ func TestStripPageTagVectors(t *testing.T) {
 		})
 	}
 }
+
+func untaggedTemplate(t *testing.T) (string, string) {
+	t.Helper()
+	fixture, err := os.ReadFile("testdata/untagged-page-template.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor, err := os.ReadFile("testdata/ypage-template.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagLine := ""
+	for _, line := range strings.SplitAfter(string(editor), "\n") {
+		if strings.HasPrefix(line, `<script type="application/json" merge="page" `) {
+			tagLine = line
+		}
+	}
+	if tagLine == "" {
+		t.Fatal("testdata/ypage-template.html has no page tag")
+	}
+	source := string(fixture)
+	at := strings.Index(source, "<article")
+	if at < 0 {
+		t.Fatal("testdata/untagged-page-template.html has no article")
+	}
+	return source, source[:at] + tagLine + source[at:]
+}
+
+func TestUntaggedTemplateInspectsAsNone(t *testing.T) {
+	fixture, _ := untaggedTemplate(t)
+	if got := Inspect(fixture); got.Kind != "none" {
+		t.Fatalf("inspection = %+v, want none", got)
+	}
+	if got := StripPageTag(fixture); got != fixture {
+		t.Fatalf("StripPageTag =\n%q\nwant\n%q", got, fixture)
+	}
+}
+
+func TestUntaggedTemplateFirstSaveIsOrdinary(t *testing.T) {
+	current, next := untaggedTemplate(t)
+	decision, err := CheckWrite(current, next, "")
+	if err != nil {
+		t.Fatalf("error = %v, want no refusal", err)
+	}
+	if decision != Ordinary {
+		t.Fatalf("decision = %s, want %s", decision, Ordinary)
+	}
+}
+
+func TestUntaggedTemplateSaveStripsSeededTag(t *testing.T) {
+	fixture, next := untaggedTemplate(t)
+	if got := StripPageTag(next); got != fixture {
+		t.Fatalf("StripPageTag =\n%q\nwant\n%q", got, fixture)
+	}
+}
