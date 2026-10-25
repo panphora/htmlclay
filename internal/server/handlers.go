@@ -183,6 +183,10 @@ type documentMeta struct {
 	// It lives in the document block, and so is withheld from a caller who may not
 	// read the document, for the same reason the etag is: both describe one file.
 	SaveID string `json:"saveId,omitempty"`
+	// Writable is what this session may do, not what the file is: it is the same
+	// admission handleSave applies before it reads a body, so a client can offer
+	// Edit only where a save would be admitted. Always present, true or false.
+	Writable bool `json:"writable"`
 	// §9: a host that announces `upload` caps the size it accepts and REPORTS that
 	// cap here. Without it a conforming client does not upload at all and does not
 	// probe the route to find out, so announcing the capability while omitting this
@@ -1410,6 +1414,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		Document: &documentMeta{
 			Etag:         storedEtag,
 			SaveID:       saveID,
+			Writable:     !s.trustedWriteRevoked(f),
 			WireBudgetMS: helper.StructuredDeadline,
 			MaxBytes:     maxSaveSize,
 			Versions:     true,
