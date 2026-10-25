@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -260,5 +261,91 @@ func TestPageAdmissionDataAPI(t *testing.T) {
 	}
 	if written := docString(t, g.AbsPath); !strings.Contains(written, "replacement") || pageadmission.Inspect(written).Kind != "none" {
 		t.Fatalf("data API outside edit wrote %q", written)
+	}
+}
+
+type lineageWrite struct {
+	Name    string `json:"name"`
+	Current string `json:"current"`
+	Body    string `json:"body"`
+}
+
+func lineageWriteNamed(t *testing.T, name string) lineageWrite {
+	t.Helper()
+	raw, err := os.ReadFile("../pageadmission/testdata/page-lineage.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Writes []lineageWrite `json:"writes"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatalf("parsing the page-lineage vectors: %v", err)
+	}
+	for _, w := range vectors.Writes {
+		if w.Name == name {
+			return w
+		}
+	}
+	t.Fatalf("the page-lineage vectors carry no %q", name)
+	return lineageWrite{}
+}
+
+func savePageWithWriteThroughMux(t *testing.T, srv *Server, f *session.File, body, condition, pageWrite string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/_/save/"+f.Token, strings.NewReader(body))
+	req.Host = fmt.Sprintf("127.0.0.1:%d", srv.port)
+	sameOriginHeaders(req)
+	if condition != "" {
+		req.Header.Set("If-Match", condition)
+	}
+	if pageWrite != "" {
+		req.Header.Set("Page-Write", pageWrite)
+	}
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+	return w
+}
+
+func TestPageAdmissionNothingToWriteRefused(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	seed := lineageWriteNamed(t, "seed-only-v1")
+	f := registerPageWithContent(t, srv, "lineage-page.htmlclay", seed.Current)
+	stamp := specwire.Etag([]byte(seed.Current))
+	before := listVersionNames(t, srv, f)
+	w := savePageWithWriteThroughMux(t, srv, f, seed.Body, stamp, "v1")
+	body := decode(t, w)
+	if w.Code != http.StatusConflict || body["code"] != "page-nothing-to-write" || body["reason"] != "nothing-to-write" {
+		t.Fatalf("clean enter and exit = %d %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("ETag"); got != stamp {
+		t.Fatalf("refusal etag = %q, want the current stamp %q", got, stamp)
+	}
+	if on := docString(t, f.AbsPath); on != seed.Current {
+		t.Fatalf("nothing-to-write changed disk: %q", on)
+	}
+	if after := listVersionNames(t, srv, f); len(after) != len(before) {
+		t.Fatalf("nothing-to-write recorded a version: %v to %v", before, after)
+	}
+}
+
+func TestPageAdmissionPageWriteWithoutHeaderWrites(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	seed := lineageWriteNamed(t, "seed-only-v1")
+	f := registerPageWithContent(t, srv, "lineage-nohdr-page.htmlclay", seed.Current)
+	w := savePageWithWriteThroughMux(t, srv, f, seed.Body, specwire.Etag([]byte(seed.Current)), "")
+	if w.Code != http.StatusOK || pageadmission.Inspect(docString(t, f.AbsPath)).Kind != "none" {
+		t.Fatalf("a save without Page-Write = %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPageAdmissionPageWriteWithEditWrites(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	seed := lineageWriteNamed(t, "seed-only-v1")
+	edit := lineageWriteNamed(t, "first-edit")
+	f := registerPageWithContent(t, srv, "lineage-edit-page.htmlclay", seed.Current)
+	w := savePageWithWriteThroughMux(t, srv, f, edit.Body, specwire.Etag([]byte(seed.Current)), "v1")
+	if w.Code != http.StatusOK || pageadmission.Inspect(docString(t, f.AbsPath)).Kind != "none" {
+		t.Fatalf("an edited page save = %d %s", w.Code, w.Body.String())
 	}
 }

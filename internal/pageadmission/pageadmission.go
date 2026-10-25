@@ -609,3 +609,11 @@ func CheckWrite(current, next, header string) (Decision, error) {
 	}
 	return Initial, nil
 }
+
+// NothingToWrite reports a Page body that would store exactly the bytes already on
+// disk: a page document whose body differs from current only by the page tag the
+// host strips. A clean enter and exit sends such a body; writing it would only
+// churn the file's stamp and its backups.
+func NothingToWrite(current, next string) bool {
+	return Inspect(next).Kind == "yjs" && pageDocument(current) && StripPageTag(next) == current
+}

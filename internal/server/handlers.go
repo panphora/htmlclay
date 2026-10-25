@@ -1072,6 +1072,14 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		writePageAdmissionError(w, admissionErr)
 		return
 	}
+	if decision == pageadmission.Ordinary && strings.TrimSpace(r.Header.Get("Page-Write")) == "v1" &&
+		pageadmission.NothingToWrite(string(current), string(body)) {
+		currentEtag := specwire.Etag(current)
+		f.Unlock()
+		w.Header().Set("ETag", currentEtag)
+		writePageAdmissionError(w, &pageadmission.Refusal{Reason: "nothing-to-write"})
+		return
+	}
 	body = []byte(pageadmission.StripPageTag(string(body)))
 
 	// The backup identity comes from the key resolved at first serve, never from
@@ -1524,6 +1532,8 @@ func pageAdmissionFields(err error) (int, string, string) {
 		return http.StatusConflict, "page-conversion-stale", refused.Reason
 	case "file-changed":
 		return http.StatusPreconditionRequired, "page-conversion-stale", refused.Reason
+	case "nothing-to-write":
+		return http.StatusConflict, "page-nothing-to-write", refused.Reason
 	default:
 		return http.StatusInternalServerError, "", ""
 	}
