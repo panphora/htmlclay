@@ -455,7 +455,7 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 	// served carries the durable id; the bytes on disk never do. Injecting the
 	// tracked id over whatever disk holds is also model B′'s self-heal: a file
 	// whose id was stripped or replaced externally is re-anchored on the next serve.
-	served := projectForServe(r, data)
+	served := s.projectForServe(w, r, data)
 	if id, ok := versions.IDFromKey(key); ok {
 		served = htmlutil.SetHTMLClayID(served, id)
 	}

@@ -332,8 +332,10 @@ func TestRuntimeCanonicalLiveSyncFrameReachesSubscribersProjected(t *testing.T) 
 			if !strings.Contains(html, "/_/clayjs/"+clayruntime.Selected+"/clay.js") {
 				t.Errorf("the frame was not projected:\n%s", html)
 			}
-			if !strings.Contains(html, `id="clay-runtime-map"`) {
-				t.Errorf("the projected frame carries no descriptor:\n%s", html)
+			// A frame carries no descriptor: the receiving tab already holds one, and an
+			// inserted element would shift live sync's identity map.
+			if strings.Contains(html, `id="clay-runtime-map"`) {
+				t.Errorf("the projected frame carries a descriptor:\n%s", html)
 			}
 			if !strings.Contains(html, "relayed") {
 				t.Errorf("the frame lost its content:\n%s", html)
@@ -346,4 +348,15 @@ func TestRuntimeCanonicalLiveSyncFrameReachesSubscribersProjected(t *testing.T) 
 func quoteJSONString(value string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`, "\t", `\t`)
 	return `"` + replacer.Replace(value) + `"`
+}
+
+func TestCanonicalForWriteWithoutHostReadsTheLoopbackOrigin(t *testing.T) {
+	for _, origin := range []string{"http://127.0.0.1:55600", "http://localhost:55600"} {
+		in := `<script src="` + origin + `/_/clayjs/` + clayruntime.Selected + `/clay.js"></script>`
+		got := string(canonicalForWrite("", []byte(in)))
+		want := `<script src="https://clayjs.com/` + clayruntime.Selected + `/clay.js"></script>`
+		if got != want {
+			t.Fatalf("canonicalForWrite(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

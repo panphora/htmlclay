@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -56,12 +57,22 @@ func writeRuntimeAssetMiss(w http.ResponseWriter) {
 	w.Write([]byte("Not Found"))
 }
 
+var loopbackRuntime = regexp.MustCompile(`(?i)\bhttp://((?:localhost|127\.0\.0\.1)(?::\d{1,5})?)/_/clayjs/`)
+
 // canonicalForWrite turns any ClayJS runtime URL this host projected back into its public URL and
 // drops the projection descriptor, so the bytes that become the document are host-independent.
-// Bytes with neither, and bytes that are not UTF-8, come back untouched.
+// Bytes with neither, and bytes that are not UTF-8, come back untouched. A write with no
+// request Host, such as an export, reads the document URL off the first loopback origin the
+// text names before /_/clayjs/, any port.
 func canonicalForWrite(host string, data []byte) []byte {
 	if !utf8.Valid(data) {
 		return data
+	}
+	if host == "" {
+		host = "localhost"
+		if m := loopbackRuntime.FindSubmatch(data); m != nil {
+			host = strings.ToLower(string(m[1]))
+		}
 	}
 	result := clayruntime.CanonicalizeRuntimeHTML(data, clayruntime.Releases, "http://"+host+"/")
 	if result.Changed == 0 && !result.DescriptorRemoved {
@@ -72,7 +83,8 @@ func canonicalForWrite(host string, data []byte) []byte {
 
 // projectRuntimeHTML rewrites a document's ClayJS runtime URLs to this host's bundled release,
 // naming the document by documentURL. Bytes that are not UTF-8, and documents with no runtime
-// URL to rewrite, come back untouched.
+// URL to rewrite, come back untouched. Frames carry no descriptor: the receiving tab already
+// holds one, and an inserted element would shift live sync's identity map.
 func projectRuntimeHTML(data []byte, documentURL string) []byte {
 	if !utf8.Valid(data) {
 		return data
@@ -81,6 +93,7 @@ func projectRuntimeHTML(data []byte, documentURL string) []byte {
 		Releases:        clayruntime.Releases,
 		SelectedVersion: clayruntime.Selected,
 		DocumentURL:     documentURL,
+		NoDescriptor:    true,
 	})
 	if len(projection.Mappings) == 0 {
 		return data
@@ -108,7 +121,9 @@ func documentURLWithoutHost(f *session.File) string {
 
 // projectForServe rewrites the ClayJS runtime URLs in a served document to this host's bundled
 // release. A source read (Clay-Source: 1) and a file that is not UTF-8 get their bytes untouched.
-func projectForServe(r *http.Request, data []byte) []byte {
+// A document that cannot be projected is served as it is, with a header naming why, so a page
+// loading a runtime URL this host cannot answer says so instead of failing with no sign.
+func (s *Server) projectForServe(w http.ResponseWriter, r *http.Request, data []byte) []byte {
 	if r.Header.Get("Clay-Source") == "1" {
 		return data
 	}
@@ -120,8 +135,30 @@ func projectForServe(r *http.Request, data []byte) []byte {
 		SelectedVersion: clayruntime.Selected,
 		DocumentURL:     "http://" + r.Host + r.URL.RequestURI(),
 	})
+	if unavailable := projection.Unavailable; unavailable != nil {
+		detail := unavailable.Reason + " " + strings.Join(unavailable.Versions, ",")
+		w.Header().Set("Clay-Runtime-Unavailable", detail)
+		s.reportRuntimeUnavailable(r.URL.Path, detail)
+	}
 	if len(projection.Mappings) == 0 {
 		return data
 	}
 	return []byte(projection.HTML)
+}
+
+// reportRuntimeUnavailable logs a document served with public runtime URLs once per path and
+// detail, so a page loaded repeatedly does not fill the log with the same explanation.
+func (s *Server) reportRuntimeUnavailable(path, detail string) {
+	key := path + " " + detail
+	s.runtimeNoticeMu.Lock()
+	if s.runtimeNotices[key] {
+		s.runtimeNoticeMu.Unlock()
+		return
+	}
+	if s.runtimeNotices == nil {
+		s.runtimeNotices = make(map[string]bool)
+	}
+	s.runtimeNotices[key] = true
+	s.runtimeNoticeMu.Unlock()
+	s.logger.Printf("Serving %s with public runtime URLs: %s", path, detail)
 }

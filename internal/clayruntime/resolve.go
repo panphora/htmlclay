@@ -3,6 +3,7 @@ package clayruntime
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -29,6 +30,9 @@ type Options struct {
 	Releases        map[string]Release
 	SelectedVersion string
 	DocumentURL     string
+	// NoDescriptor projects live-sync frames without one: the receiving tab already holds a
+	// descriptor, and an inserted element would shift live sync's identity map.
+	NoDescriptor bool
 }
 
 // CanonOptions adds the descriptor a served page carries back to a local URL.
@@ -99,7 +103,11 @@ type Descriptor struct {
 // ParseDescriptor reads a descriptor's JSON, returning nil when it is not an object.
 func ParseDescriptor(data []byte) *Descriptor {
 	var value any
-	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&value); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&value); err != nil {
+		return nil
+	}
+	if _, err := decoder.Token(); err != io.EOF {
 		return nil
 	}
 	object, ok := value.(map[string]any)
@@ -415,14 +423,6 @@ func originalMatchesRelease(path, version string, releases map[string]Release) b
 	return ok
 }
 
-func declaredAliasTarget(descriptor *Descriptor, key string) (string, bool) {
-	if descriptor == nil || descriptor.Aliases == nil {
-		return "", false
-	}
-	target, ok := descriptor.Aliases[key].(string)
-	return target, ok
-}
-
 // CanonicalizeRuntimeURL turns a local runtime URL back into the URL it was projected from.
 func CanonicalizeRuntimeURL(value string, opts CanonOptions) string {
 	local := ParseRuntimeURL(value, Options{DocumentURL: opts.DocumentURL})
@@ -445,11 +445,6 @@ func CanonicalizeRuntimeURL(value string, opts CanonOptions) string {
 		if aliases := aliasTargetOf(opts.Releases, local.Version); aliases != nil &&
 			local.Search == "" && local.Hash == "" {
 			if target, ok := aliases[original]; ok && target == local.Path {
-				return original
-			}
-		}
-		if opts.Releases == nil && local.Search == "" && local.Hash == "" && strings.HasPrefix(original, "https://") {
-			if target, ok := declaredAliasTarget(opts.Descriptor, original); ok && target == local.Path {
 				return original
 			}
 		}

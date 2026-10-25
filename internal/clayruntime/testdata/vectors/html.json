@@ -109,17 +109,17 @@
       "canonical": "<html><head><!-- <script src=\"https://clayjs.com/v1/clay.js\"></script> -->\n<script>const u = \"https://clayjs.com/v1/clay.js\";</script>\n<script type=\"application/json\" id=\"cfg\">{\"src\":\"https://clayjs.com/v1/clay.js\"}</script>\n<script src=\"https://clayjs.com/v1/clay.js?plugins=menu\"></script></head><body></body></html>"
     },
     {
-      "name": "encoded-attribute-skipped",
+      "name": "encoded-attribute-projected",
       "input": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page,menu&amp;exclude=richclay\"></script></head><body></body></html>",
       "project": {
-        "html": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page,menu&amp;exclude=richclay\"></script></head><body></body></html>",
-        "mappings": [],
-        "skipped": [
+        "html": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js?plugins=page,menu&exclude=richclay\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=page,menu&exclude=richclay\"}]}</script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=page,menu&amp;exclude=richclay\"></script></head><body></body></html>",
+        "mappings": [
           {
-            "value": "https://clayjs.com/v1/clay.js?plugins=page,menu&exclude=richclay",
-            "reason": "encoded"
+            "original": "https://clayjs.com/v1/clay.js?plugins=page,menu&exclude=richclay",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=page,menu&exclude=richclay"
           }
         ],
+        "skipped": [],
         "unavailable": null
       },
       "canonical": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page,menu&amp;exclude=richclay\"></script></head><body></body></html>"
@@ -188,7 +188,7 @@
       "name": "alias-and-rolling",
       "input": "<!doctype html><html><head><script src=\"https://cdn.example.test/lib@1.0.0/lib.min.js\"></script><script src=\"https://clayjs.com/v1/clay.js?plugins=page\"></script></head><body></body></html>",
       "project": {
-        "html": "<!doctype html><html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://cdn.example.test/lib@1.0.0/lib.min.js\",\"local\":\"/_/clayjs/1.15.2/compat/lib-1.0.0.min.js\"},{\"original\":\"https://clayjs.com/v1/clay.js?plugins=page\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=page\"}],\"aliases\":{\"https://cdn.example.test/lib@1.0.0/lib.min.js\":\"compat/lib-1.0.0.min.js\"}}</script><script src=\"/_/clayjs/1.15.2/compat/lib-1.0.0.min.js\"></script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=page\"></script></head><body></body></html>",
+        "html": "<!doctype html><html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://cdn.example.test/lib@1.0.0/lib.min.js\",\"local\":\"/_/clayjs/1.15.2/compat/lib-1.0.0.min.js\"},{\"original\":\"https://clayjs.com/v1/clay.js?plugins=page\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=page\"}]}</script><script src=\"/_/clayjs/1.15.2/compat/lib-1.0.0.min.js\"></script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=page\"></script></head><body></body></html>",
         "mappings": [
           {
             "original": "https://cdn.example.test/lib@1.0.0/lib.min.js",
@@ -203,6 +203,54 @@
         "unavailable": null
       },
       "canonical": "<!doctype html><html><head><script src=\"https://cdn.example.test/lib@1.0.0/lib.min.js\"></script><script src=\"https://clayjs.com/v1/clay.js?plugins=page\"></script></head><body></body></html>"
+    },
+    {
+      "name": "bare-ampersand-round-trip",
+      "input": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page&exclude=richclay\"></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js?plugins=page&exclude=richclay\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=page&exclude=richclay\"}]}</script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=page&exclude=richclay\"></script></head><body></body></html>",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/clay.js?plugins=page&exclude=richclay",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=page&exclude=richclay"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page&exclude=richclay\"></script></head><body></body></html>"
+    },
+    {
+      "name": "self-closing-link",
+      "input": "<html><head><link rel=\"modulepreload\" href=\"https://clayjs.com/v1/clay.js\" /></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js\",\"local\":\"/_/clayjs/1.15.2/clay.js\"}]}</script><link rel=\"modulepreload\" href=\"/_/clayjs/1.15.2/clay.js\" /></head><body></body></html>",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/clay.js",
+            "local": "/_/clayjs/1.15.2/clay.js"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><head><link rel=\"modulepreload\" href=\"https://clayjs.com/v1/clay.js\" /></head><body></body></html>"
+    },
+    {
+      "name": "unknown-rolling-path",
+      "input": "<html><head><script src=\"https://clayjs.com/v1/clay.js\"></script><script src=\"https://clayjs.com/v1/clay-future.js\"></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script src=\"https://clayjs.com/v1/clay.js\"></script><script src=\"https://clayjs.com/v1/clay-future.js\"></script></head><body></body></html>",
+        "mappings": [],
+        "skipped": [],
+        "unavailable": {
+          "reason": "path-missing",
+          "versions": [
+            "1.15.2"
+          ]
+        }
+      },
+      "canonical": "<html><head><script src=\"https://clayjs.com/v1/clay.js\"></script><script src=\"https://clayjs.com/v1/clay-future.js\"></script></head><body></body></html>"
     }
   ],
   "canonicalOnly": [
@@ -225,6 +273,21 @@
       "name": "two-descriptors",
       "input": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js\",\"local\":\"/_/clayjs/1.15.2/clay.js\"}]}</script><script type=\"application/json\" id=\"clay-runtime-map\">{}</script><script src=\"/_/clayjs/1.15.2/clay.js\"></script></head><body></body></html>",
       "canonical": "<html><head><script src=\"https://clayjs.com/v1/clay.js\"></script></head><body></body></html>"
+    },
+    {
+      "name": "local-url-escaped-quote",
+      "input": "<html><head><script src=\"/_/clayjs/1.15.2/clay.js?x=&quot;hello&quot;\"></script></head><body></body></html>",
+      "canonical": "<html><head><script src=\"https://clayjs.com/1.15.2/clay.js?x=&quot;hello&quot;\"></script></head><body></body></html>"
+    },
+    {
+      "name": "local-url-entity-encoded",
+      "input": "<html><head><script src=\"&#47;_&#47;clayjs&#47;1.15.2/clay.js\"></script></head><body></body></html>",
+      "canonical": "<html><head><script src=\"https://clayjs.com/1.15.2/clay.js\"></script></head><body></body></html>"
+    },
+    {
+      "name": "local-url-unquoted",
+      "input": "<html><head><script src=/_/clayjs/1.15.2/clay.js?a=1&amp;b=2></script></head><body></body></html>",
+      "canonical": "<html><head><script src=https://clayjs.com/1.15.2/clay.js?a=1&amp;b=2></script></head><body></body></html>"
     }
   ]
 }

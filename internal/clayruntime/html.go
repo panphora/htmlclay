@@ -3,6 +3,7 @@ package clayruntime
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -56,6 +57,7 @@ type candidate struct {
 	valueFrom int
 	valueTo   int
 	start     int
+	quote     byte
 }
 
 type descriptorSpan struct {
@@ -164,11 +166,12 @@ func attributeBounds(raw []byte, name string) (int, int, bool) {
 	return 0, 0, false
 }
 
-// valueBounds finds the value bytes inside one attribute's raw text.
-func valueBounds(raw string) (int, int, bool) {
+// valueBounds finds the value bytes inside one attribute's raw text, and the quote
+// that delimited them, 0 when the attribute was unquoted.
+func valueBounds(raw string) (int, int, byte, bool) {
 	equals := strings.Index(raw, "=")
 	if equals < 0 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	index := equals + 1
 	for index < len(raw) && isSpaceByte(raw[index]) {
@@ -179,13 +182,13 @@ func valueBounds(raw string) (int, int, bool) {
 		quote = raw[index]
 	}
 	if quote == 0 {
-		return index, len(raw), true
+		return index, len(raw), quote, true
 	}
 	close := strings.LastIndexByte(raw, quote)
 	if close > index {
-		return index + 1, close, true
+		return index + 1, close, quote, true
 	}
-	return index + 1, len(raw), true
+	return index + 1, len(raw), quote, true
 }
 
 // scan walks the source once, collecting every runtime candidate's attribute bounds and
@@ -207,7 +210,7 @@ func scan(source []byte) ([]candidate, []descriptorSpan) {
 		at := offset
 		offset += len(raw)
 		switch kind {
-		case html.StartTagToken:
+		case html.StartTagToken, html.SelfClosingTagToken:
 			token := tokenizer.Token()
 			if token.Data == "script" {
 				if id, ok := attribute(token, "id"); ok && id == descriptorID {
@@ -227,7 +230,7 @@ func scan(source []byte) ([]candidate, []descriptorSpan) {
 			if !ok {
 				continue
 			}
-			from, to, ok := valueBounds(string(raw[attrStart:attrEnd]))
+			from, to, quote, ok := valueBounds(string(raw[attrStart:attrEnd]))
 			if !ok || at+attrStart+to > len(text) {
 				continue
 			}
@@ -237,6 +240,7 @@ func scan(source []byte) ([]candidate, []descriptorSpan) {
 				valueFrom: at + attrStart + from,
 				valueTo:   at + attrStart + to,
 				start:     at,
+				quote:     quote,
 			})
 		case html.EndTagToken:
 			if pending >= 0 && tokenizer.Token().Data == "script" {
@@ -282,7 +286,7 @@ func quoteJSON(value string) string {
 	return builder.String()
 }
 
-func descriptorTag(version string, entries []Mapping, aliasOrder []string, aliases map[string]string) string {
+func descriptorTag(version string, entries []Mapping) string {
 	var json strings.Builder
 	json.WriteString(`{"schema":1,"version":`)
 	json.WriteString(quoteJSON(version))
@@ -298,18 +302,6 @@ func descriptorTag(version string, entries []Mapping, aliasOrder []string, alias
 		json.WriteByte('}')
 	}
 	json.WriteByte(']')
-	if len(aliasOrder) > 0 {
-		json.WriteString(`,"aliases":{`)
-		for index, key := range aliasOrder {
-			if index > 0 {
-				json.WriteByte(',')
-			}
-			json.WriteString(quoteJSON(key))
-			json.WriteByte(':')
-			json.WriteString(quoteJSON(aliases[key]))
-		}
-		json.WriteByte('}')
-	}
 	json.WriteByte('}')
 	body := strings.ReplaceAll(json.String(), "<", `\u003c`)
 	return `<script type="application/json" id="` + descriptorID + `" clay="no-save no-watch no-snapshot">` + body + `</script>`
@@ -327,6 +319,56 @@ func applySplices(text string, splices []splice) string {
 	return out
 }
 
+func attributeText(value string, quote byte) string {
+	text := strings.ReplaceAll(value, "&", "&amp;")
+	switch quote {
+	case '\'':
+		return strings.ReplaceAll(text, "'", "&#39;")
+	case '"':
+		return strings.ReplaceAll(text, `"`, "&quot;")
+	}
+	if strings.ContainsAny(text, " \t\n\v\f\r\"'<>=`") {
+		return `"` + strings.ReplaceAll(text, `"`, "&quot;") + `"`
+	}
+	return text
+}
+
+// respelled is replacement written into the attribute raw came from, keeping the file's own
+// spelling of the tail value and replacement share, so a query written with a bare '&' keeps
+// it. A shared head holding '&' could split a character reference, so that case escapes all.
+func respelled(raw, value, replacement string, quote byte) string {
+	shared := 0
+	for shared < len(value) && shared < len(replacement) &&
+		value[len(value)-1-shared] == replacement[len(replacement)-1-shared] {
+		shared++
+	}
+	head := value[:len(value)-shared]
+	newHead := replacement[:len(replacement)-shared]
+	if strings.Contains(head, "&") || !strings.HasPrefix(raw, head) {
+		return attributeText(replacement, quote)
+	}
+	if quote == 0 && strings.ContainsAny(newHead, " \t\n\v\f\r\"'<>=`") {
+		return attributeText(replacement, quote)
+	}
+	return attributeText(newHead, quote) + raw[len(head):]
+}
+
+// mayProject reports whether source can name a runtime URL: clayjs (perhaps with a character
+// reference inside the URL) or the host of one of the selected release's exact aliases.
+func mayProject(source []byte, opts Options) bool {
+	lower := bytes.ToLower(source)
+	if bytes.Contains(lower, []byte("clayjs")) || bytes.Contains(lower, []byte("&#")) {
+		return true
+	}
+	for alias := range opts.Releases[opts.SelectedVersion].Aliases {
+		if parsed, err := url.Parse(alias); err == nil && parsed.Host != "" &&
+			bytes.Contains(lower, []byte(strings.ToLower(parsed.Host))) {
+			return true
+		}
+	}
+	return false
+}
+
 // ProjectRuntimeHTML rewrites every runtime URL in a page onto the bundled release and
 // writes the descriptor that turns them back, splices only, every other byte untouched.
 // mayHold reports whether source can contain needle in any letter case. Parsing a large
@@ -336,7 +378,7 @@ func mayHold(source []byte, needle string) bool {
 }
 
 func ProjectRuntimeHTML(source []byte, opts Options) Projection {
-	if !mayHold(source, "clayjs.com") {
+	if !mayProject(source, opts) {
 		return Projection{HTML: string(source), Mappings: []Mapping{}, Skipped: []Skipped{}}
 	}
 	text := string(source)
@@ -350,9 +392,15 @@ func ProjectRuntimeHTML(source []byte, opts Options) Projection {
 	versions := make([]string, 0, 2)
 	seen := make(map[string]bool, 2)
 	missing := false
+	absent := false
 	for _, node := range candidates {
 		result := ResolveRuntimeURL(node.value, opts)
-		if result != nil {
+		if result == nil {
+			if parsed := ParseRuntimeURL(node.value, opts); parsed != nil &&
+				(parsed.Kind == "rolling" || parsed.Kind == "exact") {
+				absent = true
+			}
+		} else {
 			if !result.Available {
 				missing = true
 			}
@@ -363,11 +411,13 @@ func ProjectRuntimeHTML(source []byte, opts Options) Projection {
 		}
 		items = append(items, resolved{node: node, result: result})
 	}
-	if missing || len(versions) > 1 {
+	if missing || absent || len(versions) > 1 {
 		sort.Strings(versions)
 		reason := "mixed-versions"
 		if missing {
 			reason = "release-missing"
+		} else if absent {
+			reason = "path-missing"
 		}
 		return Projection{
 			HTML:        text,
@@ -380,8 +430,6 @@ func ProjectRuntimeHTML(source []byte, opts Options) Projection {
 	mappings := make([]Mapping, 0, len(items))
 	skipped := []Skipped{}
 	splices := make([]splice, 0, len(items)+1)
-	aliasOrder := make([]string, 0, 1)
-	aliases := make(map[string]string, 1)
 	version := ""
 	if len(versions) == 1 {
 		version = versions[0]
@@ -392,18 +440,12 @@ func ProjectRuntimeHTML(source []byte, opts Options) Projection {
 		if item.result == nil {
 			continue
 		}
-		if item.node.raw != item.node.value {
-			skipped = append(skipped, Skipped{Value: item.node.value, Reason: "encoded"})
-			continue
-		}
-		splices = append(splices, splice{start: item.node.valueFrom, end: item.node.valueTo, text: item.result.LocalURL})
+		splices = append(splices, splice{
+			start: item.node.valueFrom,
+			end:   item.node.valueTo,
+			text:  respelled(item.node.raw, item.node.value, item.result.LocalURL, item.node.quote),
+		})
 		mappings = append(mappings, Mapping{Original: item.node.value, Local: item.result.LocalURL})
-		if item.result.Kind == "alias" {
-			if _, ok := aliases[item.node.value]; !ok {
-				aliasOrder = append(aliasOrder, item.node.value)
-			}
-			aliases[item.node.value] = item.result.Path
-		}
 		if insertAt < 0 {
 			insertAt = item.node.start
 		}
@@ -413,14 +455,17 @@ func ProjectRuntimeHTML(source []byte, opts Options) Projection {
 		return Projection{HTML: text, Mappings: mappings, Skipped: skipped, Unavailable: nil}
 	}
 
-	splices = append(splices, splice{start: insertAt, end: insertAt, text: descriptorTag(version, mappings, aliasOrder, aliases)})
+	if !opts.NoDescriptor {
+		splices = append(splices, splice{start: insertAt, end: insertAt, text: descriptorTag(version, mappings)})
+	}
 	return Projection{HTML: applySplices(text, splices), Mappings: mappings, Skipped: skipped, Unavailable: nil}
 }
 
 // CanonicalizeRuntimeHTML turns a served page's local URLs back into authoring URLs and
 // removes the descriptor it was projected with.
 func CanonicalizeRuntimeHTML(source []byte, releases map[string]Release, documentURL string) Canonical {
-	if !mayHold(source, "/_/clayjs/") && !mayHold(source, descriptorID) {
+	if !mayHold(source, "/_/clayjs/") && !mayHold(source, descriptorID) &&
+		!mayHold(source, "&#") && !mayHold(source, "&sol;") && !mayHold(source, "&lowbar;") {
 		return Canonical{HTML: string(source)}
 	}
 	text := string(source)
@@ -446,7 +491,11 @@ func CanonicalizeRuntimeHTML(source []byte, releases map[string]Release, documen
 		if replacement == node.value {
 			continue
 		}
-		splices = append(splices, splice{start: node.valueFrom, end: node.valueTo, text: replacement})
+		splices = append(splices, splice{
+			start: node.valueFrom,
+			end:   node.valueTo,
+			text:  respelled(node.raw, node.value, replacement, node.quote),
+		})
 		changed++
 	}
 

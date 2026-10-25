@@ -25,12 +25,16 @@ type Server struct {
 	// handler is the whole middleware chain over the mux, which is what ServeHTTP runs.
 	handler http.Handler
 	// hosts are the exact Host header values this server answers.
-	hosts       []string
-	port        int
-	sessions    *session.Manager
-	logger      *logging.Logger
-	versions    *versions.Store
-	internalDir string
+	hosts    []string
+	port     int
+	sessions *session.Manager
+	logger   *logging.Logger
+	versions *versions.Store
+	// runtimeNoticeMu guards runtimeNotices, the (path, detail) pairs already logged for a
+	// document served with public runtime URLs.
+	runtimeNoticeMu sync.Mutex
+	runtimeNotices  map[string]bool
+	internalDir     string
 	// uploadsDir is the per-computer uploads library, ~/htmlclay/uploads. Empty
 	// when the home directory could not be resolved, which refuses uploads and
 	// 404s the library route rather than writing anywhere else.

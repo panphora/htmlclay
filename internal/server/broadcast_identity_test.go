@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panphora/htmlclay/internal/clayruntime"
 	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/session"
 )
@@ -23,6 +24,21 @@ func TestForBrowserStripsTheTokenAndStampsTheIdentity(t *testing.T) {
 	}
 	if htmlutil.ReadHTMLClayID([]byte(got)) != stableUUID {
 		t.Errorf("no tracked identity in the broadcast bytes: %q", got)
+	}
+}
+
+// A frame is projected onto this host's runtime like a served document is, but it carries
+// no descriptor: the receiving tab already holds one, and an inserted element would shift
+// live sync's identity map.
+func TestForBrowserProjectsWithoutADescriptor(t *testing.T) {
+	in := []byte(`<html><head><script src="https://clayjs.com/v1/clay.js"></script></head><body>hi</body></html>`)
+
+	got := forBrowser(in, "id:"+stableUUID, "http://127.0.0.1:1/test.htmlclay")
+	if !strings.Contains(got, "/_/clayjs/"+clayruntime.Selected+"/clay.js") {
+		t.Errorf("the frame still names the public runtime: %q", got)
+	}
+	if strings.Contains(got, "clay-runtime-map") {
+		t.Errorf("the frame carries a descriptor: %q", got)
 	}
 }
 

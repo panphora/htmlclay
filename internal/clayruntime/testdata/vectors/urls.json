@@ -412,7 +412,7 @@
         }
       },
       "noReleases": true,
-      "expect": "https://cdn.example.test/lib@1.0.0/lib.min.js"
+      "expect": "https://clayjs.com/1.15.2/compat/lib-1.0.0.min.js"
     },
     {
       "name": "descriptor-alias-other-path",

@@ -312,6 +312,28 @@ func TestRuntimeProjectionLeavesOtherDocumentsAlone(t *testing.T) {
 	})
 }
 
+// A document naming a release this host does not carry is served as it is, and the
+// response says why: a page that loads the public runtime anyway must not do so silently.
+func TestRuntimeUnavailableServeCarriesTheReason(t *testing.T) {
+	srv, _, _ := setupHandlerTest(t)
+	page := writeHome(t, srv, "future.htmlclay",
+		`<!DOCTYPE html><html><head><script src="https://clayjs.com/9.0.0/clay.js"></script></head><body>hi</body></html>`)
+	if _, err := srv.sessions.Register(page, session.ViaOsOpen); err != nil {
+		t.Fatal(err)
+	}
+
+	w := serve(t, srv, "/future.htmlclay", nil)
+	if w.Code != 200 {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Clay-Runtime-Unavailable"); !strings.HasPrefix(got, "release-missing") {
+		t.Fatalf("Clay-Runtime-Unavailable = %q, want a release-missing reason", got)
+	}
+	if strings.Contains(w.Body.String(), "/_/clayjs/") {
+		t.Errorf("a document naming a missing release was projected:\n%s", w.Body.String())
+	}
+}
+
 // The read-only banner path buffers its own bytes, so it is projected in its own
 // right rather than inheriting serveRegistered's work.
 func TestRuntimeProjectionReachesTheReadOnlyBanner(t *testing.T) {

@@ -136,7 +136,7 @@ func (s *Server) serveReadOnlyWithBanner(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-	projected := projectForServe(r, data)
+	projected := s.projectForServe(w, r, data)
 	served := projected
 	if nonce, err := s.mintOpenNonce(real); err == nil {
 		served = htmlutil.InjectBanner(projected, htmlutil.WrapBanner(openBannerHTML(nonce)))
