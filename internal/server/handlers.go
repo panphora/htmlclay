@@ -162,10 +162,17 @@ type fileMeta struct {
 
 // documentMeta is the per-document half of a discovery answer.
 type documentMeta struct {
-	Etag         string       `json:"etag"`
-	WireMode     string       `json:"wireMode,omitempty"`
-	WireBudgetMS int          `json:"wireBudgetMs"`
-	Helpers      []helperMeta `json:"helpers,omitempty"`
+	Etag         string `json:"etag"`
+	WireMode     string `json:"wireMode,omitempty"`
+	WireBudgetMS int    `json:"wireBudgetMs"`
+	// The largest document this host accepts, in uncompressed UTF-8 bytes of the
+	// save body and inclusive of the limit itself: the same constant the save route
+	// applies, not a second copy of the number. Announced here so a client can warn
+	// a person before a save is refused instead of learning the size only from a
+	// refusal. It is per-document because it lives in the block §5 reserves for that,
+	// and there is no top-level duplicate.
+	MaxBytes int64        `json:"maxBytes"`
+	Helpers  []helperMeta `json:"helpers,omitempty"`
 	// §6's receipt: which save produced the bytes this etag stamps. Reported only
 	// when the pair still verifies against those bytes, so a client that sees its
 	// own id here has been TOLD what it stores came from a body that client sent,
@@ -1395,6 +1402,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			Etag:         storedEtag,
 			SaveID:       saveID,
 			WireBudgetMS: helper.StructuredDeadline,
+			MaxBytes:     maxSaveSize,
 			// The same constant the upload route enforces, not a second copy of the
 			// number: a cap that is announced and a cap that is applied drifting apart
 			// is worse than announcing none, because a client would refuse files this
