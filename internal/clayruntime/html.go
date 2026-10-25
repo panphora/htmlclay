@@ -329,7 +329,16 @@ func applySplices(text string, splices []splice) string {
 
 // ProjectRuntimeHTML rewrites every runtime URL in a page onto the bundled release and
 // writes the descriptor that turns them back, splices only, every other byte untouched.
+// mayHold reports whether source can contain needle in any letter case. Parsing a large
+// document costs far more than this scan, and most documents name no runtime URL at all.
+func mayHold(source []byte, needle string) bool {
+	return bytes.Contains(bytes.ToLower(source), []byte(needle))
+}
+
 func ProjectRuntimeHTML(source []byte, opts Options) Projection {
+	if !mayHold(source, "clayjs.com") {
+		return Projection{HTML: string(source), Mappings: []Mapping{}, Skipped: []Skipped{}}
+	}
 	text := string(source)
 	candidates, _ := scan(source)
 
@@ -411,6 +420,9 @@ func ProjectRuntimeHTML(source []byte, opts Options) Projection {
 // CanonicalizeRuntimeHTML turns a served page's local URLs back into authoring URLs and
 // removes the descriptor it was projected with.
 func CanonicalizeRuntimeHTML(source []byte, releases map[string]Release, documentURL string) Canonical {
+	if !mayHold(source, "/_/clayjs/") && !mayHold(source, descriptorID) {
+		return Canonical{HTML: string(source)}
+	}
 	text := string(source)
 	candidates, spans := scan(source)
 	splices := make([]splice, 0, len(spans)+len(candidates))
