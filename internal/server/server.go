@@ -277,6 +277,11 @@ func newServer(sessions *session.Manager, logger *logging.Logger, store *version
 	// an <img> carries none. HostValidationMiddleware still wraps the whole mux.
 	mux.HandleFunc("GET /_/uploads/{path...}", s.handleLibraryUpload)
 
+	// The ClayJS release embedded in this binary, so a document loads its client with
+	// no network. Public bytes: outside sameOrigin, since <script> and <link> fetch them.
+	// Registered ahead of the catch-all, which would otherwise read the path as a file.
+	mux.HandleFunc("GET /_/clayjs/{rest...}", s.handleRuntimeAsset)
+
 	// A document that links /tailwindcss/<name>.css gets a stylesheet compiled from
 	// that document's own HTML. Registered ahead of the catch-all, which would
 	// otherwise read the name as a file under home and 403 for want of a token.

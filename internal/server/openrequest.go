@@ -130,15 +130,16 @@ func (s *Server) shouldOfferOpen(r *http.Request, real string) bool {
 // buffers and injects rather than streaming, and deliberately bypasses
 // ServeContent and every cache validator: injected bytes would corrupt the
 // content ETag and Range math, and a 304 could revive a burned nonce's banner.
-func (s *Server) serveReadOnlyWithBanner(w http.ResponseWriter, file *os.File, real string) {
+func (s *Server) serveReadOnlyWithBanner(w http.ResponseWriter, r *http.Request, file *os.File, real string) {
 	data, err := io.ReadAll(file)
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-	served := data
+	projected := projectForServe(r, data)
+	served := projected
 	if nonce, err := s.mintOpenNonce(real); err == nil {
-		served = htmlutil.InjectBanner(data, htmlutil.WrapBanner(openBannerHTML(nonce)))
+		served = htmlutil.InjectBanner(projected, htmlutil.WrapBanner(openBannerHTML(nonce)))
 	} else {
 		s.logger.Printf("No open banner for %s: %v", real, err)
 	}

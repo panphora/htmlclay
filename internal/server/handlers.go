@@ -451,9 +451,9 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 	// served carries the durable id; the bytes on disk never do. Injecting the
 	// tracked id over whatever disk holds is also model B′'s self-heal: a file
 	// whose id was stripped or replaced externally is re-anchored on the next serve.
-	served := data
+	served := projectForServe(r, data)
 	if id, ok := versions.IDFromKey(key); ok {
-		served = htmlutil.SetHTMLClayID(data, id)
+		served = htmlutil.SetHTMLClayID(served, id)
 	}
 
 	// The response carries the version stamp of the DISK bytes it was built from,
@@ -535,6 +535,7 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 	// restart hands back a dead token and every save 401s silently.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Vary", "Clay-Source")
 	w.Write(served)
 }
 
@@ -693,7 +694,7 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, rawPath stri
 	// the bannered path: buffered, nonce-bearing, uncacheable. Everything else
 	// (assets, fetches, iframes, non-.htmlclay pages) streams below unchanged.
 	if !uploaded && s.shouldOfferOpen(r, real) {
-		s.serveReadOnlyWithBanner(w, file, real)
+		s.serveReadOnlyWithBanner(w, r, file, real)
 		return
 	}
 
