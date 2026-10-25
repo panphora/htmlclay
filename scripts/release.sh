@@ -194,6 +194,14 @@ if [ "$UNFINISHED" = true ] && [ "$RESUME" != true ]; then
   exit 1
 fi
 
+section "Bundled ClayJS runtime"
+if ! node scripts/check-clay-runtime-release.mjs; then
+  error "The bundled ClayJS runtime is not the published release of its locked version."
+  error "Publish a ClayJS release that carries dist/offline-manifest.json, then re-vendor:"
+  echo "  node scripts/vendor-clay-runtime.mjs --package-root <unpacked package>"
+  exit 1
+fi
+
 if [ "$RESUME" = true ]; then
   if [ "$UNFINISHED" != true ]; then
     error "Nothing to resume: v${CURRENT_VERSION} is already tagged."
