@@ -1,0 +1,5 @@
+tier: 1
+face: write
+expect: ok
+note: An empty `@--name` write removes every declaration of the property, and the style
+note: attribute itself once nothing is left in it.

@@ -75,5 +75,27 @@
     "javascript",
     "vbscript",
     "data"
-  ]
+  ],
+  "customPropertyValues": {
+    "maxLength": 200,
+    "refusedCharacters": [
+      ";",
+      "{",
+      "}",
+      "<",
+      ">",
+      "\\"
+    ],
+    "refusedFunctions": [
+      "url",
+      "src",
+      "image",
+      "image-set",
+      "-webkit-image-set",
+      "cross-fade",
+      "element",
+      "expression",
+      "paint"
+    ]
+  }
 }

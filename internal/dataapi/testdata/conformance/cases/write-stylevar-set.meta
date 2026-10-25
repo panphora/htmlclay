@@ -1,0 +1,6 @@
+tier: 1
+face: write
+expect: ok
+note: `@--name` writes rewrite the first declaration in place (keeping !important), drop later
+note: duplicates, append a property not yet present, trim the value, and leave every other
+note: declaration as it was.

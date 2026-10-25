@@ -1,0 +1,43 @@
+{
+  "type": "WriteRefused",
+  "message": "write refused: 9 write(s) broke the content-only policy",
+  "status": 400,
+  "details": [
+    {
+      "target": "<div#d>",
+      "reason": "\"url()\" is not allowed in a custom property value"
+    },
+    {
+      "target": "<div#d>",
+      "reason": "\";\" is not allowed in a custom property value"
+    },
+    {
+      "target": "<div#d>",
+      "reason": "a custom property value must close its brackets"
+    },
+    {
+      "target": "<div#d>",
+      "reason": "a custom property value must close its quotes"
+    },
+    {
+      "target": "<div#d>",
+      "reason": "comments are not allowed in a custom property value"
+    },
+    {
+      "target": "<div#d>",
+      "reason": "control characters are not allowed in a custom property value"
+    },
+    {
+      "target": "<div#d>",
+      "reason": "custom property values are limited to 200 characters"
+    },
+    {
+      "target": "<div#d>",
+      "reason": "\")\" does not close anything in this custom property value"
+    },
+    {
+      "target": "<div#d>",
+      "reason": "\"<\" is not allowed in a custom property value"
+    }
+  ]
+}

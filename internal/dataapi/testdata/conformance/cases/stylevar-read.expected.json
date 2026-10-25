@@ -1,0 +1,12 @@
+{
+  "accent": "#3b82f6",
+  "gap": "2rem",
+  "font": "\"Inter\", sans-serif",
+  "quoted": "\"a;b\"",
+  "bracketed": "rgb(1 2 3 / 50%)",
+  "lower": "red",
+  "upper": "blue",
+  "empty": "",
+  "missing": null,
+  "absent": null
+}

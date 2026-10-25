@@ -1,0 +1,12 @@
+{
+  "accent": "html@--color-accent",
+  "gap": "#d@--gap",
+  "font": "#p@--font-body",
+  "quoted": "#q@--q",
+  "bracketed": "#q@--r",
+  "lower": "#c@--bg",
+  "upper": "#c@--BG",
+  "empty": "#c@--empty",
+  "missing": "#s@--x",
+  "absent": "#d@--nope"
+}

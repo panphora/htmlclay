@@ -20,12 +20,21 @@ var writePolicyJSON []byte
 // WritePolicy is the content-only policy: the rule forms, targets, attributes and URL schemes a
 // write may not touch.
 type WritePolicy struct {
-	RefusedRuleForms         []string `json:"refusedRuleForms"`
-	RefusedTargets           []string `json:"refusedTargets"`
-	RefusedAttributes        []string `json:"refusedAttributes"`
-	RefusedAttributePrefixes []string `json:"refusedAttributePrefixes"`
-	URLAttributes            []string `json:"urlAttributes"`
-	RefusedSchemes           []string `json:"refusedSchemes"`
+	RefusedRuleForms         []string             `json:"refusedRuleForms"`
+	RefusedTargets           []string             `json:"refusedTargets"`
+	RefusedAttributes        []string             `json:"refusedAttributes"`
+	RefusedAttributePrefixes []string             `json:"refusedAttributePrefixes"`
+	URLAttributes            []string             `json:"urlAttributes"`
+	RefusedSchemes           []string             `json:"refusedSchemes"`
+	CustomPropertyValues     CustomPropertyValues `json:"customPropertyValues"`
+}
+
+// CustomPropertyValues is the grammar an @--name write must fit: short, and unable to load a
+// resource, close its declaration, or carry markup.
+type CustomPropertyValues struct {
+	MaxLength         int      `json:"maxLength"`
+	RefusedCharacters []string `json:"refusedCharacters"`
+	RefusedFunctions  []string `json:"refusedFunctions"`
 }
 
 var writePolicy = loadWritePolicy()
@@ -138,4 +147,84 @@ func containsString(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+var customPropertyControl = regexp.MustCompile(`[\x00-\x1f\x7f]`)
+
+// unbalancedReason ports write-policy.js's unbalancedReason: a value whose quotes or brackets do
+// not close, or that holds a comment or a control character, could end the declaration early.
+func unbalancedReason(text string) string {
+	if customPropertyControl.MatchString(text) {
+		return "control characters are not allowed in a custom property value"
+	}
+	var stack []byte
+	var quote byte
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch {
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '/' && i+1 < len(text) && text[i+1] == '*':
+			return "comments are not allowed in a custom property value"
+		case c == '(':
+			stack = append(stack, ')')
+		case c == '[':
+			stack = append(stack, ']')
+		case c == ')' || c == ']':
+			if len(stack) == 0 || stack[len(stack)-1] != c {
+				return `"` + string(c) + `" does not close anything in this custom property value`
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	if quote != 0 {
+		return "a custom property value must close its quotes"
+	}
+	if len(stack) > 0 {
+		return "a custom property value must close its brackets"
+	}
+	return ""
+}
+
+// checkCustomPropertyValue ports write-policy.js's checkCustomPropertyValue. The length is counted
+// in UTF-16 units, as the reference's String.length counts it.
+func checkCustomPropertyValue(text string, policy *WritePolicy) string {
+	rules := policy.CustomPropertyValues
+	if utf16Len(text) > rules.MaxLength {
+		return fmt.Sprintf("custom property values are limited to %d characters", rules.MaxLength)
+	}
+	for _, ch := range rules.RefusedCharacters {
+		if strings.Contains(text, ch) {
+			return jsonQuote(ch) + " is not allowed in a custom property value"
+		}
+	}
+	if reason := unbalancedReason(text); reason != "" {
+		return reason
+	}
+	lower := strings.ToLower(text)
+	for _, fn := range rules.RefusedFunctions {
+		call := regexp.MustCompile(`(^|[^a-z0-9_-])` + regexp.QuoteMeta(fn) + jsSpaceClass + `*\(`)
+		if call.MatchString(lower) {
+			return `"` + fn + `()" is not allowed in a custom property value`
+		}
+	}
+	return ""
+}
+
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= 0x10000 {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
 }

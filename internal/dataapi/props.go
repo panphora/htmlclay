@@ -44,6 +44,17 @@ func isBooleanAttr(name string) bool { return booleanAttrs[strings.ToLower(name)
 // keeps an empty string, the attribute branch turns it into null, because the JS is `return v ? v
 // : null` and "" is falsy. So `@className` on class="" is "" while `@data-x` on data-x="" is null.
 func readPropOrAttr(d *Document, n *html.Node, name string) Value {
+	if isCustomPropertyName(name) {
+		style, ok := getAttr(n, "style")
+		if !ok {
+			return nil
+		}
+		v, found := readStyleVar(style, name)
+		if !found {
+			return nil
+		}
+		return v
+	}
 	if domProperties[name] {
 		v, ok := propValue(d, n, name)
 		if !ok {

@@ -1,0 +1,4 @@
+tier: 1
+face: write
+expect: error
+note: A raw `@style` write stays refused; only `@--name` reaches the style attribute.

@@ -1,0 +1,5 @@
+tier: 1
+face: write
+expect: error
+note: Custom property values that could load a resource, close their declaration, carry markup
+note: or break the attribute are refused, one reason per value, in rule order.

@@ -1,0 +1,5 @@
+tier: 1
+face: write
+expect: ok
+note: Posting back the value a custom property already has is a no-op, even when the policy
+note: would refuse that value as a new write, so a read posted back unchanged never errors.

@@ -1,0 +1,6 @@
+tier: 1
+face: query
+expect: ok
+note: `@--name` reads one custom property from the style attribute. The last declaration wins
+note: unless an earlier one is !important; comments are ignored; names are case sensitive; a
+note: semicolon inside quotes or brackets does not end a declaration; absent reads null.

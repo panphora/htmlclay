@@ -281,6 +281,14 @@ func (w *writer) setText(n *html.Node, value Value) {
 // branch compares before writing: a write of the value already there still rebuilds innerHTML or
 // emits a mutation record in the reference, so it is skipped here too.
 func (w *writer) writePropOrAttr(n *html.Node, name string, value Value) error {
+	if isCustomPropertyName(name) {
+		want := ""
+		if value != nil && !isUndefined(value) {
+			want = jsTrim(jsString(value))
+		}
+		w.writeCustomProperty(n, name, want)
+		return nil
+	}
 	if domPropertiesReadOnly[name] {
 		// A write of the value the read already reports is a no-op, so posting a read-only
 		// extraction back cannot error. A changed value is still refused.
@@ -345,6 +353,32 @@ func (w *writer) writePropOrAttr(n *html.Node, name string, value Value) error {
 	w.setProp(n, name, next)
 	w.dirty[n] = true
 	return nil
+}
+
+// writeCustomProperty is the guarded @--name write, ported from write-policy.js's styleVar. An
+// unchanged value is a no-op, then the target and the value are checked, and only that one
+// declaration changes. It reaches the style attribute without checkAttribute, which refuses a
+// raw @style write.
+func (w *writer) writeCustomProperty(n *html.Node, name, want string) {
+	style, _ := getAttr(n, "style")
+	if current, _ := readStyleVar(style, name); current == want {
+		return
+	}
+	if !w.allowTarget(n) {
+		return
+	}
+	if want != "" {
+		if reason := checkCustomPropertyValue(want, writePolicy); reason != "" {
+			w.refuse(n, reason)
+			return
+		}
+	}
+	if next, ok := writeStyleVar(style, name, want); ok {
+		setAttr(n, "style", next)
+	} else {
+		removeAttr(n, "style")
+	}
+	w.dirty[n] = true
 }
 
 // sameReadOnlyValue is apply.js's compare for a read-only property: identical values are equal,
