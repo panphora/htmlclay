@@ -195,6 +195,12 @@ if [ "$UNFINISHED" = true ] && [ "$RESUME" != true ]; then
 fi
 
 section "Bundled ClayJS runtime"
+if ! node scripts/vendor-clay-runtime.mjs --check; then
+  error "The bundled ClayJS runtime on disk does not match its own index."
+  error "Re-vendor the locked release, then check the release again:"
+  echo "  node scripts/vendor-clay-runtime.mjs --package-root <unpacked package>"
+  exit 1
+fi
 if ! node scripts/check-clay-runtime-release.mjs; then
   error "The bundled ClayJS runtime is not the published release of its locked version."
   error "Publish a ClayJS release that carries dist/offline-manifest.json, then re-vendor:"

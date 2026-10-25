@@ -435,22 +435,82 @@ func TestJournalOfflineFontStylesheetAlias(t *testing.T) {
 	}
 }
 
-// journalLateLoads are the libraries a Journal imports the first time it asks for them, by asset
-// name. None of them is in the served HTML, which is what makes them late loads.
-var journalLateLoads = []struct {
-	asset string
-	file  string
-}{
-	{"overtype", "src/vendor/overtype.vendor.js"},
-	{"marked", "src/vendor/marked.vendor.js"},
-	{"highlight", "src/vendor/highlight.vendor.js"},
-	{"highlight/bash", "src/vendor/hljs-bash.vendor.js"},
-	{"highlight/css", "src/vendor/hljs-css.vendor.js"},
-	{"highlight/python", "src/vendor/hljs-python.vendor.js"},
+// journalChunkDescriptor is the chunk descriptor a served clay.js closes with: the directory
+// its chunks live in and the chunks it preloads, the loader among them.
+type journalChunkDescriptor struct {
+	Dir     string   `json:"dir"`
+	Preload []string `json:"preload"`
 }
 
-// The libraries the current Journal loads only when it needs them are in the release too, so the
-// first code block or markdown paste works with no network.
+// journalChunkPattern is the loader's asset import table: each asset ID and the chunk that
+// belongs to it, quoted when the ID holds a slash and bare when it does not.
+var journalChunkPattern = regexp.MustCompile(`(?:["']([a-z][a-z/-]*)["']|([a-z][a-z/-]*)):\(\)=>import\("\./([^"]+)"\)`)
+
+// journalClayChunks reads the descriptor the browser parses to decide which chunk to boot.
+func journalClayChunks(t *testing.T, clayJS string) journalChunkDescriptor {
+	t.Helper()
+	start := strings.LastIndex(clayJS, "({")
+	if start < 0 {
+		t.Fatalf("the served clay.js closes with no chunk descriptor")
+	}
+	end := strings.Index(clayJS[start:], "})")
+	if end < 0 {
+		t.Fatalf("the served clay.js chunk descriptor is not closed")
+	}
+	var descriptor journalChunkDescriptor
+	if err := json.Unmarshal([]byte(clayJS[start+1:start+end+1]), &descriptor); err != nil {
+		t.Fatalf("the served clay.js chunk descriptor is not JSON: %v", err)
+	}
+	return descriptor
+}
+
+// journalChunks is the loader's asset import table: the asset ID to chunk map it boots with.
+func journalChunks(t *testing.T, loader string) map[string]string {
+	t.Helper()
+	chunks := map[string]string{}
+	for _, match := range journalChunkPattern.FindAllStringSubmatch(loader, -1) {
+		id := match[1]
+		if id == "" {
+			id = match[2]
+		}
+		chunks[id] = match[3]
+	}
+	return chunks
+}
+
+var (
+	journalLangsPattern     = regexp.MustCompile(`const LANGS = \{([^}]*)\}`)
+	journalLangValuePattern = regexp.MustCompile(`:\s*'([^']+)'`)
+)
+
+// journalLateLanguages is every highlight.js language the current Journal can ask for, taken
+// from the template's own LANGS table so a language added there is checked here too.
+func journalLateLanguages(t *testing.T, source string) []string {
+	t.Helper()
+	table := journalLangsPattern.FindStringSubmatch(source)
+	if table == nil {
+		t.Fatalf("the current Journal holds no LANGS table")
+	}
+	seen := map[string]bool{}
+	languages := []string{}
+	for _, match := range journalLangValuePattern.FindAllStringSubmatch(table[1], -1) {
+		if seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		languages = append(languages, match[1])
+	}
+	if len(languages) == 0 {
+		t.Fatalf("the current Journal's LANGS table names no language")
+	}
+	sort.Strings(languages)
+	return languages
+}
+
+// The libraries the current Journal loads only when it needs them are in the release under the
+// chunk names its own loader asks for, so the first code block or markdown paste works with no
+// network. The requests are the ones the served release makes, not names guessed from a source
+// tree, so a chunk the binary cannot answer fails here.
 func TestJournalOfflineLateLoads(t *testing.T) {
 	blockJournalNetwork(t)
 	srv, _, _ := setupHandlerTest(t)
@@ -460,36 +520,71 @@ func TestJournalOfflineLateLoads(t *testing.T) {
 	source := readJournalFixture(t, fixture.file)
 	_, _, served := openJournal(t, srv, fixture.file)
 
-	for _, late := range journalLateLoads {
-		name := late.asset
-		if strings.HasPrefix(name, "highlight/") {
-			// A fence's language is chosen at run time, so the journal names it in a template.
-			if !strings.Contains(source, "assets.load(`highlight/") {
-				t.Errorf("the %s Journal never asks for a highlight language", fixture.file)
-			}
-		} else if !strings.Contains(source, `assets.load('`+name+`')`) {
-			t.Errorf("the %s Journal never asks for %q", fixture.file, name)
+	clayJS := runtimeRequest(t, srv, "GET", runtimeAssetTarget("clay.js"), nil)
+	if clayJS.Code != 200 {
+		t.Fatalf("GET clay.js = %d", clayJS.Code)
+	}
+	descriptor := journalClayChunks(t, clayJS.Body.String())
+	loader := ""
+	for _, name := range descriptor.Preload {
+		if strings.HasPrefix(name, "loader-") {
+			loader = name
+			break
 		}
-		if strings.Contains(served, late.file) {
-			t.Errorf("%s is in the served document, so it is not a late load", late.file)
-		}
-		entry, ok := release.Files[late.file]
-		if !ok {
-			t.Errorf("%s is not a file of release %s", late.file, clayruntime.Selected)
+	}
+	if loader == "" {
+		t.Fatalf("the served clay.js boots no loader chunk: %v", descriptor.Preload)
+	}
+	loaderFile := descriptor.Dir + loader
+	loaderResponse := runtimeRequest(t, srv, "GET", runtimeAssetTarget(loaderFile), nil)
+	if loaderResponse.Code != 200 {
+		t.Fatalf("GET %s = %d", loaderFile, loaderResponse.Code)
+	}
+	chunks := journalChunks(t, loaderResponse.Body.String())
+	if len(chunks) == 0 {
+		t.Fatalf("%s carries no asset import table", loaderFile)
+	}
+
+	late := []string{"overtype", "marked", "highlight"}
+	for _, language := range journalLateLanguages(t, source) {
+		late = append(late, "highlight/"+language)
+	}
+	for _, id := range late {
+		chunk, ok := chunks[id]
+		if !ok || chunk == "" {
+			t.Errorf("%s carries no chunk for %q", loaderFile, id)
 			continue
 		}
-		w := runtimeRequest(t, srv, "GET", runtimeAssetTarget(late.file), nil)
+		publicPath := descriptor.Dir + chunk
+		entry, ok := release.Files[publicPath]
+		if !ok {
+			t.Errorf("%s asks for %s for %q, which is not a file of release %s", loaderFile, publicPath, id, clayruntime.Selected)
+			continue
+		}
+		if strings.Contains(served, publicPath) {
+			t.Errorf("%s is in the served document, so it is not a late load", publicPath)
+		}
+		w := runtimeRequest(t, srv, "GET", runtimeAssetTarget(publicPath), nil)
 		if w.Code != 200 {
-			t.Errorf("GET %s = %d", late.file, w.Code)
+			t.Errorf("GET %s = %d, want 200 (%q loads it late)", publicPath, w.Code, id)
 			continue
 		}
 		if ct := w.Header().Get("Content-Type"); ct != entry.Type {
-			t.Errorf("%s Content-Type = %q, want %q", late.file, ct, entry.Type)
+			t.Errorf("%s Content-Type = %q, want %q", publicPath, ct, entry.Type)
 		}
 		sum := sha256.Sum256(w.Body.Bytes())
 		if got := hex.EncodeToString(sum[:]); got != entry.SHA256 {
-			t.Errorf("%s bytes hash %s, want the index's %s", late.file, got, entry.SHA256)
+			t.Errorf("%s bytes hash %s, want the index's %s", publicPath, got, entry.SHA256)
 		}
+	}
+
+	for _, name := range []string{"overtype", "marked", "highlight"} {
+		if !strings.Contains(source, "assets.load('"+name+"')") {
+			t.Errorf("the %s Journal never asks for %q", fixture.file, name)
+		}
+	}
+	if !strings.Contains(source, "assets.load(`highlight/") {
+		t.Errorf("the %s Journal never asks for a highlight language", fixture.file)
 	}
 }
 
@@ -553,6 +648,22 @@ func TestJournalOfflineSaveAndReopen(t *testing.T) {
 				}
 				t.Errorf("the saved %s lost the public runtime URL %s", fixture.file, original)
 			}
+			fixtureEntries := journalEntries(t, source)
+			wantedEntries := append(append([]string{}, fixtureEntries...), entry)
+			savedEntries := journalEntries(t, saved)
+			if len(savedEntries) != len(wantedEntries) {
+				t.Errorf("the saved %s holds %d entry records, want the fixture's %d plus the new one", fixture.file, len(savedEntries), len(fixtureEntries))
+			}
+			for _, savedEntry := range savedEntries {
+				if !slices.Contains(wantedEntries, savedEntry) {
+					t.Errorf("the saved %s holds an entry record that is neither the fixture's nor the new one: %s", fixture.file, savedEntry)
+				}
+			}
+			for _, wantedEntry := range wantedEntries {
+				if !slices.Contains(savedEntries, wantedEntry) {
+					t.Errorf("the saved %s lost the entry record %s", fixture.file, wantedEntry)
+				}
+			}
 			for _, want := range []string{
 				"# Welcome to Journal",
 				"# Plan for the week",
@@ -585,6 +696,29 @@ func TestJournalOfflineSaveAndReopen(t *testing.T) {
 			}
 		})
 	}
+}
+
+var (
+	journalEntryOpenPattern = regexp.MustCompile(`<article class="entry"[^>]*>`)
+	journalEntryIDPattern   = regexp.MustCompile(`data-id="[^"]+"`)
+)
+
+// journalEntries lists every entry record a document holds that carries an id, sliced the way
+// the browser sees it: from the opening tag to its closing tag.
+func journalEntries(t *testing.T, document string) []string {
+	t.Helper()
+	entries := []string{}
+	for _, opening := range journalEntryOpenPattern.FindAllStringIndex(document, -1) {
+		if !journalEntryIDPattern.MatchString(document[opening[0]:opening[1]]) {
+			continue
+		}
+		end := strings.Index(document[opening[0]:], "</article>")
+		if end < 0 {
+			t.Fatalf("an entry record in the document is not closed")
+		}
+		entries = append(entries, document[opening[0]:opening[0]+end+len("</article>")])
+	}
+	return entries
 }
 
 // journalEntryTemplate is the first entry record a fixture holds, copied byte for byte.
