@@ -1,0 +1,438 @@
+{
+  "cases": [
+    {
+      "name": "rolling-clay-js-query",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/clay.js?plugins=page,menu",
+      "expect": {
+        "kind": "rolling",
+        "version": "1.15.2",
+        "path": "clay.js",
+        "search": "?plugins=page,menu",
+        "hash": "",
+        "available": true,
+        "canonicalURL": "https://clayjs.com/v1/clay.js?plugins=page,menu",
+        "localURL": "/_/clayjs/1.15.2/clay.js?plugins=page,menu"
+      }
+    },
+    {
+      "name": "rolling-duplicate-and-extra-query",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/clay.js?plugins=a&plugins=b&exclude=richclay",
+      "expect": {
+        "kind": "rolling",
+        "version": "1.15.2",
+        "path": "clay.js",
+        "search": "?plugins=a&plugins=b&exclude=richclay",
+        "hash": "",
+        "available": true,
+        "canonicalURL": "https://clayjs.com/v1/clay.js?plugins=a&plugins=b&exclude=richclay",
+        "localURL": "/_/clayjs/1.15.2/clay.js?plugins=a&plugins=b&exclude=richclay"
+      }
+    },
+    {
+      "name": "rolling-hash",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/sap.js#ready",
+      "expect": {
+        "kind": "rolling",
+        "version": "1.15.2",
+        "path": "sap.js",
+        "search": "",
+        "hash": "#ready",
+        "available": true,
+        "canonicalURL": "https://clayjs.com/v1/sap.js#ready",
+        "localURL": "/_/clayjs/1.15.2/sap.js#ready"
+      }
+    },
+    {
+      "name": "exact-selected",
+      "fn": "resolve",
+      "input": "https://clayjs.com/1.15.2/clay.js",
+      "expect": {
+        "kind": "exact",
+        "version": "1.15.2",
+        "path": "clay.js",
+        "search": "",
+        "hash": "",
+        "available": true,
+        "canonicalURL": "https://clayjs.com/1.15.2/clay.js",
+        "localURL": "/_/clayjs/1.15.2/clay.js"
+      }
+    },
+    {
+      "name": "exact-older-bundled",
+      "fn": "resolve",
+      "input": "https://clayjs.com/1.15.1/clay.js",
+      "expect": {
+        "kind": "exact",
+        "version": "1.15.1",
+        "path": "clay.js",
+        "search": "",
+        "hash": "",
+        "available": true,
+        "canonicalURL": "https://clayjs.com/1.15.1/clay.js",
+        "localURL": "/_/clayjs/1.15.1/clay.js"
+      }
+    },
+    {
+      "name": "exact-absent",
+      "fn": "resolve",
+      "input": "https://clayjs.com/1.14.0/clay.js",
+      "expect": {
+        "kind": "exact",
+        "version": "1.14.0",
+        "path": "clay.js",
+        "search": "",
+        "hash": "",
+        "available": false,
+        "canonicalURL": "https://clayjs.com/1.14.0/clay.js",
+        "localURL": null
+      }
+    },
+    {
+      "name": "rolling-major-mismatch",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v2/clay.js",
+      "expect": null
+    },
+    {
+      "name": "source-fallback",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/src/loader.js",
+      "expect": {
+        "kind": "rolling",
+        "version": "1.15.2",
+        "path": "src/loader.js",
+        "search": "",
+        "hash": "",
+        "available": true,
+        "canonicalURL": "https://clayjs.com/v1/src/loader.js",
+        "localURL": "/_/clayjs/1.15.2/src/loader.js"
+      }
+    },
+    {
+      "name": "alias",
+      "fn": "resolve",
+      "input": "https://cdn.example.test/lib@1.0.0/lib.min.js",
+      "expect": {
+        "kind": "alias",
+        "version": "1.15.2",
+        "path": "compat/lib-1.0.0.min.js",
+        "search": "",
+        "hash": "",
+        "available": true,
+        "canonicalURL": "https://cdn.example.test/lib@1.0.0/lib.min.js",
+        "localURL": "/_/clayjs/1.15.2/compat/lib-1.0.0.min.js"
+      }
+    },
+    {
+      "name": "alias-with-query",
+      "fn": "resolve",
+      "input": "https://cdn.example.test/lib@1.0.0/lib.min.js?x=1",
+      "expect": null
+    },
+    {
+      "name": "docs-path-not-runtime",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/docs/guide.html",
+      "expect": null
+    },
+    {
+      "name": "http-scheme",
+      "fn": "resolve",
+      "input": "http://clayjs.com/v1/clay.js",
+      "expect": null
+    },
+    {
+      "name": "uppercase-host",
+      "fn": "resolve",
+      "input": "https://CLAYJS.com/v1/clay.js",
+      "expect": null
+    },
+    {
+      "name": "explicit-port",
+      "fn": "resolve",
+      "input": "https://clayjs.com:443/v1/clay.js",
+      "expect": null
+    },
+    {
+      "name": "userinfo",
+      "fn": "resolve",
+      "input": "https://u@clayjs.com/v1/clay.js",
+      "expect": null
+    },
+    {
+      "name": "lookalike-host",
+      "fn": "resolve",
+      "input": "https://clayjs.com.evil.example/v1/clay.js",
+      "expect": null
+    },
+    {
+      "name": "protocol-relative",
+      "fn": "resolve",
+      "input": "//clayjs.com/v1/clay.js",
+      "expect": null
+    },
+    {
+      "name": "relative-path",
+      "fn": "resolve",
+      "input": "v1/clay.js",
+      "expect": null
+    },
+    {
+      "name": "encoded-dot-dot",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/%2e%2e/clay.js",
+      "expect": null
+    },
+    {
+      "name": "encoded-slash",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/m%2Fc-AAAA.js",
+      "expect": null
+    },
+    {
+      "name": "encoded-backslash",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/src%5cloader.js",
+      "expect": null
+    },
+    {
+      "name": "dot-dot-segment",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/../clay.js",
+      "expect": null
+    },
+    {
+      "name": "dot-segment",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/./clay.js",
+      "expect": null
+    },
+    {
+      "name": "empty-segment",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1//clay.js",
+      "expect": null
+    },
+    {
+      "name": "backslash-path",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/src\\loader.js",
+      "expect": null
+    },
+    {
+      "name": "bare-prefix",
+      "fn": "resolve",
+      "input": "https://clayjs.com/v1/",
+      "expect": null
+    },
+    {
+      "name": "local-path-absolute",
+      "fn": "resolve",
+      "input": "/_/clayjs/1.15.2/clay.js",
+      "expect": null
+    },
+    {
+      "name": "local-same-origin-absolute",
+      "fn": "resolve",
+      "input": "http://127.0.0.1:4321/_/clayjs/1.15.2/clay.js",
+      "expect": null
+    },
+    {
+      "name": "local-foreign-origin-absolute",
+      "fn": "resolve",
+      "input": "https://other.example/_/clayjs/1.15.2/clay.js",
+      "expect": null
+    },
+    {
+      "name": "restore-rolling-entry",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/clay.js?plugins=page,menu",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://clayjs.com/v1/clay.js?plugins=page,menu",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=page,menu"
+          }
+        ]
+      },
+      "expect": "https://clayjs.com/v1/clay.js?plugins=page,menu"
+    },
+    {
+      "name": "restore-exact-entry",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/clay.js",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://clayjs.com/1.15.2/clay.js",
+            "local": "/_/clayjs/1.15.2/clay.js"
+          }
+        ]
+      },
+      "expect": "https://clayjs.com/1.15.2/clay.js"
+    },
+    {
+      "name": "no-descriptor-exact-public",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/clay.js",
+      "expect": "https://clayjs.com/1.15.2/clay.js"
+    },
+    {
+      "name": "stale-exact-entry-version",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/clay.js",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://clayjs.com/1.15.1/clay.js",
+            "local": "/_/clayjs/1.15.2/clay.js"
+          }
+        ]
+      },
+      "expect": "https://clayjs.com/1.15.2/clay.js"
+    },
+    {
+      "name": "changed-query-keeps-entry-prefix",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/clay.js?plugins=page,menu",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://clayjs.com/v1/clay.js?plugins=page",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=page"
+          }
+        ]
+      },
+      "expect": "https://clayjs.com/v1/clay.js?plugins=page,menu"
+    },
+    {
+      "name": "spoofed-entry-path",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/clay.js",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://clayjs.com/v1/m/other.js",
+            "local": "/_/clayjs/1.15.2/clay.js"
+          }
+        ]
+      },
+      "expect": "https://clayjs.com/1.15.2/clay.js"
+    },
+    {
+      "name": "spoofed-entry-host",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/clay.js",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://example.com/v1/clay.js",
+            "local": "/_/clayjs/1.15.2/clay.js"
+          }
+        ]
+      },
+      "expect": "https://clayjs.com/1.15.2/clay.js"
+    },
+    {
+      "name": "same-origin-absolute",
+      "fn": "canonicalize",
+      "input": "http://127.0.0.1:4321/_/clayjs/1.15.2/clay.js",
+      "expect": "https://clayjs.com/1.15.2/clay.js"
+    },
+    {
+      "name": "same-origin-absolute-with-entry",
+      "fn": "canonicalize",
+      "input": "http://127.0.0.1:4321/_/clayjs/1.15.2/clay.js",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://clayjs.com/1.15.2/clay.js",
+            "local": "/_/clayjs/1.15.2/clay.js"
+          }
+        ]
+      },
+      "expect": "https://clayjs.com/1.15.2/clay.js"
+    },
+    {
+      "name": "foreign-origin-local-unchanged",
+      "fn": "canonicalize",
+      "input": "https://other.example/_/clayjs/1.15.2/clay.js",
+      "expect": "https://other.example/_/clayjs/1.15.2/clay.js"
+    },
+    {
+      "name": "non-runtime-unchanged",
+      "fn": "canonicalize",
+      "input": "https://example.com/app.js",
+      "expect": "https://example.com/app.js"
+    },
+    {
+      "name": "rolling-url-unchanged",
+      "fn": "canonicalize",
+      "input": "https://clayjs.com/v1/clay.js",
+      "expect": "https://clayjs.com/v1/clay.js"
+    },
+    {
+      "name": "encoded-local-unchanged",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/%2e%2e/clay.js",
+      "expect": "/_/clayjs/1.15.2/%2e%2e/clay.js"
+    },
+    {
+      "name": "descriptor-alias-client",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/compat/lib-1.0.0.min.js",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://cdn.example.test/lib@1.0.0/lib.min.js",
+            "local": "/_/clayjs/1.15.2/compat/lib-1.0.0.min.js"
+          }
+        ],
+        "aliases": {
+          "https://cdn.example.test/lib@1.0.0/lib.min.js": "compat/lib-1.0.0.min.js"
+        }
+      },
+      "noReleases": true,
+      "expect": "https://cdn.example.test/lib@1.0.0/lib.min.js"
+    },
+    {
+      "name": "descriptor-alias-other-path",
+      "fn": "canonicalize",
+      "input": "/_/clayjs/1.15.2/compat/lib-1.0.0.min.js",
+      "descriptor": {
+        "schema": 1,
+        "version": "1.15.2",
+        "entries": [
+          {
+            "original": "https://cdn.example.test/lib@1.0.0/lib.min.js",
+            "local": "/_/clayjs/1.15.2/compat/lib-1.0.0.min.js"
+          }
+        ],
+        "aliases": {
+          "https://cdn.example.test/lib@1.0.0/lib.min.js": "compat/other.min.js"
+        }
+      },
+      "noReleases": true,
+      "expect": "https://clayjs.com/1.15.2/compat/lib-1.0.0.min.js"
+    }
+  ]
+}

@@ -1,0 +1,230 @@
+{
+  "cases": [
+    {
+      "name": "kanban-head",
+      "input": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Kanban</title>\n<script src=\"https://clayjs.com/v1/clay.js?plugins=sortable,people,upload,sync,visitor-drafts,unsent,menu&exclude=richclay\"></script>\n<script src=\"https://clayjs.com/v1/sap.js\"></script>\n<script src=\"https://clayjs.com/v1/clay-router.js\"></script>\n<link rel=\"stylesheet\" href=\"https://clayjs.com/v1/src/page/themes/light-1.css\">\n</head>\n<body><div id=\"board\"></div></body>\n</html>\n",
+      "project": {
+        "html": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Kanban</title>\n<script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js?plugins=sortable,people,upload,sync,visitor-drafts,unsent,menu&exclude=richclay\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=sortable,people,upload,sync,visitor-drafts,unsent,menu&exclude=richclay\"},{\"original\":\"https://clayjs.com/v1/sap.js\",\"local\":\"/_/clayjs/1.15.2/sap.js\"},{\"original\":\"https://clayjs.com/v1/clay-router.js\",\"local\":\"/_/clayjs/1.15.2/clay-router.js\"},{\"original\":\"https://clayjs.com/v1/src/page/themes/light-1.css\",\"local\":\"/_/clayjs/1.15.2/src/page/themes/light-1.css\"}]}</script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=sortable,people,upload,sync,visitor-drafts,unsent,menu&exclude=richclay\"></script>\n<script src=\"/_/clayjs/1.15.2/sap.js\"></script>\n<script src=\"/_/clayjs/1.15.2/clay-router.js\"></script>\n<link rel=\"stylesheet\" href=\"/_/clayjs/1.15.2/src/page/themes/light-1.css\">\n</head>\n<body><div id=\"board\"></div></body>\n</html>\n",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/clay.js?plugins=sortable,people,upload,sync,visitor-drafts,unsent,menu&exclude=richclay",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=sortable,people,upload,sync,visitor-drafts,unsent,menu&exclude=richclay"
+          },
+          {
+            "original": "https://clayjs.com/v1/sap.js",
+            "local": "/_/clayjs/1.15.2/sap.js"
+          },
+          {
+            "original": "https://clayjs.com/v1/clay-router.js",
+            "local": "/_/clayjs/1.15.2/clay-router.js"
+          },
+          {
+            "original": "https://clayjs.com/v1/src/page/themes/light-1.css",
+            "local": "/_/clayjs/1.15.2/src/page/themes/light-1.css"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Kanban</title>\n<script src=\"https://clayjs.com/v1/clay.js?plugins=sortable,people,upload,sync,visitor-drafts,unsent,menu&exclude=richclay\"></script>\n<script src=\"https://clayjs.com/v1/sap.js\"></script>\n<script src=\"https://clayjs.com/v1/clay-router.js\"></script>\n<link rel=\"stylesheet\" href=\"https://clayjs.com/v1/src/page/themes/light-1.css\">\n</head>\n<body><div id=\"board\"></div></body>\n</html>\n"
+    },
+    {
+      "name": "single-quotes",
+      "input": "<html><head><script type='module' src='https://clayjs.com/v1/clay.js?plugins=menu'></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js?plugins=menu\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=menu\"}]}</script><script type='module' src='/_/clayjs/1.15.2/clay.js?plugins=menu'></script></head><body></body></html>",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/clay.js?plugins=menu",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=menu"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><head><script type='module' src='https://clayjs.com/v1/clay.js?plugins=menu'></script></head><body></body></html>"
+    },
+    {
+      "name": "unquoted",
+      "input": "<html><head><script src=https://clayjs.com/v1/sap.js></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/sap.js\",\"local\":\"/_/clayjs/1.15.2/sap.js\"}]}</script><script src=/_/clayjs/1.15.2/sap.js></script></head><body></body></html>",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/sap.js",
+            "local": "/_/clayjs/1.15.2/sap.js"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><head><script src=https://clayjs.com/v1/sap.js></script></head><body></body></html>"
+    },
+    {
+      "name": "template-contents",
+      "input": "<html><body><template id=\"card\"><script src=\"https://clayjs.com/v1/clay.js?plugins=menu\"></script></template></body></html>",
+      "project": {
+        "html": "<html><body><template id=\"card\"><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js?plugins=menu\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=menu\"}]}</script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=menu\"></script></template></body></html>",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/clay.js?plugins=menu",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=menu"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><body><template id=\"card\"><script src=\"https://clayjs.com/v1/clay.js?plugins=menu\"></script></template></body></html>"
+    },
+    {
+      "name": "quoted-greater-than-on-same-tag",
+      "input": "<html><head><script data-x=\"a>b\" src=\"https://clayjs.com/v1/clay.js\"></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js\",\"local\":\"/_/clayjs/1.15.2/clay.js\"}]}</script><script data-x=\"a>b\" src=\"/_/clayjs/1.15.2/clay.js\"></script></head><body></body></html>",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/clay.js",
+            "local": "/_/clayjs/1.15.2/clay.js"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><head><script data-x=\"a>b\" src=\"https://clayjs.com/v1/clay.js\"></script></head><body></body></html>"
+    },
+    {
+      "name": "mentions-not-attributes",
+      "input": "<html><head><!-- <script src=\"https://clayjs.com/v1/clay.js\"></script> -->\n<script>const u = \"https://clayjs.com/v1/clay.js\";</script>\n<script type=\"application/json\" id=\"cfg\">{\"src\":\"https://clayjs.com/v1/clay.js\"}</script>\n<script src=\"https://clayjs.com/v1/clay.js?plugins=menu\"></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><!-- <script src=\"https://clayjs.com/v1/clay.js\"></script> -->\n<script>const u = \"https://clayjs.com/v1/clay.js\";</script>\n<script type=\"application/json\" id=\"cfg\">{\"src\":\"https://clayjs.com/v1/clay.js\"}</script>\n<script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js?plugins=menu\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=menu\"}]}</script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=menu\"></script></head><body></body></html>",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/clay.js?plugins=menu",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=menu"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><head><!-- <script src=\"https://clayjs.com/v1/clay.js\"></script> -->\n<script>const u = \"https://clayjs.com/v1/clay.js\";</script>\n<script type=\"application/json\" id=\"cfg\">{\"src\":\"https://clayjs.com/v1/clay.js\"}</script>\n<script src=\"https://clayjs.com/v1/clay.js?plugins=menu\"></script></head><body></body></html>"
+    },
+    {
+      "name": "encoded-attribute-skipped",
+      "input": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page,menu&amp;exclude=richclay\"></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page,menu&amp;exclude=richclay\"></script></head><body></body></html>",
+        "mappings": [],
+        "skipped": [
+          {
+            "value": "https://clayjs.com/v1/clay.js?plugins=page,menu&exclude=richclay",
+            "reason": "encoded"
+          }
+        ],
+        "unavailable": null
+      },
+      "canonical": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page,menu&amp;exclude=richclay\"></script></head><body></body></html>"
+    },
+    {
+      "name": "mixed-pins",
+      "input": "<html><head><script src=\"https://clayjs.com/1.15.2/clay.js\"></script><script src=\"https://clayjs.com/1.15.1/clay.js\"></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script src=\"https://clayjs.com/1.15.2/clay.js\"></script><script src=\"https://clayjs.com/1.15.1/clay.js\"></script></head><body></body></html>",
+        "mappings": [],
+        "skipped": [],
+        "unavailable": {
+          "reason": "mixed-versions",
+          "versions": [
+            "1.15.1",
+            "1.15.2"
+          ]
+        }
+      },
+      "canonical": "<html><head><script src=\"https://clayjs.com/1.15.2/clay.js\"></script><script src=\"https://clayjs.com/1.15.1/clay.js\"></script></head><body></body></html>"
+    },
+    {
+      "name": "absent-pin",
+      "input": "<html><head><script src=\"https://clayjs.com/1.14.0/clay.js\"></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><script src=\"https://clayjs.com/1.14.0/clay.js\"></script></head><body></body></html>",
+        "mappings": [],
+        "skipped": [],
+        "unavailable": {
+          "reason": "release-missing",
+          "versions": [
+            "1.14.0"
+          ]
+        }
+      },
+      "canonical": "<html><head><script src=\"https://clayjs.com/1.14.0/clay.js\"></script></head><body></body></html>"
+    },
+    {
+      "name": "icon-untouched",
+      "input": "<html><head><link rel=\"icon\" href=\"https://clayjs.com/v1/favicon.ico\"><script src=\"https://clayjs.com/v1/clay.js\"></script></head><body></body></html>",
+      "project": {
+        "html": "<html><head><link rel=\"icon\" href=\"https://clayjs.com/v1/favicon.ico\"><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js\",\"local\":\"/_/clayjs/1.15.2/clay.js\"}]}</script><script src=\"/_/clayjs/1.15.2/clay.js\"></script></head><body></body></html>",
+        "mappings": [
+          {
+            "original": "https://clayjs.com/v1/clay.js",
+            "local": "/_/clayjs/1.15.2/clay.js"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><head><link rel=\"icon\" href=\"https://clayjs.com/v1/favicon.ico\"><script src=\"https://clayjs.com/v1/clay.js\"></script></head><body></body></html>"
+    },
+    {
+      "name": "no-runtime-url",
+      "input": "<html><head><title>x</title></head><body><p>hi</p></body></html>",
+      "project": {
+        "html": "<html><head><title>x</title></head><body><p>hi</p></body></html>",
+        "mappings": [],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<html><head><title>x</title></head><body><p>hi</p></body></html>"
+    },
+    {
+      "name": "alias-and-rolling",
+      "input": "<!doctype html><html><head><script src=\"https://cdn.example.test/lib@1.0.0/lib.min.js\"></script><script src=\"https://clayjs.com/v1/clay.js?plugins=page\"></script></head><body></body></html>",
+      "project": {
+        "html": "<!doctype html><html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://cdn.example.test/lib@1.0.0/lib.min.js\",\"local\":\"/_/clayjs/1.15.2/compat/lib-1.0.0.min.js\"},{\"original\":\"https://clayjs.com/v1/clay.js?plugins=page\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=page\"}],\"aliases\":{\"https://cdn.example.test/lib@1.0.0/lib.min.js\":\"compat/lib-1.0.0.min.js\"}}</script><script src=\"/_/clayjs/1.15.2/compat/lib-1.0.0.min.js\"></script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=page\"></script></head><body></body></html>",
+        "mappings": [
+          {
+            "original": "https://cdn.example.test/lib@1.0.0/lib.min.js",
+            "local": "/_/clayjs/1.15.2/compat/lib-1.0.0.min.js"
+          },
+          {
+            "original": "https://clayjs.com/v1/clay.js?plugins=page",
+            "local": "/_/clayjs/1.15.2/clay.js?plugins=page"
+          }
+        ],
+        "skipped": [],
+        "unavailable": null
+      },
+      "canonical": "<!doctype html><html><head><script src=\"https://cdn.example.test/lib@1.0.0/lib.min.js\"></script><script src=\"https://clayjs.com/v1/clay.js?plugins=page\"></script></head><body></body></html>"
+    }
+  ],
+  "canonicalOnly": [
+    {
+      "name": "served-page-query-edited",
+      "input": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js?plugins=page\",\"local\":\"/_/clayjs/1.15.2/clay.js?plugins=page\"}]}</script><script src=\"/_/clayjs/1.15.2/clay.js?plugins=page,menu\"></script></head><body></body></html>",
+      "canonical": "<html><head><script src=\"https://clayjs.com/v1/clay.js?plugins=page,menu\"></script></head><body></body></html>"
+    },
+    {
+      "name": "local-url-no-descriptor",
+      "input": "<html><head><script src=\"/_/clayjs/1.15.2/clay.js?plugins=page\"></script></head><body></body></html>",
+      "canonical": "<html><head><script src=\"https://clayjs.com/1.15.2/clay.js?plugins=page\"></script></head><body></body></html>"
+    },
+    {
+      "name": "spoofed-descriptor",
+      "input": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\" clay=\"no-save no-watch no-snapshot\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://example.com/v1/clay.js\",\"local\":\"/_/clayjs/1.15.2/clay.js\"}]}</script><script src=\"/_/clayjs/1.15.2/clay.js\"></script></head><body></body></html>",
+      "canonical": "<html><head><script src=\"https://clayjs.com/1.15.2/clay.js\"></script></head><body></body></html>"
+    },
+    {
+      "name": "two-descriptors",
+      "input": "<html><head><script type=\"application/json\" id=\"clay-runtime-map\">{\"schema\":1,\"version\":\"1.15.2\",\"entries\":[{\"original\":\"https://clayjs.com/v1/clay.js\",\"local\":\"/_/clayjs/1.15.2/clay.js\"}]}</script><script type=\"application/json\" id=\"clay-runtime-map\">{}</script><script src=\"/_/clayjs/1.15.2/clay.js\"></script></head><body></body></html>",
+      "canonical": "<html><head><script src=\"https://clayjs.com/v1/clay.js\"></script></head><body></body></html>"
+    }
+  ]
+}

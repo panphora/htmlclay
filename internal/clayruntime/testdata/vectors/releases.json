@@ -1,0 +1,105 @@
+{
+  "selectedVersion": "1.15.2",
+  "documentURL": "http://127.0.0.1:4321/notes/2026/doc.html",
+  "releases": {
+    "1.15.2": {
+      "version": "1.15.2",
+      "files": {
+        "clay.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "sap.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "clay-router.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "m/manifest.json": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "application/json"
+        },
+        "m/c-AAAA.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "src/loader.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "src/page/themes/light-1.css": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/css; charset=utf-8"
+        },
+        "fonts/inter.css": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/css; charset=utf-8"
+        },
+        "compat/lib-1.0.0.min.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        }
+      },
+      "aliases": {
+        "https://cdn.example.test/lib@1.0.0/lib.min.js": "compat/lib-1.0.0.min.js"
+      }
+    },
+    "1.15.1": {
+      "version": "1.15.1",
+      "files": {
+        "clay.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "sap.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "clay-router.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "m/manifest.json": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "application/json"
+        },
+        "m/c-AAAA.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "src/loader.js": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/javascript; charset=utf-8"
+        },
+        "src/page/themes/light-1.css": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/css; charset=utf-8"
+        },
+        "fonts/inter.css": {
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bytes": 1,
+          "type": "text/css; charset=utf-8"
+        }
+      },
+      "aliases": {}
+    }
+  }
+}
