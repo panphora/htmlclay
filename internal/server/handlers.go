@@ -172,6 +172,7 @@ type documentMeta struct {
 	// refusal. It is per-document because it lives in the block §5 reserves for that,
 	// and there is no top-level duplicate.
 	MaxBytes int64        `json:"maxBytes"`
+	Versions bool         `json:"versions,omitempty"`
 	Helpers  []helperMeta `json:"helpers,omitempty"`
 	// §6's receipt: which save produced the bytes this etag stamps. Reported only
 	// when the pair still verifies against those bytes, so a client that sees its
@@ -1403,6 +1404,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			SaveID:       saveID,
 			WireBudgetMS: helper.StructuredDeadline,
 			MaxBytes:     maxSaveSize,
+			Versions:     true,
 			// The same constant the upload route enforces, not a second copy of the
 			// number: a cap that is announced and a cap that is applied drifting apart
 			// is worse than announcing none, because a client would refuse files this
