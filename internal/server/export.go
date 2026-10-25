@@ -46,6 +46,9 @@ func ExportDocumentZip(document, outDir, uploadsDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// A ZIP leaves this computer, so it can never carry a runtime URL that only
+	// resolves on this host. The file itself is not changed.
+	doc = canonicalForWrite("", doc)
 	refs := hostUploadRefs(doc)
 
 	out, err := freeZipPath(outDir, top)
@@ -67,7 +70,7 @@ func ExportDocumentZip(document, outDir, uploadsDir string) (string, error) {
 
 	zw := zip.NewWriter(f)
 	if len(refs) == 0 {
-		if err := addZipFile(zw, document, top+"/"+filepath.Base(document)); err != nil {
+		if err := addZipBytes(zw, info, top+"/"+filepath.Base(document), doc); err != nil {
 			return "", err
 		}
 	} else {

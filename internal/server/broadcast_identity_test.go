@@ -17,7 +17,7 @@ import (
 func TestForBrowserStripsTheTokenAndStampsTheIdentity(t *testing.T) {
 	in := []byte(`<html savetoken="secret" lang="en"><body>hi</body></html>`)
 
-	got := forBrowser(in, "id:"+stableUUID)
+	got := forBrowser(in, "id:"+stableUUID, "http://127.0.0.1:1/test.htmlclay")
 	if strings.Contains(got, "secret") || strings.Contains(got, "savetoken") {
 		t.Errorf("a save token reached a browser through the broadcast: %q", got)
 	}
@@ -32,7 +32,7 @@ func TestForBrowserStripsTheTokenAndStampsTheIdentity(t *testing.T) {
 func TestForBrowserInventsNoIdentity(t *testing.T) {
 	in := []byte(`<html lang="en"><body>hi</body></html>`)
 	for _, key := range []string{"", "path:deadbeef"} {
-		got := forBrowser(in, key)
+		got := forBrowser(in, key, "http://127.0.0.1:1/test.htmlclay")
 		// The ATTRIBUTE must be absent, not merely empty. Reading the id back is
 		// not enough: a stamp written unconditionally puts `documentid=""` on the
 		// root, which reads as no id while still being a host-authored attribute

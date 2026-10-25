@@ -181,6 +181,9 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	// never adopted; it may have come from a clone or a rename.
 	data = htmlutil.StripToken(data)
 	data = htmlutil.StripHTMLClayID(data)
+	// A version's bytes are whatever a save once wrote, which may predate the save
+	// lane's canonicalization and carry this host's runtime URLs.
+	data = canonicalForWrite(r.Host, data)
 
 	if wErr := atomicWriteFile(f.AbsPath, data); wErr != nil {
 		f.Unlock()

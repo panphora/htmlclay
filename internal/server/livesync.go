@@ -1632,7 +1632,11 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 	f.Lock()
 	key := f.HistoryKey()
 	f.Unlock()
-	relayHTML = forBrowser([]byte(relayHTML), key)
+	// The relay is a write path a hostile or out-of-date client reaches, so the
+	// bytes it hands on are canonicalized before anything else sees them: what the
+	// relay holds, and what a receiving tab saves, must not name this host.
+	relayHTML = string(canonicalForWrite(r.Host, []byte(relayHTML)))
+	relayHTML = forBrowser([]byte(relayHTML), key, s.documentURLFor(f))
 
 	identityMap := payload.IdentityMap
 	if len(identityMap) > 0 {
@@ -1691,16 +1695,16 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 //
 // key is the caller's already-resolved history key, so this takes no lock and
 // cannot be called with a key derived from whatever happens to be on disk now.
-func forBrowser(data []byte, key string) string {
+func forBrowser(data []byte, key, documentURL string) string {
 	stripped := htmlutil.StripToken(data)
 	if id, ok := versions.IDFromKey(key); ok {
 		stripped = htmlutil.SetHTMLClayID(stripped, id)
 	}
-	return string(stripped)
+	return string(projectRuntimeHTML(stripped, documentURL))
 }
 
 // broadcastDiskHTML publishes bytes that just landed on disk to the saved lane.
 // Caller holds f.Lock() and passes the history key it resolved there.
 func (s *Server) broadcastDiskHTML(f *session.File, data []byte, key string) {
-	s.coord.broadcastSaved(f, forBrowser(data, key), "file-system")
+	s.coord.broadcastSaved(f, forBrowser(data, key, s.documentURLFor(f)), "file-system")
 }

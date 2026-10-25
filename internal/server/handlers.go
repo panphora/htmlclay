@@ -974,6 +974,13 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	// edit-mode page) must never autosave itself into the file.
 	body = htmlutil.StripBanner(body)
 
+	// A client that saves what it was served would write this host's /_/clayjs/
+	// URLs and their descriptor into the document, and the file would then load
+	// only here. ClayJS turns its own snapshot back first; a host cannot rely on
+	// every client doing it (an older ClayJS, a hand-written save, a restored
+	// copy), so the bytes that become the document are canonicalized here.
+	body = canonicalForWrite(r.Host, body)
+
 	// A valid save is always a full document (the browser serializes
 	// documentElement.outerHTML). Reject anything without an <html> tag so a
 	// stray request cannot overwrite the file with a fragment or junk.

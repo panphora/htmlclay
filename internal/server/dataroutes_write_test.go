@@ -581,7 +581,7 @@ func TestDataWriteReachesEditTabsOnTheLiveLane(t *testing.T) {
 	key := f.HistoryKey()
 	f.Unlock()
 	stored := []byte(readDoc(t, path))
-	want := forBrowser(stored, key)
+	want := forBrowser(stored, key, srv.documentURLFor(f))
 
 	notice := waitFrame(t, live, time.Second)
 	if notice["type"] != "notification" {

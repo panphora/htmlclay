@@ -479,7 +479,7 @@ func (wt *watcher) publishConfirmed(e *watchEntry, hash string, data []byte) str
 	// The stamp is taken from the STORED bytes, not from the browser-facing ones
 	// forBrowser is about to build: a client compares it against what the save
 	// route stamps, and that route stamps what it wrote to disk.
-	if wt.coord.publishExternalChange(f, msg, forBrowser(data, key), specwire.Etag(data)) {
+	if wt.coord.publishExternalChange(f, msg, forBrowser(data, key, documentURLWithoutHost(f)), specwire.Etag(data)) {
 		f.RecordStableObservation(hash)
 		wt.logger.Printf("External change detected in %s", f.RelPath)
 	}

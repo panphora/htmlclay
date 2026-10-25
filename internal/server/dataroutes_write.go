@@ -269,6 +269,11 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 		writeWriteError(w, status, body)
 		return
 	}
+	// The stored document is the only source of this edit, so the bytes it produced
+	// can carry a runtime URL only if disk already held one. Canonicalizing before
+	// the admission check means what is judged is what would be written.
+	res.HTML = canonicalForWrite(r.Host, res.HTML)
+
 	decision, admissionErr := pageadmission.CheckWrite(string(current), string(res.HTML), "")
 	if admissionErr == nil && decision != pageadmission.Ordinary {
 		admissionErr = &pageadmission.Refusal{Reason: "file-changed"}
@@ -331,7 +336,7 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 		// Announced as an external change, not a save: no tab relays this write to the others,
 		// so edit-mode tabs must hear it on the live lane, through the same dirty-region
 		// protection a text editor's write gets.
-		s.coord.publishExternalChange(f, f.Name+" was updated through the data API", forBrowser(written, key), specwire.Etag(written))
+		s.coord.publishExternalChange(f, f.Name+" was updated through the data API", forBrowser(written, key, s.documentURLFor(f)), specwire.Etag(written))
 	}
 	f.Unlock()
 
