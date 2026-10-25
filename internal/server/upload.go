@@ -31,6 +31,8 @@ import (
 
 const maxUploadSize = 25 << 20
 
+const uploadAccessLocal = "local"
+
 // The multipart framing around the one file part: boundaries, part headers and
 // a long filename. The body may exceed the advertised cap by this much, so a
 // file of exactly maxBytes is accepted; the file's own bytes are capped below.
@@ -505,7 +507,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	noStoreJSON(w)
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok": true, "msg": "Uploaded", "msgType": "success",
-		"uploads": []map[string]any{{"name": name, "url": served, "bytes": len(data)}},
+		"uploads": []map[string]any{{"name": name, "url": served, "bytes": len(data), "access": uploadAccessLocal}},
 	})
 }
 

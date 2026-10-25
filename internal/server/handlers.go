@@ -242,8 +242,9 @@ func (s *Server) people() *peopleMeta {
 }
 
 type uploadMeta struct {
-	Allowed  bool  `json:"allowed"`
-	MaxBytes int64 `json:"maxBytes"`
+	Allowed  bool   `json:"allowed"`
+	MaxBytes int64  `json:"maxBytes"`
+	Access   string `json:"access"`
 }
 
 func (s *Server) lookupSession(w http.ResponseWriter, r *http.Request) (*session.File, bool) {
@@ -1398,7 +1399,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			// number: a cap that is announced and a cap that is applied drifting apart
 			// is worse than announcing none, because a client would refuse files this
 			// host accepts or send files it refuses.
-			Upload:           uploadMeta{Allowed: true, MaxBytes: maxUploadSize},
+			Upload:           uploadMeta{Allowed: true, MaxBytes: maxUploadSize, Access: uploadAccessLocal},
 			Path:             filepath.ToSlash(f.RelPath),
 			AbsolutePath:     f.AbsPath,
 			Name:             f.Name,
