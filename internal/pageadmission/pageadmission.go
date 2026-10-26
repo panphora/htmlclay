@@ -349,7 +349,8 @@ func pageScript(attrs map[string]string) bool {
 func locatePage(source string) (start, end, articles int) {
 	start = -1
 	z := html.NewTokenizer(strings.NewReader(source))
-	offset, inert, article := 0, 0, 0
+	offset, article := 0, 0
+	var inertTags []string
 	matched := 0
 	inside, pending := false, false
 	for {
@@ -367,11 +368,11 @@ func locatePage(source string) (start, end, articles int) {
 			switch name {
 			case "template", "noscript":
 				if token == html.StartTagToken {
-					inert++
+					inertTags = append(inertTags, name)
 				}
 			case "article":
 				if token == html.StartTagToken {
-					if inert == 0 {
+					if len(inertTags) == 0 {
 						if _, ok := attrs["data-page"]; ok {
 							articles++
 						}
@@ -379,7 +380,7 @@ func locatePage(source string) (start, end, articles int) {
 					article++
 				}
 			case "script":
-				if token == html.StartTagToken && inert == 0 && !pending && pageScript(attrs) {
+				if token == html.StartTagToken && len(inertTags) == 0 && !pending && pageScript(attrs) {
 					matched++
 					start = at
 					inside = article > 0
@@ -390,8 +391,11 @@ func locatePage(source string) (start, end, articles int) {
 			name, _ := z.TagName()
 			switch string(name) {
 			case "template", "noscript":
-				if inert > 0 {
-					inert--
+				for i := len(inertTags) - 1; i >= 0; i-- {
+					if inertTags[i] == string(name) {
+						inertTags = inertTags[:i]
+						break
+					}
 				}
 			case "article":
 				if article > 0 {

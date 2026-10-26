@@ -70,6 +70,9 @@ func editBootSet(t *testing.T, node, script, release, query string) editSet {
 func TestOfflineModeEditSetIsServed(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("node is needed to read the release's own load plan")
+		}
 		t.Skip("node is needed to read the release's own load plan")
 	}
 	srv, _, _ := setupHandlerTest(t)
@@ -84,13 +87,18 @@ func TestOfflineModeEditSetIsServed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var manifest struct {
+		Runtime string            `json:"runtime"`
 		Entries map[string]string `json:"entries"`
 	}
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatalf("m/manifest.json: %v", err)
 	}
-	pageChunks := make([]string, 0, 2)
-	for _, logical := range []string{"page/editor.js", "core/mode-lifecycle.js"} {
+	if manifest.Runtime == "" {
+		t.Fatal("m/manifest.json has no runtime entry")
+	}
+	pageChunks := make([]string, 0, 4)
+	pageChunks = append(pageChunks, "m/"+manifest.Runtime)
+	for _, logical := range []string{"page/editor.js", "core/mode-lifecycle.js", "loader.js"} {
 		chunk, ok := manifest.Entries[logical]
 		if !ok {
 			t.Fatalf("m/manifest.json has no entry for %s", logical)

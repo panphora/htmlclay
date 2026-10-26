@@ -507,6 +507,23 @@ func TestUntaggedTemplateInspectsAsNone(t *testing.T) {
 	}
 }
 
+func TestHostedWriteAdmissionIgnoresStrayNoscriptInsideTemplate(t *testing.T) {
+	article := `<article class="page" data-page="1"><h1 data-id="title"></h1></article>`
+	ghost := `<article data-page="ghost"></article>`
+	current := page(`<template></noscript>`+ghost+`</template>`, article)
+	next := page(tag("page", yjs), article)
+	if _, _, articles := locatePage(current); articles != 1 {
+		t.Fatalf("counted %d articles in the stored document, want 1", articles)
+	}
+	decision, err := CheckWrite(current, next, "")
+	if err != nil {
+		t.Fatalf("error = %v, want no refusal", err)
+	}
+	if decision != Ordinary {
+		t.Fatalf("decision = %s, want %s", decision, Ordinary)
+	}
+}
+
 func TestUntaggedTemplateFirstSaveIsOrdinary(t *testing.T) {
 	current, next := untaggedTemplate(t)
 	decision, err := CheckWrite(current, next, "")
