@@ -326,7 +326,7 @@ func TestPageStateDownloadsCarryNoTag(t *testing.T) {
 	}
 }
 
-func TestPageStateMetaNamesTheResourceAndKeepsCapabilityOff(t *testing.T) {
+func TestPageStateMetaNamesTheResourceAndAnnouncesTheCapability(t *testing.T) {
 	fx := newPageStateFixture(t)
 	fx.write(t, "named.htmlclay", pageStateDocument("", "one"))
 	f := fx.open(t, "named.htmlclay")
@@ -346,19 +346,20 @@ func TestPageStateMetaNamesTheResourceAndKeepsCapabilityOff(t *testing.T) {
 		getThroughMux(t, fx.srv, "/_/meta"),
 	}
 	for _, w := range answers {
-		if strings.Contains(w.Body.String(), "page-recovery-v1") {
-			t.Fatalf("a meta answer announces page-recovery-v1: %s", w.Body.String())
+		announced := false
+		extensions, _ := decode(t, w)["extensions"].([]any)
+		for _, extension := range extensions {
+			if extension == "page-recovery-v1" {
+				announced = true
+			}
+		}
+		if !announced {
+			t.Fatalf("a meta answer does not announce page-recovery-v1: %s", w.Body.String())
 		}
 	}
 
 	host := decode(t, answers[1])
 	if _, ok := host["document"]; ok {
 		t.Fatalf("the host-scope answer carries a document block: %s", answers[1].Body.String())
-	}
-	extensions, _ := host["extensions"].([]any)
-	for _, extension := range extensions {
-		if extension == "page-recovery-v1" {
-			t.Fatalf("the host extension list carries page-recovery-v1: %v", extensions)
-		}
 	}
 }

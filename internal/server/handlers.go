@@ -115,8 +115,11 @@ func writeFormatRefusal(w http.ResponseWriter, refusal *pageadmission.FormatRefu
 // itself. `awareness` in the document block names that transport and the scope, and no
 // HTTP presence route is advertised beside them because none is served. `presence` is
 // deliberately absent: it names a host relay, and ClayJS (every published version)
-// turns its shared sync worker off on a host that announces it.
-var hostExtensions = []string{"conditional", "data-read", "data-write", "page", "page-awareness-v1", "receipts", "record-awareness-v1", "sync", "sync-worker", "upload", "wire"}
+// turns its shared sync worker off on a host that announces it. `page-recovery-v1`
+// promises that `document.pageState.href` returns the page state stored with the exact
+// file bytes and backup identity, so a client may retire journaled page work against it
+// (Document 12 Step 8).
+var hostExtensions = []string{"conditional", "data-read", "data-write", "page", "page-awareness-v1", "page-recovery-v1", "receipts", "record-awareness-v1", "sync", "sync-worker", "upload", "wire"}
 
 // maxSaveIDLen caps the §6 receipt id this host will remember. The spec asks for
 // at least 128 bits of randomness, which is 32 hex characters or 22 in base64url;
