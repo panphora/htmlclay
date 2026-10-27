@@ -299,6 +299,9 @@ func TestOfflineFixtureServerServesTheContract(t *testing.T) {
 	})
 
 	t.Run("sigterm", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows cannot deliver SIGTERM; the graceful exit is checked on macOS and Linux")
+		}
 		addr := strings.TrimPrefix(f.baseURL, "http://")
 		if err := f.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			t.Fatal(err)
