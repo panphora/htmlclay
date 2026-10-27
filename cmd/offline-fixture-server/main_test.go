@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -54,6 +55,9 @@ type fixtureServer struct {
 func buildFixtureServer(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "offline-fixture-server")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)

@@ -3,3 +3,6 @@
 
 # Conformance fixtures are byte-exact (some are CRLF on purpose)
 internal/dataapi/testdata/conformance/cases/** -text
+
+# The embedded ClayJS release is served and verified byte for byte against its index
+internal/clayruntime/assets/** -text
