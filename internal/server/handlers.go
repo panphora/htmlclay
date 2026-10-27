@@ -94,7 +94,16 @@ const maxSaveSize = 50 * 1024 * 1024
 // protected when they are not. Announce it only while handleSave still refuses on a
 // stamp mismatch.
 // sync-worker distinguishes the repaired shared transport from earlier sync hosts.
-var hostExtensions = []string{"conditional", "data-read", "data-write", "page", "receipts", "sync", "sync-worker", "upload", "wire"}
+//
+// `presence`, `page-awareness-v1` and `record-awareness-v1` are announced because this
+// host has no presence relay and does not need one: every tab of a document here runs
+// in one browser on one machine, so awareness travels over a BroadcastChannel the
+// client opens itself. The names are the ones a client checks before drawing a roster
+// or a caret, and they say what the client may expect to be understood, not where the
+// frames go: `awareness` in the document block names the transport and the scope, and
+// no HTTP presence route is advertised beside them because none is served. A host
+// with a relay announces the same names and `transport: host` instead.
+var hostExtensions = []string{"conditional", "data-read", "data-write", "page", "page-awareness-v1", "presence", "receipts", "record-awareness-v1", "sync", "sync-worker", "upload", "wire"}
 
 // maxSaveIDLen caps the §6 receipt id this host will remember. The spec asks for
 // at least 128 bits of randomness, which is 32 hex characters or 22 in base64url;
@@ -218,6 +227,33 @@ type documentMeta struct {
 	// null while the person has sharing turned off. Never `members`: an app profile
 	// is one person, not a directory.
 	People *peopleMeta `json:"people,omitempty"`
+	// Where awareness for THIS document travels, and over which channel. Per-document
+	// because the scope names one document, and it lives in the block that is
+	// withheld from a caller who may not read the file, so such a caller is told no
+	// channel to listen on either.
+	//
+	// Never an endpoint. This host serves no HTTP presence route, and a client that
+	// reads a capability here and then probes a route learns nothing it can trust;
+	// `broadcast` is the whole answer, and the scope is what the channel is named for.
+	Awareness awarenessMeta `json:"awareness"`
+}
+
+// awarenessMeta names the transport a document's presence travels over on this host:
+// the same-browser BroadcastChannel the durable local lane already uses.
+//
+// A relayed host answers `{"transport":"host"}` and no scope, because its channel is a
+// connection the host itself owns. This host has no such connection, so it names the
+// scope instead, and a client selects exactly one adapter from what it reads.
+type awarenessMeta struct {
+	Transport string `json:"transport"`
+	// Scope is the canonical identity of this document: its tracked id where one is
+	// supplied, otherwise its path relative to home. Never the file name alone --
+	// two documents called `index.htmlclay` in different folders are two documents,
+	// and a channel shared between them would draw one file's peer into the other.
+	Scope string `json:"scope"`
+	// The honest local label: these sessions are tabs on this computer, not
+	// authenticated people elsewhere, and the UI must not pretend otherwise.
+	Label string `json:"label"`
 }
 
 type peopleMeta struct {
@@ -1438,6 +1474,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			LastModified:     info.ModTime().UTC().Format(time.RFC3339),
 			DocumentID:       htmlclayID,
 			LegacyDocumentID: htmlclayID,
+			Awareness:        awarenessMeta{Transport: "broadcast", Scope: awarenessScope(htmlclayID, f.RelPath), Label: "This computer"},
 		},
 	}
 	meta.Document.WireMode, meta.Document.Helpers = s.helperDiscovery(f.AbsPath)
@@ -1470,6 +1507,20 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 // resolves it: a self-clearing host condition became a hold nothing clears. So the
 // truncation refusal carries its message and no code, which is what §3 asks of a
 // refusal it has no name for.
+// awarenessScope is the canonical document identity a same-browser channel is named
+// for. The same rule the client already applies to its own per-document records: the
+// host's tracked id where one is supplied, else the exact path relative to home. Not
+// the name, which merges two folders' documents and forgets a rename. Origin is not
+// part of it because a BroadcastChannel is already per-origin, so two hosts cannot
+// reach each other's channel through it.
+func awarenessScope(documentID, relPath string) string {
+	if documentID != "" {
+		return "id:" + documentID
+	}
+	return "path:" + filepath.ToSlash(relPath)
+}
+
+// The spec's code registry, keyed by the status this host already answers with.
 var specErrorCodes = map[int]string{
 	http.StatusUnauthorized:          "unauthorized",
 	http.StatusPaymentRequired:       "payment-required",
