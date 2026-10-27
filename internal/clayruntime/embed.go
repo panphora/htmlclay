@@ -102,6 +102,12 @@ func loadRelease(version string) (Release, error) {
 	return release, nil
 }
 
+// SelectedHas reports whether the selected release's index lists a path.
+func SelectedHas(name string) bool {
+	_, ok := Releases[Selected].Files[name]
+	return ok
+}
+
 // Asset returns the index entry and the embedded bytes of one release file. It only
 // answers for paths the release index lists, so no path is ever built from user input.
 func Asset(version, name string) (File, []byte, bool) {

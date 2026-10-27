@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/panphora/htmlclay/internal/htmlutil"
+	"github.com/panphora/htmlclay/internal/pageadmission"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/versions"
 )
@@ -184,6 +185,8 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	// A version's bytes are whatever a save once wrote, which may predate the save
 	// lane's canonicalization and carry this host's runtime URLs.
 	data = canonicalForWrite(r.Host, data)
+	data = []byte(pageadmission.WithPageFormatFloor(string(data),
+		max(pageadmission.PageFormatFloor(string(current)), pageadmission.PageFormatFloor(string(data)))))
 
 	if wErr := atomicWriteFile(f.AbsPath, data); wErr != nil {
 		f.Unlock()

@@ -273,6 +273,8 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 	// can carry a runtime URL only if disk already held one. Canonicalizing before
 	// the admission check means what is judged is what would be written.
 	res.HTML = canonicalForWrite(r.Host, res.HTML)
+	res.HTML = []byte(pageadmission.WithPageFormatFloor(string(res.HTML),
+		pageadmission.PageFormatFloor(string(current))))
 
 	decision, admissionErr := pageadmission.CheckWrite(string(current), string(res.HTML), "")
 	if admissionErr == nil && decision != pageadmission.Ordinary {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/panphora/htmlclay/internal/htmlutil"
+	"github.com/panphora/htmlclay/internal/pageadmission"
 	"github.com/panphora/htmlclay/internal/platform"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/versions"
@@ -1631,7 +1632,18 @@ func (s *Server) handleLiveSyncSave(w http.ResponseWriter, r *http.Request) {
 	// the receiving tab's own. Restoring the id does not touch that.
 	f.Lock()
 	key := f.HistoryKey()
+	disk, diskErr := s.readRegisteredFile(f.AbsPath)
 	f.Unlock()
+	// The relay never persists, but a tab that cannot keep a raised floor must not
+	// broadcast a whole document to the tabs of one. A floor-0 document, or a read
+	// that failed, relays exactly as it did before this check existed.
+	if diskErr == nil {
+		if floor := pageadmission.PageFormatFloor(string(disk)); floor > 0 &&
+			pageadmission.FormatCapability(r.Header.Get(pageadmission.PageFormatHeader)) < floor {
+			writeFormatRefusal(w, &pageadmission.FormatRefusal{Minimum: floor})
+			return
+		}
+	}
 	// The relay is a write path a hostile or out-of-date client reaches, so the
 	// bytes it hands on are canonicalized before anything else sees them: what the
 	// relay holds, and what a receiving tab saves, must not name this host.

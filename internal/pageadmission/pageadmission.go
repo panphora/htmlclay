@@ -17,6 +17,101 @@ import (
 	"golang.org/x/net/html"
 )
 
+// PageFormatMeta and PageFormatHeader are the document format floor's marker and the
+// capability header every page write declares (ClayJS src/core/page-format.js).
+const (
+	PageFormatMeta    = "clay-page-format"
+	PageFormatHeader  = "X-Clay-Page-Format"
+	PageFormatUpgrade = "page-format-upgrade-required"
+)
+
+var (
+	pageFormatTag     = regexp.MustCompile(`(?i)<meta\b[^>]*\bname\s*=\s*["']?clay-page-format["']?[^>]*>`)
+	pageFormatContent = regexp.MustCompile(`(?i)\bcontent\s*=\s*["']?(\d+)`)
+	headTail          = regexp.MustCompile(`(?i)</head\s*>`)
+	bodyStart         = regexp.MustCompile(`(?i)<body\b`)
+	capabilityValue   = regexp.MustCompile(`^\s*\d+\s*$`)
+)
+
+func formatLevel(n int) int {
+	if n > 0 {
+		return n
+	}
+	return 0
+}
+
+// FormatCapability reads a request's declared capability; missing or unreadable is 0.
+func FormatCapability(value string) int {
+	if !capabilityValue.MatchString(value) {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0
+	}
+	return formatLevel(n)
+}
+
+// PageFormatFloor is the floor a document carries; absent or unreadable is 0.
+func PageFormatFloor(source string) int {
+	tag := pageFormatTag.FindString(source)
+	if tag == "" {
+		return 0
+	}
+	m := pageFormatContent.FindStringSubmatch(tag)
+	if m == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return formatLevel(n)
+}
+
+// WithPageFormatFloor sets the document's marker to floor; a floor of 0 leaves it unchanged.
+func WithPageFormatFloor(source string, floor int) string {
+	want := formatLevel(floor)
+	if want == 0 {
+		return source
+	}
+	loc := pageFormatTag.FindStringIndex(source)
+	if loc != nil && PageFormatFloor(source[loc[0]:loc[1]]) == want {
+		return source
+	}
+	marker := `<meta name="` + PageFormatMeta + `" content="` + strconv.Itoa(want) + `">`
+	if loc != nil {
+		return source[:loc[0]] + marker + source[loc[1]:]
+	}
+	if at := headTail.FindStringIndex(source); at != nil {
+		return source[:at[0]] + marker + source[at[0]:]
+	}
+	if at := bodyStart.FindStringIndex(source); at != nil {
+		return source[:at[0]] + marker + source[at[0]:]
+	}
+	return marker + source
+}
+
+// FormatRefusal is a page write whose writer cannot keep the document's format.
+type FormatRefusal struct{ Minimum int }
+
+func (e *FormatRefusal) Error() string {
+	return "This document uses a newer page format; update the editor to keep writing"
+}
+
+// CheckPageFormat decides one page write before anything is mutated. It returns the
+// bytes to store, carrying the floor the write needs, or a *FormatRefusal.
+func CheckPageFormat(current, next string, capability int) (string, error) {
+	needs := PageFormatFloor(current)
+	if declared := PageFormatFloor(next); declared > needs {
+		needs = declared
+	}
+	if formatLevel(capability) < needs {
+		return "", &FormatRefusal{Minimum: needs}
+	}
+	return WithPageFormatFloor(next, needs), nil
+}
+
 var (
 	pageName = regexp.MustCompile(`^page(\.[0-9]+)?$`)
 	liveName = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)

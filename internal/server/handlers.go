@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/panphora/htmlclay/internal/clayruntime"
 	"github.com/panphora/htmlclay/internal/helper"
 	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/pageadmission"
@@ -68,6 +69,18 @@ func (s *Server) readRegisteredFile(absPath string) ([]byte, error) {
 }
 
 const maxSaveSize = 50 * 1024 * 1024
+
+// writeFormatRefusal answers a page write the document's format floor refuses.
+// Nothing was written: the floor is decided before any backup, sidecar or file write.
+func writeFormatRefusal(w http.ResponseWriter, refusal *pageadmission.FormatRefusal) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok": false, "error": refusal.Error(), "msg": refusal.Error(),
+		"code": pageadmission.PageFormatUpgrade, "reason": pageadmission.PageFormatUpgrade, "minimum": refusal.Minimum,
+	})
+}
 
 // hostExtensions names the capabilities this host implements, in the spec §9
 // registry's spelling. Host scope: identical for every document served, which is
@@ -275,11 +288,17 @@ type personMeta struct {
 // extensions is hostExtensions plus what this server's hooks add. A fresh slice, so
 // the package-level list is never appended to in place.
 func (s *Server) extensions() []string {
-	if s.hooks.Profile == nil {
+	floorRuntime := clayruntime.SelectedHas("src/core/page-format.js")
+	if s.hooks.Profile == nil && !floorRuntime {
 		return hostExtensions
 	}
 	out := append([]string(nil), hostExtensions...)
-	out = append(out, "people")
+	if s.hooks.Profile != nil {
+		out = append(out, "people")
+	}
+	if floorRuntime {
+		out = append(out, "page-format-v1")
+	}
 	sort.Strings(out)
 	return out
 }
@@ -1120,6 +1139,15 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		writePageAdmissionError(w, admissionErr)
 		return
 	}
+	formatted, formatErr := pageadmission.CheckPageFormat(string(current), string(body),
+		pageadmission.FormatCapability(r.Header.Get(pageadmission.PageFormatHeader)))
+	var formatRefusal *pageadmission.FormatRefusal
+	if errors.As(formatErr, &formatRefusal) {
+		f.Unlock()
+		writeFormatRefusal(w, formatRefusal)
+		return
+	}
+	body = []byte(formatted)
 	if decision == pageadmission.Ordinary && strings.TrimSpace(r.Header.Get("Page-Write")) == "v1" &&
 		pageadmission.NothingToWrite(string(current), string(body)) {
 		if tag, ok := pageadmission.PageTag(string(body)); ok {
