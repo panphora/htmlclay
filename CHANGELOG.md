@@ -5,6 +5,31 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-10-27
+
+### Added
+- `@--name` rules in the data API read and write a single custom property in the style attribute, with the same value checks as the reference; raw `@style` writes are still refused.
+- Host metadata reports the document save limit the host enforces, and that the host keeps version history, as `document.versions`.
+- Documents that name a clayjs.com runtime URL are served with those URLs pointing at the bundled ClayJS 1.17.0 runtime at `/_/clayjs/`.
+- Saves, data writes, restore, export and Clay-Source reads never write a `/_/clayjs/` URL, and the disk ETag stays the same.
+- A document that cannot be projected says why in the `Clay-Runtime-Unavailable` header.
+- Host metadata advertises same-browser presence: `page-awareness-v1` and `record-awareness-v1`, with awareness carried over a broadcast channel scoped to the browser. There is no HTTP presence endpoint.
+- `GET /_/page-state/{token}`, named in `/_/meta/{token}`, returns the page state stored with the exact bytes on disk, and `page-recovery-v1` tells a client it may retire journaled page work against it.
+- `GET /_/page-state/{token}` answers `428` without `If-Match`, `412` for a different ETag, and `404` when no state is stored.
+- Saves carry a `clay-page-format` marker and an `X-Clay-Page-Format` capability header, and host metadata advertises `page-format-v1`.
+
+### Changed
+- A page save that would write exactly the bytes already on disk is refused with `409 page-nothing-to-write` when the client sends `Page-Write: v1`; nothing is written.
+- A save that would lower a document's page format floor is refused with `409 page-format-upgrade-required` before anything is written, and a relay from a host with a lower capability is refused.
+- A page's Yjs tag survives save and reopen. Serving puts back only the state stored for the exact bytes on disk, and the disk ETag does not change.
+- The bundled runtime keeps an author's own `<title>` in the head.
+- Documents that name no runtime URL and hold no local runtime address skip projection and canonicalization, so large saves and serves are not parsed for nothing.
+
+### Fixed
+- The shipped Journal 1.0.0 and 1.1.0 documents and the current template open, late-load their libraries, languages and fonts, and save and reopen with every outside request refused; old CDN URLs answer with the exact classic builds.
+- Opening a Document, Kanban or blank page for editing works offline: every file the edit boot loads comes from the bundled runtime, and the first edit saves canonical bytes and reopens.
+- A stray `</noscript>` or `</template>` inside a template no longer exposes the content that was inside it.
+
 ## [1.13.8] - 2026-10-23
 
 ### Added
