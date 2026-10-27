@@ -102,7 +102,9 @@ func run(root string, stdout io.Writer, stdin io.Reader) error {
 	}
 	defer ln.Close()
 
-	srv := server.New(ln, mgr, logger, versions.New(filepath.Join(home, "versions")))
+	// The version store, page-state sidecars included, lives under the served folder,
+	// so a restart on the same folder reopens the history a real install would keep.
+	srv := server.New(ln, mgr, logger, versions.New(filepath.Join(resolved, stateDir, "versions")))
 	baseURL := "http://" + srv.Host()
 
 	paths, err := fixtureDocuments(resolved)
@@ -204,6 +206,9 @@ func resolveRoot(root string) (string, error) {
 }
 
 // fixtureDocuments lists every document under root, in a stable order.
+// stateDir holds what must outlive one process: the version store.
+const stateDir = ".htmlclay-fixture"
+
 func fixtureDocuments(root string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -211,6 +216,9 @@ func fixtureDocuments(root string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
+			if d.Name() == stateDir {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		switch strings.ToLower(filepath.Ext(path)) {
