@@ -473,6 +473,9 @@ func (wt *watcher) publishConfirmed(e *watchEntry, hash string, data []byte) str
 		if _, bErr := wt.versions.Backup(key, f.AbsPath, data); bErr != nil {
 			wt.logger.Printf("Backup of external change to %s failed: %v", f.RelPath, bErr)
 		}
+		if sErr := wt.versions.SettlePageState(key, f.AbsPath, versions.Hash(data)); sErr != nil {
+			wt.logger.Printf("Could not settle page state for %s: %v", f.RelPath, sErr)
+		}
 	}
 
 	msg := fmt.Sprintf("%s changed on disk outside this tab", f.Name)

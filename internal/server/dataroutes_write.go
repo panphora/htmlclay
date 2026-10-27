@@ -326,6 +326,9 @@ func (s *Server) writeApplied(w http.ResponseWriter, r *http.Request, f *session
 			writeWriteError(w, http.StatusInternalServerError, writeErrorBody{Error: "Write failed", Message: "write error"})
 			return
 		}
+		if sErr := s.versions.SettlePageState(key, f.AbsPath, versions.Hash(written)); sErr != nil {
+			s.logger.Printf("Could not settle page state for %s: %v", f.RelPath, sErr)
+		}
 		f.RecordServerWrite(versions.Hash(written))
 		f.NoteWriteByThisHost()
 		f.NoteWriteFromOutsideTabs()

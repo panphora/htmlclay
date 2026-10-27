@@ -202,6 +202,7 @@ func newServer(sessions *session.Manager, logger *logging.Logger, store *version
 	mux.HandleFunc("POST /_/save/{token}", sameOrigin(s.handleSave))
 	mux.HandleFunc("POST /_/upload/{token}", sameOrigin(s.handleUpload))
 	mux.HandleFunc("GET /_/meta/{token}", s.handleMeta)
+	mux.HandleFunc("GET /_/page-state/{token}", s.handlePageState)
 	// Spec §5 names the tokenless address as the one place a client may learn what
 	// a host supports, and forbids gating discovery tighter than the documents
 	// served. This host mints tokens, so it answers both: the token route adds a

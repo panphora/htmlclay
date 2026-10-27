@@ -236,6 +236,13 @@ type documentMeta struct {
 	// reads a capability here and then probes a route learns nothing it can trust;
 	// `broadcast` is the whole answer, and the scope is what the channel is named for.
 	Awareness awarenessMeta `json:"awareness"`
+	// The page editor's stored Yjs state for these exact bytes, read conditionally
+	// on the etag above. Named here so a client never guesses the route.
+	PageState *pageStateMeta `json:"pageState,omitempty"`
+}
+
+type pageStateMeta struct {
+	Href string `json:"href"`
 }
 
 // awarenessMeta names the transport a document's presence travels over on this host:
@@ -1509,6 +1516,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			DocumentID:       htmlclayID,
 			LegacyDocumentID: htmlclayID,
 			Awareness:        awarenessMeta{Transport: "broadcast", Scope: awarenessScope(htmlclayID, f.RelPath), Label: "This computer"},
+			PageState:        &pageStateMeta{Href: "/_/page-state/" + r.PathValue("token")},
 		},
 	}
 	meta.Document.WireMode, meta.Document.Helpers = s.helperDiscovery(f.AbsPath)
@@ -1520,6 +1528,67 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "private, no-store")
 	}
 	json.NewEncoder(w).Encode(meta)
+}
+
+// handlePageState returns the stored page state for the exact bytes on disk. It is
+// conditional: the caller names the etag it accepted, and any other etag is refused,
+// so a state is never handed out for bytes the caller has not seen.
+func (s *Server) handlePageState(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.lookupSession(w, r)
+	if !ok {
+		return
+	}
+	ifMatch, sent := listHeader(r, "If-Match")
+	if !sent || strings.TrimSpace(ifMatch) == "" {
+		writePageStateError(w, http.StatusPreconditionRequired, "precondition-required", "")
+		return
+	}
+	f.Lock()
+	data, err := s.readRegisteredFile(f.AbsPath)
+	if err != nil {
+		f.Unlock()
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	etag := specwire.Etag(data)
+	if strings.TrimSpace(ifMatch) == "*" || strings.Contains(ifMatch, ",") || !specwire.IfMatchSatisfied(ifMatch, data) {
+		f.Unlock()
+		writePageStateError(w, http.StatusPreconditionFailed, "etag-mismatch", etag)
+		return
+	}
+	key := f.HistoryKey()
+	var record versions.PageStateRecord
+	found := false
+	if key != "" {
+		record, found, err = s.versions.PageStateFor(key, f.AbsPath, versions.Hash(data))
+	}
+	f.Unlock()
+	if err != nil || !found {
+		writePageStateError(w, http.StatusNotFound, "no-page-state", etag)
+		return
+	}
+	documentID, _ := versions.IDFromKey(key)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("ETag", etag)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"version": 1, "documentId": documentID, "generation": record.Generation,
+		"etag": etag, "stateHash": record.StateHash, "tag": record.Tag,
+	})
+}
+
+func writePageStateError(w http.ResponseWriter, status int, code, etag string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if etag != "" {
+		w.Header().Set("ETag", etag)
+	}
+	w.WriteHeader(status)
+	body := map[string]string{"error": "page state unavailable", "code": code}
+	if etag != "" {
+		body["etag"] = etag
+	}
+	json.NewEncoder(w).Encode(body)
 }
 
 // The spec's §3 code registry, keyed by the status this host already answers with.

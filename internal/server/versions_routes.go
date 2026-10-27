@@ -192,6 +192,12 @@ func (s *Server) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if key != "" {
+		if sErr := s.versions.SettlePageState(key, f.AbsPath, versions.Hash(data)); sErr != nil {
+			s.logger.Printf("Could not settle page state for %s: %v", f.RelPath, sErr)
+		}
+	}
+
 	// A restore advances both per-file records, so it participates in save
 	// suppression exactly like a save does, and emits a live notification.
 	f.RecordServerWrite(versions.Hash(data))
