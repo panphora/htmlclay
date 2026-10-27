@@ -312,6 +312,94 @@ func StripPageTag(source string) string {
 	return source[:start] + source[end:]
 }
 
+// PageTag returns the exact text of the one Yjs page tag in a page document.
+func PageTag(source string) (string, bool) {
+	if Inspect(source).Kind != "yjs" {
+		return "", false
+	}
+	start, end, articles := locatePage(source)
+	if start < 0 || articles != 1 {
+		return "", false
+	}
+	return source[start:end], true
+}
+
+// InsertPageTag puts a stored page tag back before the one article[data-page] of
+// a page document that carries no page tag, the way ClayJS's composePage does.
+// It returns source unchanged unless the result holds exactly that tag and
+// stripping it gives back source.
+func InsertPageTag(source, tag string) string {
+	if Inspect(source).Kind != "none" {
+		return source
+	}
+	at, articles := locateArticle(source)
+	if at < 0 || articles != 1 {
+		return source
+	}
+	from := strings.LastIndexByte(source[:at], '\n') + 1
+	indent := source[from:at]
+	insert := tag
+	if strings.TrimSpace(indent) == "" {
+		newline := "\n"
+		if from >= 2 && source[from-2] == '\r' {
+			newline = "\r\n"
+		}
+		insert = tag + newline + indent
+	}
+	out := source[:at] + insert + source[at:]
+	if got, ok := PageTag(out); !ok || got != tag || StripPageTag(out) != source {
+		return source
+	}
+	return out
+}
+
+// locateArticle finds the byte offset of the start tag of the one
+// article[data-page] outside template and noscript, and counts them.
+func locateArticle(source string) (start, articles int) {
+	start = -1
+	z := html.NewTokenizer(strings.NewReader(source))
+	offset := 0
+	var inertTags []string
+	matched := 0
+	for {
+		token := z.Next()
+		at := offset
+		offset += len(z.Raw())
+		switch token {
+		case html.ErrorToken:
+			if matched != 1 {
+				return -1, articles
+			}
+			return start, articles
+		case html.StartTagToken:
+			name, attrs := tokenAttributes(z)
+			switch name {
+			case "template", "noscript":
+				inertTags = append(inertTags, name)
+			case "article":
+				if len(inertTags) == 0 {
+					if _, ok := attrs["data-page"]; ok {
+						articles++
+						matched++
+						start = at
+					}
+				}
+			}
+		case html.EndTagToken:
+			name, _ := z.TagName()
+			switch string(name) {
+			case "template", "noscript":
+				for i := len(inertTags) - 1; i >= 0; i-- {
+					if inertTags[i] == string(name) {
+						inertTags = inertTags[:i]
+						break
+					}
+				}
+			}
+		}
+	}
+}
+
 // pageDocument reports whether source is a page document: exactly one
 // article[data-page] outside template and noscript.
 func pageDocument(source string) bool {

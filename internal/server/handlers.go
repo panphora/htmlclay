@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/panphora/htmlclay/internal/helper"
 	"github.com/panphora/htmlclay/internal/htmlutil"
@@ -491,6 +492,11 @@ func (s *Server) serveRegistered(w http.ResponseWriter, r *http.Request, f *sess
 	// tracked id over whatever disk holds is also model B′'s self-heal: a file
 	// whose id was stripped or replaced externally is re-anchored on the next serve.
 	served := s.projectForServe(w, r, data)
+	if r.Header.Get("Clay-Source") != "1" && utf8.Valid(served) {
+		if record, ok, err := s.versions.PageStateFor(key, f.AbsPath, versions.Hash(data)); err == nil && ok {
+			served = []byte(pageadmission.InsertPageTag(string(served), record.Tag))
+		}
+	}
 	if id, ok := versions.IDFromKey(key); ok {
 		served = htmlutil.SetHTMLClayID(served, id)
 	}
@@ -1109,12 +1115,23 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	}
 	if decision == pageadmission.Ordinary && strings.TrimSpace(r.Header.Get("Page-Write")) == "v1" &&
 		pageadmission.NothingToWrite(string(current), string(body)) {
+		if tag, ok := pageadmission.PageTag(string(body)); ok {
+			key, _ := s.ensureHistoryKeyLocked(f, current)
+			diskHash := versions.Hash(current)
+			if err := s.versions.PreparePageState(key, f.AbsPath, diskHash,
+				versions.NewPageStateRecord(diskHash, s.pageGeneration(key, f.AbsPath, diskHash, decision), tag)); err != nil {
+				f.Unlock()
+				s.refusePageState(w, f, err)
+				return
+			}
+		}
 		currentEtag := specwire.Etag(current)
 		f.Unlock()
 		w.Header().Set("ETag", currentEtag)
 		writePageAdmissionError(w, &pageadmission.Refusal{Reason: "nothing-to-write"})
 		return
 	}
+	tag, hasTag := pageadmission.PageTag(string(body))
 	body = []byte(pageadmission.StripPageTag(string(body)))
 
 	// The backup identity comes from the key resolved at first serve, never from
@@ -1159,6 +1176,21 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The page state is stored before anything else of this save is: a sidecar
+	// that cannot be written refuses the save with no backup and no file write.
+	if hasTag {
+		diskHash := ""
+		if readErr == nil {
+			diskHash = versions.Hash(current)
+		}
+		record := versions.NewPageStateRecord(versions.Hash(body), s.pageGeneration(key, f.AbsPath, diskHash, decision), tag)
+		if pErr := s.versions.PreparePageState(key, f.AbsPath, diskHash, record); pErr != nil {
+			f.Unlock()
+			s.refusePageState(w, f, pErr)
+			return
+		}
+	}
+
 	// B1: version the existing content on the first save of a file, so the
 	// pre-Hyperclay state survives, then version the INCOMING bytes before writing
 	// them. Versioning the outgoing pre-write bytes would mean the most recent
@@ -1181,6 +1213,9 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 
 	err = atomicWriteFile(f.AbsPath, body)
 	if err == nil {
+		if sErr := s.versions.SettlePageState(key, f.AbsPath, versions.Hash(body)); sErr != nil {
+			s.logger.Printf("Could not settle page state for %s: %v", f.RelPath, sErr)
+		}
 		f.RecordServerWrite(versions.Hash(body))
 		f.NoteWriteByThisHost()
 		// §6's receipt, bound here and nowhere else: this is the one moment the
@@ -1681,4 +1716,34 @@ func conflictRefusal(w http.ResponseWriter, name, etag, changedBy, saveID string
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusPreconditionFailed)
 	json.NewEncoder(w).Encode(body)
+}
+
+// pageGeneration keeps the page lineage of the state stored for the bytes on
+// disk, and starts a new one for a first capture, a conversion, or bytes the
+// sidecar holds no state for (an external replacement).
+func (s *Server) pageGeneration(key, absPath, diskHash string, decision pageadmission.Decision) string {
+	if decision == pageadmission.Ordinary && diskHash != "" {
+		if record, ok, err := s.versions.PageStateFor(key, absPath, diskHash); err == nil && ok {
+			return record.Generation
+		}
+	}
+	generation, err := versions.NewPageGeneration()
+	if err != nil {
+		return ""
+	}
+	return generation
+}
+
+// refusePageState answers a save whose page state could not be stored. Nothing
+// was written: the sidecar is written before the file, and the file only after it.
+func (s *Server) refusePageState(w http.ResponseWriter, f *session.File, err error) {
+	if errors.Is(err, versions.ErrInvalidPageState) {
+		s.logger.Printf("Refusing a save of %s: its page state is not valid", f.RelPath)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid page state", "code": "invalid-page-state"})
+		return
+	}
+	s.logger.Printf("Refusing a save of %s: cannot store its page state: %v", f.RelPath, err)
+	s.writeError(w, http.StatusInternalServerError, "cannot store page state")
 }
