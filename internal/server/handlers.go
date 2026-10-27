@@ -95,15 +95,14 @@ const maxSaveSize = 50 * 1024 * 1024
 // stamp mismatch.
 // sync-worker distinguishes the repaired shared transport from earlier sync hosts.
 //
-// `presence`, `page-awareness-v1` and `record-awareness-v1` are announced because this
-// host has no presence relay and does not need one: every tab of a document here runs
-// in one browser on one machine, so awareness travels over a BroadcastChannel the
-// client opens itself. The names are the ones a client checks before drawing a roster
-// or a caret, and they say what the client may expect to be understood, not where the
-// frames go: `awareness` in the document block names the transport and the scope, and
-// no HTTP presence route is advertised beside them because none is served. A host
-// with a relay announces the same names and `transport: host` instead.
-var hostExtensions = []string{"conditional", "data-read", "data-write", "page", "page-awareness-v1", "presence", "receipts", "record-awareness-v1", "sync", "sync-worker", "upload", "wire"}
+// `page-awareness-v1` and `record-awareness-v1` are announced because this host has no
+// presence relay and does not need one: every tab of a document here runs in one
+// browser on one machine, so awareness travels over a BroadcastChannel the client opens
+// itself. `awareness` in the document block names that transport and the scope, and no
+// HTTP presence route is advertised beside them because none is served. `presence` is
+// deliberately absent: it names a host relay, and ClayJS (every published version)
+// turns its shared sync worker off on a host that announces it.
+var hostExtensions = []string{"conditional", "data-read", "data-write", "page", "page-awareness-v1", "receipts", "record-awareness-v1", "sync", "sync-worker", "upload", "wire"}
 
 // maxSaveIDLen caps the §6 receipt id this host will remember. The spec asks for
 // at least 128 bits of randomness, which is 32 hex characters or 22 in base64url;

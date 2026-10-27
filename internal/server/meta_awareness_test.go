@@ -62,10 +62,13 @@ func TestMetaAwarenessAdvertisesTheSameBrowserTransport(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"presence", "page-awareness-v1", "record-awareness-v1"} {
+	for _, name := range []string{"page-awareness-v1", "record-awareness-v1"} {
 		if !announced[name] {
 			t.Errorf("host does not announce %q: %v", name, meta["extensions"])
 		}
+	}
+	if announced["presence"] {
+		t.Errorf("host announces presence, which names a relay it does not have and turns off ClayJS's shared sync worker: %v", meta["extensions"])
 	}
 
 	awareness := awarenessOf(t, meta)
