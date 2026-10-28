@@ -119,7 +119,7 @@ func (a *app) configureHelperDocumentWith(key string, dialogs helperApprovalDial
 	}
 	status := a.helperBindingStatus(document, name)
 	a.rt.logger.Printf("Native helper configuration requested: document=%s name=%s status=%s", document, name, status)
-	path, selected, err := dialogs.choose("Choose the program for " + name + " in " + document + ". Helpers receive requests on stdin; a program that only opens a page is not a helper.")
+	path, selected, err := dialogs.choose("Choose the program for "+name+" in "+document+". Helpers receive requests on stdin; a program that only opens a page is not a helper.", a.helperPickerFolder(document, name))
 	if err != nil {
 		a.reportHelperProgramError("Could not choose the program", err)
 		return a.helperDocumentRows()

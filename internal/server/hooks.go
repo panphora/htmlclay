@@ -77,6 +77,13 @@ type Hooks struct {
 	// person turned sharing off, and documents get `me: null`. Read on every
 	// document-scoped discovery, so a change in the app reaches open files.
 	Profile func() (id, name string, ok bool)
+
+	// AskHelper raises the document-programs dialog for one declared helper the
+	// page just tried to use and the person has not answered. It reports whether
+	// the helper is now allowed, after the app has reattached the document's
+	// helpers. Nil refuses a request for an unanswered helper without asking,
+	// which is what a standalone server (every server test) wants.
+	AskHelper func(file, name string) bool
 }
 
 // SetHooks wires the app behind this server. Call once, before Start.

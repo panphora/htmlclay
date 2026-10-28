@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"testing"
 )
 
@@ -13,7 +12,7 @@ func TestRunningWorkCountsAIEditsAndHelperRequests(t *testing.T) {
 	srv.aiEdit.mu.Lock()
 	srv.aiEdit.running = map[string]aiEditRun{f.AbsPath: {id: "e1", cancel: func() {}}}
 	srv.aiEdit.mu.Unlock()
-	fake := &helperDispatcher{live: map[string]context.CancelFunc{"r1": func() {}, "r2": func() {}}}
+	fake := &helperDispatcher{live: map[string]liveHelperRun{"r1": {cancel: func() {}}, "r2": {cancel: func() {}}}}
 	srv.helperMu.Lock()
 	if srv.helpers == nil {
 		srv.helpers = map[string]*helperDispatcher{}

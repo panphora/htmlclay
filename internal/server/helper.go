@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -47,7 +48,13 @@ type helperDispatcher struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	mu         sync.Mutex
-	live       map[string]context.CancelFunc
+	live       map[string]liveHelperRun
+}
+
+type liveHelperRun struct {
+	cancel  context.CancelFunc
+	helper  string
+	program string
 }
 
 // AttachHelpers installs one in-process structured dispatcher for file. Calling
@@ -86,7 +93,10 @@ func (s *Server) AttachHelpers(file string, allowed map[string]config.HelperProg
 	s.helperMu.Lock()
 	defer s.helperMu.Unlock()
 	if current := s.helpers[file]; current != nil {
-		if reflect.DeepEqual(current.names, names) && reflect.DeepEqual(current.allowed, allowCopy) && reflect.DeepEqual(current.denied, denyCopy) {
+		if reflect.DeepEqual(current.names, names) {
+			if !reflect.DeepEqual(current.allowed, allowCopy) || !reflect.DeepEqual(current.denied, denyCopy) {
+				current.regrantLocked(allowCopy, denyCopy)
+			}
 			return nil
 		}
 		s.detachHelperLocked(current, false)
@@ -107,7 +117,7 @@ func (s *Server) AttachHelpers(file string, allowed map[string]config.HelperProg
 		denied:   denyCopy,
 		ctx:      ctx,
 		cancel:   cancel,
-		live:     make(map[string]context.CancelFunc),
+		live:     make(map[string]liveHelperRun),
 	}
 	d.sub = &wireSub{
 		key:     file,
@@ -146,6 +156,34 @@ func (s *Server) DetachHelpers(file string) {
 	}
 }
 
+// regrantLocked replaces what the dispatcher allows without replacing it, so a
+// run that is still permitted keeps its subscriber and its terminal outcome. A
+// run whose helper lost its grant, or was regranted to a different program, is
+// cancelled and publishes its own terminal through the same dispatcher.
+// grantedLocked reports whether name is still allowed with programID. Caller
+// holds server.helperMu.
+func (d *helperDispatcher) grantedLocked(name, programID string) bool {
+	current, ok := d.allowed[name]
+	return ok && current.ID == programID
+}
+
+func (d *helperDispatcher) regrantLocked(allowed map[string]config.HelperProgram, denied map[string]bool) {
+	d.allowed = allowed
+	d.denied = denied
+	var cancels []context.CancelFunc
+	d.mu.Lock()
+	for _, run := range d.live {
+		program, ok := allowed[run.helper]
+		if !ok || program.ID != run.program {
+			cancels = append(cancels, run.cancel)
+		}
+	}
+	d.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
 func (s *Server) detachHelperLocked(d *helperDispatcher, unavailable bool) {
 	if s.helpers[d.file] != d {
 		return
@@ -178,8 +216,8 @@ func (d *helperDispatcher) stop() {
 	d.cancel()
 	d.mu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(d.live))
-	for _, cancel := range d.live {
-		cancels = append(cancels, cancel)
+	for _, run := range d.live {
+		cancels = append(cancels, run.cancel)
 	}
 	d.mu.Unlock()
 	for _, cancel := range cancels {
@@ -251,11 +289,6 @@ func (d *helperDispatcher) start(env wireEnvelope, framed []byte) {
 		d.reject(env, "helper_not_declared", "this document did not declare that helper")
 		return
 	}
-	program, ok := d.allowed[env.Helper]
-	if !ok {
-		d.reject(env, "helper_not_granted", "this document was not granted that helper")
-		return
-	}
 	document := env.Document
 	if document == "" {
 		document = "none"
@@ -264,10 +297,29 @@ func (d *helperDispatcher) start(env wireEnvelope, framed []byte) {
 		d.reject(env, "invalid_document", `document must be "edit" or "none"`)
 		return
 	}
+	d.server.helperMu.Lock()
+	program, ok := d.allowed[env.Helper]
+	refused := d.denied[env.Helper]
+	d.server.helperMu.Unlock()
+	if !ok {
+		if env.Type == "wire/request" && !refused && d.server.hooks.AskHelper != nil {
+			d.askThenStart(env, framed)
+			return
+		}
+		d.reject(env, "helper_not_granted", "this document was not granted that helper")
+		return
+	}
 
 	d.server.helperMu.Lock()
 	if !d.server.helperCurrentLocked(d) {
 		d.server.helperMu.Unlock()
+		return
+	}
+	// A regrant can land between the read above and this registration, and it
+	// keeps the generation, so the grant itself is checked again here and in Start.
+	if !d.grantedLocked(env.Helper, program.ID) {
+		d.server.helperMu.Unlock()
+		d.reject(env, "helper_not_granted", "this document was not granted that helper")
 		return
 	}
 	budgetMS, resultLimit := helperRequestLimits(env.Type)
@@ -293,7 +345,7 @@ func (d *helperDispatcher) start(env wireEnvelope, framed []byte) {
 		d.reject(env, "helper_busy", fmt.Sprintf("this handler is already running %d requests", helperServeMax))
 		return
 	}
-	d.live[env.ID] = cancel
+	d.live[env.ID] = liveHelperRun{cancel: cancel, helper: env.Helper, program: program.ID}
 	d.mu.Unlock()
 	d.server.wire.forgetTerminal(d.file, env.ID)
 	d.server.helperMu.Unlock()
@@ -314,6 +366,106 @@ func (d *helperDispatcher) start(env wireEnvelope, framed []byte) {
 	go d.run(ctx, cancel, env, framed, program, document, resultLimit)
 }
 
+// helperAskBudget covers the whole approval: the dialog gives up after 120
+// seconds, the file picker after 5 minutes, and the program check can ask once more.
+// The parked ack adds the run's own deadline to it, because approving reattaches
+// the helpers, which drops the page's stream: the run's ack can land while the
+// page is reconnecting, and only terminal frames are replayed.
+const helperAskBudget = 10 * time.Minute
+
+// helperAskQuietFor is how long a page must wait to raise the dialog again
+// after one that granted nothing. A Deny needs no timer: it marks the name
+// denied for this open, and start refuses it without asking.
+const helperAskQuietFor = time.Minute
+
+type parkedHelperRequest struct {
+	env    wireEnvelope
+	framed []byte
+}
+
+func helperAskKey(file, name string) string { return file + "\x00" + name }
+
+// askThenStart parks a request for a helper the person has not answered and
+// has the app raise the dialog, once per file and name however many requests
+// arrive meanwhile. The page gets an ack whose budget covers the dialog and the
+// picker, and a status saying what it waits on.
+func (d *helperDispatcher) askThenStart(env wireEnvelope, framed []byte) {
+	s := d.server
+	key := helperAskKey(d.file, env.Helper)
+	s.helperMu.Lock()
+	if !s.helperCurrentLocked(d) {
+		s.helperMu.Unlock()
+		return
+	}
+	if time.Now().Before(s.helperAskQuiet[d.file]) {
+		s.helperMu.Unlock()
+		d.reject(env, "helper_not_granted", "this document was not granted that helper")
+		return
+	}
+	parked, asking := s.helperAsking[key]
+	if len(parked) >= helperServeMax {
+		s.helperMu.Unlock()
+		d.reject(env, "helper_busy", fmt.Sprintf("this handler is already running %d requests", helperServeMax))
+		return
+	}
+	if s.helperAsking == nil {
+		s.helperAsking = make(map[string][]parkedHelperRequest)
+	}
+	s.helperAsking[key] = append(parked, parkedHelperRequest{env: env, framed: framed})
+	s.helperMu.Unlock()
+
+	d.publish(wireEnvelope{
+		V:      1,
+		Type:   "wire/ack",
+		ID:     env.ID,
+		From:   "process",
+		File:   d.file,
+		Helper: env.Helper,
+		Payload: encodeHelperJSON(struct {
+			Mode     string `json:"mode"`
+			BudgetMS int    `json:"budgetMs"`
+		}{Mode: "jsonl", BudgetMS: int(helperAskBudget/time.Millisecond) + helper.StructuredDeadline}),
+	}, false)
+	d.publishEvent(env, helper.Event{Kind: "status", Text: "Waiting for you to allow " + env.Helper + " in HTML Clay"}, false, helper.MaxTerminalRecord)
+	if !asking {
+		go s.finishHelperAsk(d.file, env.Helper)
+	}
+}
+
+// finishHelperAsk waits for the dialog, then starts every parked request on the
+// dispatcher the approval attached, or refuses each one. It refuses rather than
+// re-dispatching when the current dispatcher does not hold the helper, so a
+// failed reattach can never loop back into another dialog.
+func (s *Server) finishHelperAsk(file, name string) {
+	allowed := s.hooks.AskHelper(file, name)
+	key := helperAskKey(file, name)
+	s.helperMu.Lock()
+	parked := s.helperAsking[key]
+	delete(s.helperAsking, key)
+	if !allowed {
+		if s.helperAskQuiet == nil {
+			s.helperAskQuiet = make(map[string]time.Time)
+		}
+		s.helperAskQuiet[file] = time.Now().Add(helperAskQuietFor)
+	}
+	current := s.helpers[file]
+	granted := current != nil && current.allowed[name].ID != ""
+	s.helperMu.Unlock()
+	if current == nil {
+		for _, p := range parked {
+			s.wire.publish(file, helperEventEnvelope(p.env, helper.Event{Kind: "error", Text: "this document was not granted that helper", Code: "helper_not_granted", Source: "host"}, helper.MaxTerminalRecord))
+		}
+		return
+	}
+	for _, p := range parked {
+		if allowed && granted {
+			current.start(p.env, p.framed)
+		} else {
+			current.reject(p.env, "helper_not_granted", "this document was not granted that helper")
+		}
+	}
+}
+
 func (s *Server) helperCurrentLocked(d *helperDispatcher) bool {
 	return s.helpers[d.file] == d && s.HelperGeneration(d.file) == d.generation
 }
@@ -323,11 +475,21 @@ func (d *helperDispatcher) reject(env wireEnvelope, code, message string) {
 }
 
 func (d *helperDispatcher) cancelRequest(id string) {
+	s := d.server
+	s.helperMu.Lock()
+	prefix := d.file + "\x00"
+	for key, parked := range s.helperAsking {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		s.helperAsking[key] = slices.DeleteFunc(parked, func(p parkedHelperRequest) bool { return p.env.ID == id })
+	}
+	s.helperMu.Unlock()
 	d.mu.Lock()
-	cancel := d.live[id]
+	run := d.live[id]
 	d.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if run.cancel != nil {
+		run.cancel()
 	}
 }
 
@@ -372,7 +534,7 @@ func (d *helperDispatcher) run(ctx context.Context, cancel context.CancelFunc, e
 		Start: func(cmd *exec.Cmd) error {
 			d.server.helperMu.Lock()
 			defer d.server.helperMu.Unlock()
-			if !d.server.helperCurrentLocked(d) {
+			if !d.server.helperCurrentLocked(d) || !d.grantedLocked(env.Helper, program.ID) {
 				return context.Canceled
 			}
 			return cmd.Start()

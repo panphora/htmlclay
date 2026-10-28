@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/panphora/htmlclay/internal/config"
 	"github.com/panphora/htmlclay/internal/logging"
@@ -90,6 +91,12 @@ type appRuntime struct {
 	// through the read prompt's seam is what let it ask "Trust this folder"
 	// about a program.
 	confirmHelpers func(title, message string, allowBroad bool) (platform.ConfirmChoice, error)
+	// chooseHelperProgram and prepareHelperProgram override the file picker and
+	// the executable check behind the helper permission dialog. Production
+	// leaves them nil and uses the platform dialogs; tests inject a cancel and a
+	// decline so no test can open a real picker or inspect a real program.
+	chooseHelperProgram  func(prompt, dir string) (string, bool, error)
+	prepareHelperProgram func(path string) (bool, error)
 	// notify, when set, overrides the native notification. Production leaves it nil
 	// (a real banner); tests capture the message instead of putting one on the
 	// user's screen. Unlike confirm, this is read live from background goroutines
@@ -139,6 +146,9 @@ type app struct {
 	// applies it from here; the next direct open clears it and asks again.
 	// Guarded by helperStateMu.
 	openDenials map[string][]string
+	// pageAskQuiet holds, per document, when a page may next raise the helper
+	// dialog after one that granted nothing. Guarded by helperStateMu.
+	pageAskQuiet map[string]time.Time
 	// dialogAdvice is non-empty when this machine cannot raise a permission
 	// dialog at all. It is read once at startup and shown in two places, so it
 	// is held rather than asked for again: platform.MissingDialogAdvice runs

@@ -110,3 +110,13 @@ func TestReadHelperNamesStopsAt512KiB(t *testing.T) {
 		t.Fatalf("ReadHelperNames = %v, want none", got)
 	}
 }
+
+func TestReadHelperFoldersKeepsTheFirstDeclarationAndTheNamesUnchanged(t *testing.T) {
+	data := []byte(`<head><meta name="htmlclay-helper" content="a" data-program-folder="../bin"><meta name="htmlclay-helper" content="b"><meta name="htmlclay-helper" content="a" data-program-folder="elsewhere"></head>`)
+	if got := ReadHelperFolders(data); !reflect.DeepEqual(got, map[string]string{"a": "../bin"}) {
+		t.Fatalf("ReadHelperFolders = %v, want map[a:../bin]", got)
+	}
+	if got := ReadHelperNames(data); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("ReadHelperNames = %v, want [a b]", got)
+	}
+}

@@ -17,8 +17,8 @@ import (
 // The portal stays first so GNOME, KDE, Wayland, and Flatpak receive the
 // desktop's own picker without requiring a helper binary. Once it may have
 // opened a dialog, an error is surfaced instead of stacking a fallback picker.
-func selectFile(prompt string) (string, bool, error) {
-	path, ok, err := portalSelectFile(prompt)
+func selectFile(prompt, dir string) (string, bool, error) {
+	path, ok, err := portalSelectFile(prompt, dir)
 	if err == nil {
 		return path, ok, nil
 	}
@@ -30,7 +30,11 @@ func selectFile(prompt string) (string, bool, error) {
 	defer cancel()
 
 	if bin, err := exec.LookPath("zenity"); err == nil {
-		out, err := exec.CommandContext(ctx, bin, "--file-selection", "--title", prompt).Output()
+		args := []string{"--file-selection", "--title", prompt}
+		if dir != "" {
+			args = append(args, "--filename", dir+"/")
+		}
+		out, err := exec.CommandContext(ctx, bin, args...).Output()
 		if err != nil {
 			if cancelled(err) {
 				return "", false, nil
@@ -44,8 +48,11 @@ func selectFile(prompt string) (string, bool, error) {
 	}
 
 	if bin, err := exec.LookPath("kdialog"); err == nil {
-		home, _ := os.UserHomeDir()
-		out, err := exec.CommandContext(ctx, bin, "--title", prompt, "--getopenfilename", home).Output()
+		start := dir
+		if start == "" {
+			start, _ = os.UserHomeDir()
+		}
+		out, err := exec.CommandContext(ctx, bin, "--title", prompt, "--getopenfilename", start).Output()
 		if err != nil {
 			if cancelled(err) {
 				return "", false, nil
@@ -68,7 +75,7 @@ func pickedFile(out []byte) string {
 // This mirrors portalSelectFolder without its directory option. The folder
 // implementation cannot be reused because an older portal ignores an unknown
 // directory option and would silently widen a folder request into a file pick.
-func portalSelectFile(prompt string) (string, bool, error) {
+func portalSelectFile(prompt, dir string) (string, bool, error) {
 	conn, err := dbus.SessionBusPrivateNoAutoStartup()
 	if err != nil {
 		return "", false, fmt.Errorf("%w: %v", errPortalUnavailable, err)
@@ -116,6 +123,9 @@ func portalSelectFile(prompt string) (string, bool, error) {
 
 	options := map[string]dbus.Variant{
 		"handle_token": dbus.MakeVariant(token),
+	}
+	if dir != "" {
+		options["current_folder"] = dbus.MakeVariant(append([]byte(dir), 0))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), selectFileTimeout)
 	defer cancel()

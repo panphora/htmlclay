@@ -102,6 +102,21 @@ func buildTestApp(t *testing.T, home, cfgBase string) *app {
 			home:      home,
 			configDir: configDir,
 			confirm:   denyConfirm,
+			// A page's on-use helper prompt is dismissed by default for the same
+			// reason: no test may put a real dialog on the user's screen, and a
+			// dismissed prompt grants nothing and stores nothing.
+			confirmHelpers: func(string, string, bool) (platform.ConfirmChoice, error) {
+				return platform.ConfirmDismissed, nil
+			},
+			// The picker and the program check behind that dialog cancel and
+			// decline, so a test can never open a real file picker or inspect a
+			// real program.
+			chooseHelperProgram: func(string, string) (string, bool, error) {
+				return "", false, nil
+			},
+			prepareHelperProgram: func(string) (bool, error) {
+				return false, nil
+			},
 			// The write-granting dialog denies by default through its own
 			// distinct seam, so a test that allows read grants does not
 			// accidentally approve a folder trust.

@@ -27,7 +27,7 @@ type helperProgramDialogs struct {
 func systemHelperProgramDialogs() helperProgramDialogs {
 	return helperProgramDialogs{
 		promptName:        platform.PromptName,
-		selectFile:        platform.SelectFile,
+		selectFile:        func(prompt string) (string, bool, error) { return platform.SelectFile(prompt, "") },
 		confirmExecutable: platform.ConfirmWithButtons,
 		manageProgram:     platform.ManageProgram,
 	}

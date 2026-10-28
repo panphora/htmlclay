@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -54,7 +55,7 @@ func TestHelperDenialAppliesToThisOpenOnly(t *testing.T) {
 			}
 			return platform.ConfirmDeny, nil
 		},
-		choose: func(string) (string, bool, error) {
+		choose: func(string, string) (string, bool, error) {
 			t.Fatal("denial opened a file picker")
 			return "", false, nil
 		},
@@ -124,7 +125,7 @@ func TestHelperPromptClosedWithoutAnAnswerStoresNothing(t *testing.T) {
 					calls++
 					return platform.ConfirmDismissed, tc.err
 				},
-				choose: func(string) (string, bool, error) {
+				choose: func(string, string) (string, bool, error) {
 					t.Fatal("a dialog closed without an answer opened the file picker")
 					return "", false, nil
 				},
@@ -273,7 +274,7 @@ func TestHelperApprovalWithASharedNameAsksWhichProgram(t *testing.T) {
 				confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
 					return platform.ConfirmAllowOnce, nil
 				},
-				choose: func(string) (string, bool, error) {
+				choose: func(string, string) (string, bool, error) {
 					chose = true
 					return paths[tc.pick], true, nil
 				},
@@ -308,7 +309,7 @@ func TestHelperApprovalSelectsThenPersistsTheProgram(t *testing.T) {
 			order = append(order, "confirm")
 			return platform.ConfirmAllowAlways, nil
 		},
-		choose: func(prompt string) (string, bool, error) {
+		choose: func(prompt, dir string) (string, bool, error) {
 			order = append(order, "choose")
 			if !strings.Contains(prompt, "search") {
 				t.Fatalf("picker prompt = %q", prompt)
@@ -402,7 +403,7 @@ func TestStoredHelperDecisionRestoresWithoutDialogs(t *testing.T) {
 		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
 			return platform.ConfirmDeny, fail
 		},
-		choose: func(string) (string, bool, error) {
+		choose: func(string, string) (string, bool, error) {
 			return "", false, fail
 		},
 		prepare: func(string) (bool, error) {
@@ -605,7 +606,7 @@ func TestRefreshingOpenDispatchersAppliesRevocationWithoutPrompt(t *testing.T) {
 	a.refreshHelperDispatchers()
 
 	after := s.srv.HelperGeneration(document)
-	if after <= before || !s.srv.HelpersBound(document) {
+	if after != before || !s.srv.HelpersBound(document) {
 		t.Fatalf("revocation refresh = generation %d, bound %v; before %d", after, s.srv.HelpersBound(document), before)
 	}
 	file, ok := s.sessions.LookupByPath(document)
@@ -683,5 +684,323 @@ func TestTheDocumentProgramsPromptHasItsOwnSeamAndButtons(t *testing.T) {
 	}
 	if helperConfirmLabels.Later != "" {
 		t.Fatal("the document-programs prompt stores nothing, so Deny is its keyboard default and it draws no Later button")
+	}
+}
+
+func writeHelperPageIn(t *testing.T, dir, folder string, names ...string) string {
+	t.Helper()
+	var metas strings.Builder
+	for _, name := range names {
+		metas.WriteString("<meta name=\"htmlclay-helper\" content=\"" + name + "\"")
+		if folder != "" {
+			metas.WriteString(" data-program-folder=\"" + folder + "\"")
+		}
+		metas.WriteString(">")
+	}
+	path := filepath.Join(dir, "page.htmlclay")
+	if err := os.WriteFile(path, []byte("<!doctype html><head>"+metas.String()+"</head>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestHelperPickerFolderStartsInTheDocumentFolderUnlessTheHintIsUsable(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	docs := filepath.Join(home, "docs")
+	if err := os.MkdirAll(docs, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hinted := filepath.Join(home, "var", "bin")
+	if err := os.MkdirAll(hinted, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		folder string
+		want   string
+	}{
+		{"hinted folder inside home", "../var/bin", hinted},
+		{"hint that leaves home", "../../elsewhere", docs},
+		{"hinted folder that does not exist", "../var/missing", docs},
+		{"no hint", "", docs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			document := writeHelperPageIn(t, docs, tc.folder, "search")
+			if got := a.helperPickerFolder(document, "search"); got != tc.want {
+				t.Fatalf("helperPickerFolder = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHelperApprovalPickerStartsInTheDeclaredFolder(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	docs := filepath.Join(home, "docs")
+	if err := os.MkdirAll(docs, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hinted := filepath.Join(home, "var", "bin")
+	if err := os.MkdirAll(hinted, 0755); err != nil {
+		t.Fatal(err)
+	}
+	document := writeHelperPageIn(t, docs, "../var/bin", "search")
+	programPath := writeTestProgram(t, hinted, "search", 0755)
+	plan := a.helpersForOpenWith(document, true, true, helperApprovalDialogs{
+		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+			return platform.ConfirmAllowAlways, nil
+		},
+		choose: func(prompt, dir string) (string, bool, error) {
+			if dir != hinted {
+				t.Fatalf("picker started in %q, want %q", dir, hinted)
+			}
+			return programPath, true, nil
+		},
+		prepare: func(string) (bool, error) { return true, nil },
+	})
+	if program, ok := plan.allowed["search"]; !ok || program.Path != programPath {
+		t.Fatalf("allowed helper = %+v, %v", program, ok)
+	}
+}
+
+func TestHelperUseAsksOnlyAboutTheHelperThatWasUsed(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	document := writeHelperPage(t, home, "search", "ocr")
+	for _, name := range []string{"search", "ocr"} {
+		if _, err := a.rt.cfg.AddHelperProgram(name, writeTestProgram(t, t.TempDir(), name, 0755)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	var message string
+	plan := a.helpersForUseWith(document, "search", helperApprovalDialogs{
+		confirm: func(_, text string, _ bool) (platform.ConfirmChoice, error) {
+			calls++
+			message = text
+			return platform.ConfirmAllowOnce, nil
+		},
+		choose: func(string, string) (string, bool, error) {
+			t.Fatal("a registered program opened the picker")
+			return "", false, nil
+		},
+		prepare: func(string) (bool, error) {
+			t.Fatal("a registered program was prepared again")
+			return false, nil
+		},
+	})
+	if calls != 1 {
+		t.Fatalf("dialog calls = %d, want one for the used helper only", calls)
+	}
+	if !strings.Contains(message, "search") || strings.Contains(message, "ocr") {
+		t.Fatalf("dialog named more than the used helper: %q", message)
+	}
+	if _, ok := plan.allowed["search"]; !ok {
+		t.Fatalf("allowed plan = %+v, want search", plan.allowed)
+	}
+}
+
+func TestHelperUseDenialAppliesToThisOpenAndKeepsEarlierDenials(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	document := writeHelperPage(t, home, "search", "ocr")
+	for _, name := range []string{"search", "ocr"} {
+		if _, err := a.rt.cfg.AddHelperProgram(name, writeTestProgram(t, t.TempDir(), name, 0755)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	dialogs := helperApprovalDialogs{
+		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+			calls++
+			return platform.ConfirmDeny, nil
+		},
+		choose: func(string, string) (string, bool, error) {
+			t.Fatal("denial opened the picker")
+			return "", false, nil
+		},
+		prepare: func(string) (bool, error) {
+			t.Fatal("denial prepared a program")
+			return false, nil
+		},
+	}
+	plan := a.helpersForUseWith(document, "search", dialogs)
+	if !slices.Contains(plan.denied, "search") {
+		t.Fatalf("denied plan = %+v, want search denied", plan.denied)
+	}
+	if calls != 1 {
+		t.Fatalf("dialog calls = %d, want 1", calls)
+	}
+	again := a.helpersForUseWith(document, "search", dialogs)
+	if calls != 1 {
+		t.Fatalf("a denied name raised the dialog again: calls = %d", calls)
+	}
+	if !slices.Contains(again.denied, "search") {
+		t.Fatalf("second denied plan = %+v, want search still denied", again.denied)
+	}
+	second := a.helpersForUseWith(document, "ocr", dialogs)
+	if calls != 1 {
+		t.Fatalf("dialog calls = %d, want a refusal to stop every page-raised dialog for the document", calls)
+	}
+	if !slices.Contains(second.denied, "search") {
+		t.Fatalf("second plan dropped the first denial: %+v", second.denied)
+	}
+	if _, ok := second.allowed["ocr"]; ok {
+		t.Fatalf("a stopped dialog granted ocr: %+v", second.allowed)
+	}
+}
+
+func TestHelperUseNeverAsksAboutAStoredDecision(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	document := writeHelperPage(t, home, "search", "ocr")
+	allowed, err := a.rt.cfg.AddHelperProgram("search", writeTestProgram(t, t.TempDir(), "search", 0755))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.rt.cfg.AddHelperProgram("ocr", writeTestProgram(t, t.TempDir(), "ocr", 0755)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.rt.cfg.DecideHelper(config.HelperDecision{Document: document, Name: "search", Program: allowed.ID, Allowed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	dialogs := helperApprovalDialogs{
+		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+			t.Fatal("a stored decision raised the dialog")
+			return platform.ConfirmDeny, nil
+		},
+	}
+	plan := a.helpersForUseWith(document, "search", dialogs)
+	if got := plan.allowed["search"]; got.ID != allowed.ID {
+		t.Fatalf("allowed helper = %+v, want %s", got, allowed.ID)
+	}
+}
+
+func TestDirectOpenStillAsksAfterAnOnUseDenial(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	document := writeHelperPage(t, home, "search")
+	if _, err := a.rt.cfg.AddHelperProgram("search", writeTestProgram(t, t.TempDir(), "search", 0755)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	dialogs := helperApprovalDialogs{
+		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+			calls++
+			return platform.ConfirmDeny, nil
+		},
+	}
+	a.helpersForUseWith(document, "search", dialogs)
+	if calls != 1 {
+		t.Fatalf("dialog calls after use = %d, want 1", calls)
+	}
+	a.helpersForOpenWith(document, true, true, dialogs)
+	if calls != 2 {
+		t.Fatalf("dialog calls after a direct open = %d, want a fresh prompt", calls)
+	}
+}
+
+func TestARefusalStopsEveryPageRaisedDialogForTheDocument(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	document := writeHelperPage(t, home, "a", "b")
+	for _, name := range []string{"a", "b"} {
+		if _, err := a.rt.cfg.AddHelperProgram(name, writeTestProgram(t, t.TempDir(), name, 0755)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.rt.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	dialogs := helperApprovalDialogs{
+		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+			calls++
+			return platform.ConfirmDeny, nil
+		},
+		choose: func(string, string) (string, bool, error) {
+			t.Fatal("denial opened the picker")
+			return "", false, nil
+		},
+		prepare: func(string) (bool, error) {
+			t.Fatal("denial prepared a program")
+			return false, nil
+		},
+	}
+	a.helpersForUseWith(document, "a", dialogs)
+	if calls != 1 {
+		t.Fatalf("dialog calls = %d, want 1", calls)
+	}
+	plan := a.helpersForUseWith(document, "b", dialogs)
+	if calls != 1 {
+		t.Fatalf("a second page-raised ask raised the dialog again: calls = %d", calls)
+	}
+	if _, ok := plan.allowed["b"]; ok {
+		t.Fatalf("a stopped dialog granted b: %+v", plan.allowed)
+	}
+	a.helpersForOpenWith(document, true, true, dialogs)
+	if calls != 2 {
+		t.Fatalf("a direct open did not ask again: calls = %d", calls)
+	}
+}
+
+func TestAPageWaitsAfterADialogThatGrantedNothing(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	document := writeHelperPage(t, home, "search")
+	calls := 0
+	dialogs := helperApprovalDialogs{
+		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+			calls++
+			return platform.ConfirmDismissed, nil
+		},
+	}
+	a.helpersForOpenWith(document, true, true, dialogs)
+	if calls != 1 {
+		t.Fatalf("dialog calls after a direct open = %d, want 1", calls)
+	}
+	a.helpersForUseWith(document, "search", dialogs)
+	if calls != 1 {
+		t.Fatalf("the page raised the dialog again inside the quiet period: calls = %d", calls)
+	}
+	a.helperStateMu.Lock()
+	a.pageAskQuiet[document] = time.Now().Add(-time.Minute)
+	a.helperStateMu.Unlock()
+	a.helpersForUseWith(document, "search", dialogs)
+	if calls != 2 {
+		t.Fatalf("the page did not ask again after the quiet period: calls = %d", calls)
+	}
+}
+
+func TestAPageRaisedDialogFailureShowsNoBanner(t *testing.T) {
+	home := t.TempDir()
+	a := newTestApp(t, home)
+	banners := 0
+	a.rt.notify = func(string, string) error {
+		banners++
+		return nil
+	}
+	document := writeHelperPage(t, home, "search")
+	dialogs := helperApprovalDialogs{
+		confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
+			return platform.ConfirmDismissed, errors.New("no native dialog tool (zenity or kdialog) found")
+		},
+	}
+	a.helpersForUseWith(document, "search", dialogs)
+	if banners != 0 {
+		t.Fatalf("banners = %d, want none for a page-raised ask", banners)
 	}
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-func selectFile(prompt string) (string, bool, error) {
+func selectFile(prompt, dir string) (string, bool, error) {
 	// The filter is a convenience only. What may actually be registered is
 	// decided once, in prepareHelperProgram, beside the Unix executable-bit
 	// check, so the two platforms answer "can this file be run" in one place.
@@ -17,6 +17,7 @@ func selectFile(prompt string) (string, bool, error) {
 		"Add-Type -AssemblyName System.Windows.Forms; " +
 		"$d = New-Object System.Windows.Forms.OpenFileDialog; " +
 		"$d.Title = $env:HTMLCLAY_DIALOG_PROMPT; " +
+		"if ($env:HTMLCLAY_DIALOG_DIR) { $d.InitialDirectory = $env:HTMLCLAY_DIALOG_DIR }; " +
 		"$d.CheckFileExists = $true; $d.Multiselect = $false; " +
 		"$d.Filter = 'Helper programs (*.exe;*.bat;*.cmd)|*.exe;*.bat;*.cmd|All files (*.*)|*.*'; " +
 		"if ($d.ShowDialog() -eq 'OK') { Write-Output $d.FileName }"
@@ -26,7 +27,7 @@ func selectFile(prompt string) (string, bool, error) {
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", script)
 	noConsoleWindow(cmd)
-	cmd.Env = append(cmd.Environ(), "HTMLCLAY_DIALOG_PROMPT="+prompt)
+	cmd.Env = append(cmd.Environ(), "HTMLCLAY_DIALOG_PROMPT="+prompt, "HTMLCLAY_DIALOG_DIR="+dir)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false, fmt.Errorf("file picker failed: %w", err)

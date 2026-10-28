@@ -28,7 +28,7 @@ func helperDocumentKey(document, name string) string {
 // picker and the prompt were asked.
 func allowDocumentDialogs(path string, choice platform.ConfirmChoice, seen *[]string) helperApprovalDialogs {
 	return helperApprovalDialogs{
-		choose: func(prompt string) (string, bool, error) {
+		choose: func(prompt, dir string) (string, bool, error) {
 			if seen != nil {
 				*seen = append(*seen, "choose:"+prompt)
 			}
@@ -327,7 +327,7 @@ func TestHelperDocumentCancelledOrFailedDialogsChangeNothing(t *testing.T) {
 	}{
 		{"picker cancelled", func(t *testing.T, _ string) helperApprovalDialogs {
 			return helperApprovalDialogs{
-				choose: func(string) (string, bool, error) { return "", false, nil },
+				choose: func(string, string) (string, bool, error) { return "", false, nil },
 				confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
 					t.Error("a cancelled picker asked for approval")
 					return platform.ConfirmAllowOnce, nil
@@ -340,12 +340,12 @@ func TestHelperDocumentCancelledOrFailedDialogsChangeNothing(t *testing.T) {
 		}, false},
 		{"picker failed", func(t *testing.T, _ string) helperApprovalDialogs {
 			return helperApprovalDialogs{
-				choose: func(string) (string, bool, error) { return "", false, errHelperFixture },
+				choose: func(string, string) (string, bool, error) { return "", false, errHelperFixture },
 			}
 		}, true},
 		{"approval refused", func(t *testing.T, path string) helperApprovalDialogs {
 			return helperApprovalDialogs{
-				choose:  func(string) (string, bool, error) { return path, true, nil },
+				choose:  func(string, string) (string, bool, error) { return path, true, nil },
 				confirm: func(string, string, bool) (platform.ConfirmChoice, error) { return platform.ConfirmDeny, nil },
 				prepare: func(string) (bool, error) {
 					t.Error("a refusal prepared a program")
@@ -355,13 +355,13 @@ func TestHelperDocumentCancelledOrFailedDialogsChangeNothing(t *testing.T) {
 		}, false},
 		{"approval dismissed", func(t *testing.T, path string) helperApprovalDialogs {
 			return helperApprovalDialogs{
-				choose:  func(string) (string, bool, error) { return path, true, nil },
+				choose:  func(string, string) (string, bool, error) { return path, true, nil },
 				confirm: func(string, string, bool) (platform.ConfirmChoice, error) { return platform.ConfirmDismissed, nil },
 			}
 		}, false},
 		{"approval failed", func(t *testing.T, path string) helperApprovalDialogs {
 			return helperApprovalDialogs{
-				choose: func(string) (string, bool, error) { return path, true, nil },
+				choose: func(string, string) (string, bool, error) { return path, true, nil },
 				confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
 					return platform.ConfirmDismissed, errHelperFixture
 				},
@@ -369,14 +369,14 @@ func TestHelperDocumentCancelledOrFailedDialogsChangeNothing(t *testing.T) {
 		}, true},
 		{"prepare refused", func(t *testing.T, path string) helperApprovalDialogs {
 			return helperApprovalDialogs{
-				choose:  func(string) (string, bool, error) { return path, true, nil },
+				choose:  func(string, string) (string, bool, error) { return path, true, nil },
 				confirm: func(string, string, bool) (platform.ConfirmChoice, error) { return platform.ConfirmAllowOnce, nil },
 				prepare: func(string) (bool, error) { return false, nil },
 			}
 		}, false},
 		{"prepare failed", func(t *testing.T, path string) helperApprovalDialogs {
 			return helperApprovalDialogs{
-				choose:  func(string) (string, bool, error) { return path, true, nil },
+				choose:  func(string, string) (string, bool, error) { return path, true, nil },
 				confirm: func(string, string, bool) (platform.ConfirmChoice, error) { return platform.ConfirmAllowOnce, nil },
 				prepare: func(string) (bool, error) { return false, errHelperFixture },
 			}
@@ -819,7 +819,10 @@ func TestHelperDocumentStaleOrMalformedRowAsksNothing(t *testing.T) {
 			}
 
 			dialogs := helperApprovalDialogs{
-				choose: func(string) (string, bool, error) { t.Error("a stale row opened the picker"); return "", false, nil },
+				choose: func(string, string) (string, bool, error) {
+					t.Error("a stale row opened the picker")
+					return "", false, nil
+				},
 				confirm: func(string, string, bool) (platform.ConfirmChoice, error) {
 					t.Error("a stale row asked for approval")
 					return platform.ConfirmDeny, nil

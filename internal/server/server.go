@@ -64,6 +64,12 @@ type Server struct {
 	helperMu       sync.Mutex
 	helpers        map[string]*helperDispatcher
 	helperOffline  map[string][]string
+	// helperAsking parks requests for a helper the person has not answered,
+	// keyed by helperAskKey, while one dialog asks about it.
+	helperAsking map[string][]parkedHelperRequest
+	// helperAskQuiet holds, per file, when a page may next raise the dialog
+	// after one that granted nothing.
+	helperAskQuiet map[string]time.Time
 	aiEdit         aiEditRegistry
 
 	// hooks are the app-level decisions this server cannot make itself. A nil

@@ -19,18 +19,33 @@ const (
 // order, deduplicated, at most maxHelperNames. Invalid names are skipped rather
 // than erroring: a bad meta tag is ignored the way an unknown meta tag is.
 func ReadHelperNames(data []byte) []string {
+	names, _ := readHelperDeclarations(data)
+	return names
+}
+
+// ReadHelperFolders returns, per declared helper name, the folder its
+// declaration suggests for the program picker (data-program-folder), relative
+// to the document. Only the first declaration of a name counts, as for
+// ReadHelperNames, and a name without the attribute is absent.
+func ReadHelperFolders(data []byte) map[string]string {
+	_, folders := readHelperDeclarations(data)
+	return folders
+}
+
+func readHelperDeclarations(data []byte) ([]string, map[string]string) {
 	if len(data) > helperScanLimit {
 		data = data[:helperScanLimit]
 	}
 	z := html.NewTokenizer(bytes.NewReader(data))
 	seen := make(map[string]bool)
 	names := make([]string, 0, maxHelperNames)
+	folders := make(map[string]string)
 	templateDepth := 0
 	rawElement := ""
 	for {
 		tokenType := z.Next()
 		if tokenType == html.ErrorToken {
-			return names
+			return names, folders
 		}
 		token := z.Token()
 		if rawElement != "" {
@@ -55,11 +70,11 @@ func ReadHelperNames(data []byte) []string {
 		switch tokenType {
 		case html.TextToken:
 			if strings.Trim(token.Data, " \t\n\r\f") != "" {
-				return names
+				return names, folders
 			}
 		case html.EndTagToken:
 			if token.Data == "head" || token.Data == "body" || token.Data == "html" || token.Data == "br" {
-				return names
+				return names, folders
 			}
 		case html.StartTagToken, html.SelfClosingTagToken:
 			if token.Data == "template" {
@@ -67,7 +82,7 @@ func ReadHelperNames(data []byte) []string {
 				continue
 			}
 			if !isHeadElement(token.Data) {
-				return names
+				return names, folders
 			}
 			if isRawHeadElement(token.Data) {
 				rawElement = token.Data
@@ -76,13 +91,15 @@ func ReadHelperNames(data []byte) []string {
 			if token.Data != "meta" {
 				continue
 			}
-			var metaName, content string
+			var metaName, content, folder string
 			for _, attr := range token.Attr {
 				switch attr.Key {
 				case "name":
 					metaName = attr.Val
 				case "content":
 					content = attr.Val
+				case "data-program-folder":
+					folder = strings.TrimSpace(attr.Val)
 				}
 			}
 			if metaName != "htmlclay-helper" || !config.ValidHelperName(content) || seen[content] {
@@ -90,8 +107,11 @@ func ReadHelperNames(data []byte) []string {
 			}
 			seen[content] = true
 			names = append(names, content)
+			if folder != "" {
+				folders[content] = folder
+			}
 			if len(names) == maxHelperNames {
-				return names
+				return names, folders
 			}
 		}
 	}

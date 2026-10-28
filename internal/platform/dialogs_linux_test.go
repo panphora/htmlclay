@@ -69,7 +69,7 @@ func TestSelectFileLinuxZenityFallbackSelectsAFile(t *testing.T) {
 	argsPath := installLinuxDialogTool(t, "zenity")
 	linuxDialogResult(t, "/tmp/helper  \n", 0)
 
-	path, ok, err := SelectFile("Choose a helper")
+	path, ok, err := SelectFile("Choose a helper", "")
 	if err != nil || !ok || path != "/tmp/helper  " {
 		t.Fatalf("SelectFile() = (%q, %v, %v)", path, ok, err)
 	}
@@ -82,7 +82,7 @@ func TestSelectFileLinuxZenityFallbackSelectsAFile(t *testing.T) {
 func TestSelectFileLinuxKdialogFallbackAndCancel(t *testing.T) {
 	argsPath := installLinuxDialogTool(t, "kdialog")
 	linuxDialogResult(t, "/tmp/helper\n", 0)
-	if path, ok, err := SelectFile("Choose a helper"); err != nil || !ok || path != "/tmp/helper" {
+	if path, ok, err := SelectFile("Choose a helper", ""); err != nil || !ok || path != "/tmp/helper" {
 		t.Fatalf("SelectFile() = (%q, %v, %v)", path, ok, err)
 	}
 	if args := linuxDialogArgs(t, argsPath); !containsArg(args, "--getopenfilename") {
@@ -90,7 +90,7 @@ func TestSelectFileLinuxKdialogFallbackAndCancel(t *testing.T) {
 	}
 
 	linuxDialogResult(t, "", 1)
-	if path, ok, err := SelectFile("Choose a helper"); err != nil || ok || path != "" {
+	if path, ok, err := SelectFile("Choose a helper", ""); err != nil || ok || path != "" {
 		t.Fatalf("cancel = (%q, %v, %v), want a clean no-choice", path, ok, err)
 	}
 }

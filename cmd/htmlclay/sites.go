@@ -201,6 +201,7 @@ func (a *app) buildSite(anchor, key string, trusted bool) *site {
 		AIEditEnabled:  a.rt.cfg.AIEditEnabled,
 		AIEditEngines:  a.rt.cfg.AIEditEngines,
 		Profile:        a.rt.cfg.SharedPerson,
+		AskHelper:      a.askHelperForUse,
 	})
 	s.srv = srv
 	return s

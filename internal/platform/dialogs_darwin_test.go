@@ -58,7 +58,7 @@ func TestSelectFileDarwinForegroundsAndPreservesTrailingSpaces(t *testing.T) {
 	argsPath := installFakeOSAScript(t)
 	fakeOSAScriptResult(t, "/tmp/my helper  \n", 0)
 
-	path, ok, err := SelectFile(`Choose "a helper"`)
+	path, ok, err := SelectFile(`Choose "a helper"`, "")
 	if err != nil || !ok || path != "/tmp/my helper  " {
 		t.Fatalf("SelectFile() = (%q, %v, %v)", path, ok, err)
 	}
@@ -74,12 +74,12 @@ func TestSelectFileDarwinForegroundsAndPreservesTrailingSpaces(t *testing.T) {
 func TestSelectFileDarwinSeparatesCancelFromFailure(t *testing.T) {
 	installFakeOSAScript(t)
 	fakeOSAScriptResult(t, "execution error: User canceled. (-128)\n", 1)
-	if path, ok, err := SelectFile("Choose"); err != nil || ok || path != "" {
+	if path, ok, err := SelectFile("Choose", ""); err != nil || ok || path != "" {
 		t.Fatalf("cancel = (%q, %v, %v), want a clean no-choice", path, ok, err)
 	}
 
 	fakeOSAScriptResult(t, "execution error: broken (-1)\n", 1)
-	if _, ok, err := SelectFile("Choose"); err == nil || ok {
+	if _, ok, err := SelectFile("Choose", ""); err == nil || ok {
 		t.Fatalf("a launch failure must surface as an error, got ok=%v err=%v", ok, err)
 	}
 }
@@ -162,5 +162,15 @@ func TestManageProgramDarwinPreselectsNothingAndStillCompiles(t *testing.T) {
 	out, err := exec.Command("/usr/bin/osacompile", "-o", filepath.Join(dir, "manage.scpt"), source).CombinedOutput()
 	if err != nil {
 		t.Fatalf("osacompile rejected the management script: %v\n%s\n%s", err, out, script)
+	}
+}
+
+func TestSelectFileScriptDarwinStartsInTheGivenFolder(t *testing.T) {
+	withFolder := selectFileScript("p", "/Users/x/bin")
+	if !strings.Contains(withFolder, `default location (POSIX file "/Users/x/bin")`) {
+		t.Fatalf("script = %q, want the folder as the default location", withFolder)
+	}
+	if withoutFolder := selectFileScript("p", ""); strings.Contains(withoutFolder, "default location") {
+		t.Fatalf("script = %q, want no default location when the folder is empty", withoutFolder)
 	}
 }

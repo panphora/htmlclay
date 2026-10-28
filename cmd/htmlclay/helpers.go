@@ -13,10 +13,15 @@ import (
 	"github.com/panphora/htmlclay/internal/config"
 	"github.com/panphora/htmlclay/internal/htmlutil"
 	"github.com/panphora/htmlclay/internal/platform"
+	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/tray"
 )
 
 const helperDeclarationReadLimit = 512 << 10
+
+// pageAskQuietFor is how long a page must wait after a dialog that granted
+// nothing before it may raise the helper dialog again.
+const pageAskQuietFor = time.Minute
 
 type helperOpenPlan struct {
 	names   []string
@@ -26,7 +31,7 @@ type helperOpenPlan struct {
 
 type helperApprovalDialogs struct {
 	confirm func(title, message string, allowBroad bool) (platform.ConfirmChoice, error)
-	choose  func(prompt string) (string, bool, error)
+	choose  func(prompt, dir string) (string, bool, error)
 	prepare func(path string) (bool, error)
 }
 
@@ -68,12 +73,20 @@ func (a *app) systemHelperApprovalDialogs() helperApprovalDialogs {
 			return platform.Confirm(title, message, helperConfirmLabels)
 		}
 	}
+	choose := a.rt.chooseHelperProgram
+	if choose == nil {
+		choose = platform.SelectFile
+	}
+	prepare := a.rt.prepareHelperProgram
+	if prepare == nil {
+		prepare = func(path string) (bool, error) {
+			return prepareHelperProgram(path, platform.ConfirmWithButtons)
+		}
+	}
 	return helperApprovalDialogs{
 		confirm: confirm,
-		choose:  platform.SelectFile,
-		prepare: func(path string) (bool, error) {
-			return prepareHelperProgram(path, platform.ConfirmWithButtons)
-		},
+		choose:  choose,
+		prepare: prepare,
 	}
 }
 
@@ -91,6 +104,54 @@ func (a *app) helpersForOpen(document string, prompt bool) helperOpenPlan {
 // the user is actually doing.
 func (a *app) helpersForNavigation(document string) helperOpenPlan {
 	return a.helpersForOpenWith(document, false, false, a.systemHelperApprovalDialogs())
+}
+
+// askHelperForUse is each site server's AskHelper hook: a page tried to use
+// name, a helper it declares and the person has not answered. It asks about
+// that one name, reattaches the document's helpers, and reports whether name is
+// now allowed.
+func (a *app) askHelperForUse(document, name string) bool {
+	plan := a.helpersForUseWith(document, name, a.systemHelperApprovalDialogs())
+	a.mu.Lock()
+	s, _, ok := a.lookupLocked(document)
+	a.mu.Unlock()
+	if ok && s.srv != nil {
+		a.applyHelperPlan(s, document, plan)
+	}
+	_, allowed := plan.allowed[name]
+	return allowed
+}
+
+// helpersForUseWith never asks about a name denied for this open or decided in
+// config, and unlike the open path it keeps this open's denials, so a page
+// cannot raise the dialog past a refusal. Any refusal for this open stops every
+// page-raised dialog for the document until the next direct open, and a dialog
+// that granted nothing quiets the page for a minute.
+func (a *app) helpersForUseWith(document, name string, dialogs helperApprovalDialogs) helperOpenPlan {
+	a.helperMu.Lock()
+	defer a.helperMu.Unlock()
+	names, err := readDocumentHelperNames(document)
+	if err != nil {
+		a.rt.logger.Printf("Could not configure helpers for %s: %v", document, err)
+		return helperOpenPlan{}
+	}
+	plan := helperOpenPlan{names: names}
+	plan.allowed, plan.denied = a.resolvedHelpers(document, names)
+	if !slices.Contains(names, name) || slices.Contains(plan.denied, name) {
+		return plan
+	}
+	if _, ok := plan.allowed[name]; ok {
+		return plan
+	}
+	resolution, _ := a.rt.cfg.ResolveHelper(document, name)
+	if resolution.Decided {
+		return plan
+	}
+	if a.hasOpenDenials(document) || time.Now().Before(a.pageAskQuietUntil(document)) {
+		return plan
+	}
+	a.rt.logger.Printf("Helper %s was used by %s before it was allowed; asking", name, document)
+	return a.askHelpers(document, names, plan, []helperCandidate{{name: name, program: resolution.Program, registered: resolution.Candidates}}, dialogs, false)
 }
 
 func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs helperApprovalDialogs) helperOpenPlan {
@@ -129,13 +190,48 @@ func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs h
 		return plan
 	}
 
+	return a.askHelpers(document, names, plan, undecided, dialogs, true)
+}
+
+// askHelpers raises the document-programs dialog for undecided and saves what
+// the person chose. plan is the document's permissions before asking; the
+// result is the same plan after. notify says whether a failure is reported on
+// screen; a page-raised ask logs it alone. A dialog that granted nothing quiets
+// the page for a while. Caller holds helperMu.
+func (a *app) askHelpers(document string, names []string, plan helperOpenPlan, undecided []helperCandidate, dialogs helperApprovalDialogs, notify bool) helperOpenPlan {
+	before := plan.allowed
+	defer func() {
+		gained := false
+		for name := range plan.allowed {
+			if _, ok := before[name]; !ok {
+				gained = true
+				break
+			}
+		}
+		if gained {
+			return
+		}
+		a.helperStateMu.Lock()
+		if a.pageAskQuiet == nil {
+			a.pageAskQuiet = make(map[string]time.Time)
+		}
+		a.pageAskQuiet[document] = time.Now().Add(pageAskQuietFor)
+		a.helperStateMu.Unlock()
+	}()
+	report := func(err error) {
+		if notify {
+			a.reportHelperSetupError(document, err)
+		} else {
+			a.rt.logger.Printf("Could not configure helpers for %s: %v", document, err)
+		}
+	}
 	choice, err := dialogs.confirm(
 		"Allow document programs?",
 		helperApprovalMessage(document, undecided),
 		true,
 	)
 	if err != nil {
-		a.reportHelperSetupError(document, fmt.Errorf("could not show the helper permission dialog: %w", err))
+		report(fmt.Errorf("could not show the helper permission dialog: %w", err))
 		return plan
 	}
 	switch choice {
@@ -147,30 +243,31 @@ func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs h
 		for _, candidate := range undecided {
 			refused = append(refused, candidate.name)
 		}
-		a.setOpenDenials(document, refused)
+		a.addOpenDenials(document, refused)
 		a.rt.logger.Printf("Helpers denied for this open of %s; the next direct open asks again", document)
 		plan.allowed, plan.denied = a.resolvedHelpers(document, names)
 		return plan
 	case platform.ConfirmAllowOnce, platform.ConfirmAllowAlways:
 	default:
-		a.reportHelperSetupError(document, errors.New("the helper permission dialog returned an invalid choice"))
+		report(errors.New("the helper permission dialog returned an invalid choice"))
 		return plan
 	}
 	for i := range undecided {
 		if undecided[i].program.ID != "" {
 			continue
 		}
-		path, ok, err := dialogs.choose("Choose the program for " + undecided[i].name)
+		path, ok, err := dialogs.choose("Choose the program for "+undecided[i].name, a.helperPickerFolder(document, undecided[i].name))
 		if err != nil {
-			a.reportHelperSetupError(document, fmt.Errorf("could not choose %s: %w", undecided[i].name, err))
+			report(fmt.Errorf("could not choose %s: %w", undecided[i].name, err))
 			return plan
 		}
 		if !ok {
+			a.rt.logger.Printf("Program picker for %s in %s was cancelled; nothing was saved", undecided[i].name, document)
 			return plan
 		}
 		ok, err = dialogs.prepare(path)
 		if err != nil {
-			a.reportHelperSetupError(document, fmt.Errorf("could not prepare %s: %w", undecided[i].name, err))
+			report(fmt.Errorf("could not prepare %s: %w", undecided[i].name, err))
 			return plan
 		}
 		if !ok {
@@ -180,7 +277,7 @@ func (a *app) helpersForOpenWith(document string, prompt, notify bool, dialogs h
 	}
 
 	if err := a.saveHelperDecisionSet(document, undecided, choice); err != nil {
-		a.reportHelperSetupError(document, err)
+		report(err)
 		return plan
 	}
 	plan.allowed, plan.denied = a.resolvedHelpers(document, names)
@@ -198,6 +295,40 @@ func readDocumentHelperNames(document string) ([]string, error) {
 		return nil, err
 	}
 	return htmlutil.ReadHelperNames(data), nil
+}
+
+func readDocumentHelperFolders(document string) map[string]string {
+	f, err := os.Open(document)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, helperDeclarationReadLimit))
+	if err != nil {
+		return nil
+	}
+	return htmlutil.ReadHelperFolders(data)
+}
+
+// helperPickerFolder is where the file picker for name starts: the folder the
+// document's declaration suggests, relative to the document, else the
+// document's own folder. It only chooses where the picker opens. The person
+// still picks the file, and the next dialog shows its full path. A suggestion
+// outside home, or one that is not a folder, falls back to the document's.
+func (a *app) helperPickerFolder(document, name string) string {
+	dir := filepath.Dir(document)
+	hint := readDocumentHelperFolders(document)[name]
+	if hint == "" {
+		return dir
+	}
+	candidate := filepath.Clean(filepath.Join(dir, filepath.FromSlash(hint)))
+	if _, ok := session.ContainWithinHome(a.rt.home, candidate); !ok {
+		return dir
+	}
+	if info, err := os.Stat(candidate); err != nil || !info.IsDir() {
+		return dir
+	}
+	return candidate
 }
 
 func helperApprovalMessage(document string, candidates []helperCandidate) string {
@@ -270,6 +401,31 @@ func (a *app) resolvedHelpersLocked(document string, names []string) (map[string
 		}
 	}
 	return allowed, denied
+}
+
+func (a *app) hasOpenDenials(document string) bool {
+	a.helperStateMu.Lock()
+	defer a.helperStateMu.Unlock()
+	return len(a.openDenials[document]) > 0
+}
+
+func (a *app) pageAskQuietUntil(document string) time.Time {
+	a.helperStateMu.Lock()
+	defer a.helperStateMu.Unlock()
+	return a.pageAskQuiet[document]
+}
+
+func (a *app) addOpenDenials(document string, names []string) {
+	a.helperStateMu.Lock()
+	defer a.helperStateMu.Unlock()
+	if a.openDenials == nil {
+		a.openDenials = make(map[string][]string)
+	}
+	for _, name := range names {
+		if !slices.Contains(a.openDenials[document], name) {
+			a.openDenials[document] = append(a.openDenials[document], name)
+		}
+	}
 }
 
 func (a *app) setOpenDenials(document string, names []string) {
