@@ -21,6 +21,19 @@ func pageStateYJS(seed string) string {
 	return `<script type="application/json" merge="page" clay="live">{"v":1,"y":{"seed":"` + seed + `"}}</script>`
 }
 
+// pageStateCompactedV1 is the page value clayjs's compactor leaves behind: one
+// checkpoint key holding every edit so far, plus the loose updates admitted after
+// it. Opaque here, which is the point: this host stores and serves the tag as sent.
+func pageStateCompactedV1() string {
+	const checkpoint = "AAECiGNiZGBgYGBkYGBgYGBgYGBgYGJgYGBgYGB/Gis="
+	const loose = "AAEDiGNiYGBgY2BgYGBgYGBjYGA7LwwB"
+	const looseAgain = "AAEEiGNiYGBiYGBgZGBgYGBgYGCNL6MM"
+	return `<script type="application/json" merge="page" clay="live">{"v":1,"y":{` +
+		`"c3f6a91b-1z":"` + checkpoint + `",` +
+		`"uk3x9q2-8f2a1c0-1b":"` + loose + `",` +
+		`"uk3x9q2-8f2a1c0-1c":"` + looseAgain + `"}}</script>`
+}
+
 func pageStateDocument(tag, text string) string {
 	doc := "<!DOCTYPE html>\n<html>\n<body>\n  <p>outside</p>\n"
 	if tag != "" {
@@ -480,5 +493,60 @@ func TestPageStateCopyStartsFreshAndMoveKeeps(t *testing.T) {
 	served = fx.serve(t, "moved.htmlclay", nil).Body.String()
 	if got := servedPageTag(t, served, `<article data-page`); got != tag {
 		t.Fatalf("a moved document lost its page state: %q", served)
+	}
+}
+
+func TestD13NoPageRoomCapability(t *testing.T) {
+	fx := newPageStateFixture(t)
+	fx.write(t, "capabilities.htmlclay", pageStateDocument("", "one"))
+	f := fx.open(t, "capabilities.htmlclay")
+	if w := fx.serve(t, "capabilities.htmlclay", nil); w.Code != 200 {
+		t.Fatalf("serve: %d %s", w.Code, w.Body.String())
+	}
+
+	for _, route := range []string{"/_/meta", "/_/meta/" + f.Token} {
+		w := getThroughMux(t, fx.srv, route)
+		if w.Code != 200 {
+			t.Fatalf("%s: got %d, want 200 (%q)", route, w.Code, w.Body.String())
+		}
+		extensions := metaExtensions(t, w)
+		if len(extensions) == 0 {
+			t.Fatalf("%s: no capabilities announced, so this test proves nothing: %s", route, w.Body.String())
+		}
+		for _, name := range extensions {
+			lower := strings.ToLower(name)
+			if lower == "live-data" {
+				t.Errorf("%s: capabilities announce %q, which sends clayjs to the room protocol", route, name)
+			}
+			for _, room := range []string{"page-room", "rooms", "compaction"} {
+				if strings.Contains(lower, room) {
+					t.Errorf("%s: capabilities announce %q, which names a page room", route, name)
+				}
+			}
+		}
+	}
+}
+
+func TestPageStateCompactedV1TagRoundTrip(t *testing.T) {
+	fx := newPageStateFixture(t)
+	fx.write(t, "compacted.htmlclay", pageStateDocument("", "one"))
+	f := fx.open(t, "compacted.htmlclay")
+	if w := fx.serve(t, "compacted.htmlclay", nil); w.Code != 200 {
+		t.Fatalf("first serve: %d %s", w.Code, w.Body.String())
+	}
+
+	tag := pageStateCompactedV1()
+	if w := fx.save(t, f, pageStateDocument(tag, "two")); w.Code != 200 {
+		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+	}
+	if stored := fx.stateFor(t, f).Tag; stored != tag {
+		t.Fatalf("stored page tag = %q, want the compacted tag %q", stored, tag)
+	}
+
+	fx.start(t)
+	fx.open(t, "compacted.htmlclay")
+	served := fx.serve(t, "compacted.htmlclay", nil).Body.String()
+	if got := servedPageTag(t, served, `<article data-page`); got != tag {
+		t.Fatalf("served page tag = %q, want %q", got, tag)
 	}
 }
