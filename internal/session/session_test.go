@@ -1003,3 +1003,82 @@ func TestProbeOnCaseSensitiveVolume(t *testing.T) {
 		t.Fatal("a case-sensitive volume probed as case-insensitive")
 	}
 }
+
+// A folder deleted and made again under the same name, while its root is
+// installed, must serve the new folder's files. The held handle still points at
+// the old directory, so without a reopen every asset in the new folder 404s.
+func TestOpenAssetFollowsFolderReplacedByNewDirectory(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	root := filepath.Join(home, "proj")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t, home)
+	if err := m.GrantReadRoot(root); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	if err := os.Rename(root, filepath.Join(home, "proj.trashed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "assets"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "assets", "new.png"), []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, authorized, err := m.OpenAsset(filepath.Join(root, "assets", "new.png"))
+	if !authorized || err != nil {
+		t.Fatalf("read from the replaced folder: authorized=%v err=%v", authorized, err)
+	}
+	data, _ := io.ReadAll(f)
+	f.Close()
+	if string(data) != "new" {
+		t.Fatalf("read %q from the replaced folder", string(data))
+	}
+
+	if _, authorized, err := m.OpenAsset(filepath.Join(root, "missing.png")); !authorized || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a missing file in the reopened root: authorized=%v err=%v", authorized, err)
+	}
+}
+
+// A root replaced by a symlink keeps its original handle even when the
+// requested file exists only in the link's target.
+func TestOpenAssetDoesNotReopenRootReplacedBySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on windows")
+	}
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	root := filepath.Join(home, "proj")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "evil")
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "loot.txt"), []byte("loot"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t, home)
+	if err := m.GrantReadRoot(root); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	if err := os.Rename(root, filepath.Join(home, "proj.orig")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+
+	f, _, err := m.OpenAsset(filepath.Join(root, "loot.txt"))
+	if f != nil {
+		f.Close()
+		t.Fatal("a root replaced by a symlink was reopened onto the link's target")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected not found through the original handle, got %v", err)
+	}
+}

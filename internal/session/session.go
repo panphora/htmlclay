@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1007,6 +1008,14 @@ func (m *Manager) bestRootLocked(absPath string) (*readRoot, string) {
 // mid-open, and reading through the handle keeps a directory component swapped for
 // a symlink after authorization from escaping the root.
 func (m *Manager) OpenAsset(absPath string) (file *os.File, authorized bool, err error) {
+	file, authorized, err = m.openAsset(absPath)
+	if authorized && errors.Is(err, fs.ErrNotExist) && m.reopenReplacedRoot(absPath) {
+		return m.openAsset(absPath)
+	}
+	return file, authorized, err
+}
+
+func (m *Manager) openAsset(absPath string) (file *os.File, authorized bool, err error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	best, rel := m.bestRootLocked(absPath)
@@ -1015,6 +1024,42 @@ func (m *Manager) OpenAsset(absPath string) (file *os.File, authorized bool, err
 	}
 	f, err := best.root.Open(rel)
 	return f, true, err
+}
+
+// reopenReplacedRoot swaps in a fresh handle when the directory at a root's path
+// is no longer the one the held handle opened, because the folder was deleted or
+// moved and a new one made under the same name. Without this, every read through
+// the root misses files in the new folder for as long as the app runs. A path
+// that now resolves through a symlink keeps its original handle, so a swapped-in
+// link can never redirect reads.
+func (m *Manager) reopenReplacedRoot(absPath string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rr, _ := m.bestRootLocked(absPath)
+	if rr == nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(rr.path); err != nil || resolved != rr.path {
+		return false
+	}
+	current, err := os.Stat(rr.path)
+	if err != nil || !current.IsDir() {
+		return false
+	}
+	if held, err := rr.root.Stat("."); err == nil && os.SameFile(held, current) {
+		return false
+	}
+	root, err := os.OpenRoot(rr.path)
+	if err != nil {
+		return false
+	}
+	if opened, err := root.Stat("."); err != nil || !os.SameFile(opened, current) {
+		root.Close()
+		return false
+	}
+	rr.root.Close()
+	rr.root = root
+	return true
 }
 
 func (m *Manager) RevokeAll() {
