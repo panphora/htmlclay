@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/panphora/htmlclay/internal/browser"
 	"github.com/panphora/htmlclay/internal/server"
 	"github.com/panphora/htmlclay/internal/session"
 	"github.com/panphora/htmlclay/internal/trust"
@@ -202,6 +203,9 @@ func (a *app) buildSite(anchor, key string, trusted bool) *site {
 		AIEditEngines:  a.rt.cfg.AIEditEngines,
 		Profile:        a.rt.cfg.SharedPerson,
 		AskHelper:      a.askHelperForUse,
+		Reveal:         browser.Reveal,
+		OpenFolder:     browser.OpenURL,
+		ExportDocument: a.exportForPage,
 	})
 	s.srv = srv
 	return s

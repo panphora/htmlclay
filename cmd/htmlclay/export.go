@@ -52,9 +52,27 @@ func (a *app) exportDocument(path string) []tray.Row {
 		a.notifyExport("That file is no longer open.")
 		return a.exportDocumentRows()
 	}
+	if _, err := a.zipDocumentToDownloads(path); err != nil {
+		return a.exportDocumentFailed(path, err)
+	}
+	return a.exportDocumentRows()
+}
+
+// exportForPage is the same export on the page menu's terms: the zip, built and
+// shown, reported as an error rather than as menu rows. The document's having
+// been open is the page's own premise, so nothing here rechecks it.
+func (a *app) exportForPage(path string) error {
+	_, err := a.zipDocumentToDownloads(path)
+	return err
+}
+
+// zipDocumentToDownloads writes the document and its uploads into ~/Downloads and
+// opens that folder, which is the confirmation. Opening failing is not an export
+// failure: the zip is already on disk, so the person is told where it is instead.
+func (a *app) zipDocumentToDownloads(path string) (string, error) {
 	downloads := filepath.Join(a.rt.home, "Downloads")
 	if err := os.MkdirAll(downloads, 0o755); err != nil {
-		return a.exportDocumentFailed(path, err)
+		return "", err
 	}
 	uploadsDir, err := server.UploadsLibraryDir()
 	if err != nil {
@@ -62,7 +80,7 @@ func (a *app) exportDocument(path string) []tray.Row {
 	}
 	out, err := server.ExportDocumentZip(path, downloads, uploadsDir)
 	if err != nil {
-		return a.exportDocumentFailed(path, err)
+		return "", err
 	}
 	if err := browser.OpenURL(downloads); err != nil {
 		a.rt.logger.Printf("Error opening the Downloads folder: %v", err)
@@ -70,7 +88,7 @@ func (a *app) exportDocument(path string) []tray.Row {
 			a.rt.logger.Printf("Could not notify about the export: %v", err)
 		}
 	}
-	return a.exportDocumentRows()
+	return out, nil
 }
 
 // exportDocumentFailed reports an export that could not be written, by name, and

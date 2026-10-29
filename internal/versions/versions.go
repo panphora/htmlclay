@@ -239,6 +239,27 @@ func (s *Store) Dir() (string, error) {
 	return s.baseDir, nil
 }
 
+// Folder returns the absolute directory that holds key's versions, materializing
+// it when it does not exist yet. It goes through the same locked lookup Backup
+// writes with, so the folder it names is the one versions really land in, and a
+// file renamed since its last save resolves to the folder that rename moved.
+func (s *Store) Folder(key, absPath string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	vroot, err := s.openVersionsRoot(true)
+	if err != nil {
+		return "", err
+	}
+	defer vroot.Close()
+	ref, err := s.openHistory(vroot, key, absPath, true)
+	if err != nil {
+		return "", err
+	}
+	defer ref.Close()
+	return filepath.Join(s.baseDir, ref.folder), nil
+}
+
 // Contains reports whether absPath sits inside the versions directory. The server
 // uses it to deny requests for internal backup state on the app's own origin: the
 // config directory lives under the user's home on every platform, so the static

@@ -226,6 +226,11 @@ func newServer(sessions *session.Manager, logger *logging.Logger, store *version
 	mux.HandleFunc("GET /_/versions/{token}", s.handleListVersions)
 	mux.HandleFunc("GET /_/version/{token}/{name}", s.handleReadVersion)
 	mux.HandleFunc("POST /_/restore/{token}/{name}", sameOrigin(s.handleRestoreVersion))
+	// The page menu's file actions. Same-origin and token-bearing, because the host
+	// does something to the user's computer on the page's word.
+	mux.HandleFunc("POST /_/reveal/{token}", sameOrigin(s.handleReveal))
+	mux.HandleFunc("POST /_/versions-folder/{token}", sameOrigin(s.handleVersionsFolder))
+	mux.HandleFunc("POST /_/export/{token}", sameOrigin(s.handleExport))
 	// Registered ahead of the catch-all. The stream is a read, but it joins the
 	// gate: live-sync authorizes by registered path rather than by token, so
 	// without the gate it is reachable by any page the user's browser has open.
@@ -396,6 +401,7 @@ func redactPath(p string) string {
 	for _, prefix := range []string{
 		"/_/save/", "/_/read/", "/_/meta/", "/_/upload/",
 		"/_/versions/", "/_/version/", "/_/restore/",
+		"/_/reveal/", "/_/versions-folder/", "/_/export/",
 		"/_/workspace-request/",
 	} {
 		if strings.HasPrefix(p, prefix) {

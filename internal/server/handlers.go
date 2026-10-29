@@ -255,10 +255,27 @@ type documentMeta struct {
 	// The page editor's stored Yjs state for these exact bytes, read conditionally
 	// on the etag above. Named here so a client never guesses the route.
 	PageState *pageStateMeta `json:"pageState,omitempty"`
+	// The file actions this host offers for THIS document, each an address the
+	// page POSTs to. Absent when the app wired no file-manager or export hook, so
+	// a standalone server offers none rather than naming routes that refuse.
+	Actions *documentActions `json:"actions,omitempty"`
 }
 
 type pageStateMeta struct {
 	Href string `json:"href"`
+}
+
+type documentActions struct {
+	Reveal   *postAction `json:"reveal,omitempty"`
+	Versions *postAction `json:"versions,omitempty"`
+	Export   *postAction `json:"export,omitempty"`
+}
+
+// postAction names a same-origin URL the page POSTs to, rather than one it
+// navigates to: the host does the work, and a refusal is a JSON reply rather
+// than a page.
+type postAction struct {
+	Post string `json:"post"`
 }
 
 // awarenessMeta names the transport a document's presence travels over on this host:
@@ -1548,6 +1565,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 			LegacyDocumentID: htmlclayID,
 			Awareness:        awarenessMeta{Transport: "broadcast", Scope: awarenessScope(htmlclayID, f.RelPath), Label: "This computer"},
 			PageState:        &pageStateMeta{Href: "/_/page-state/" + r.PathValue("token")},
+			Actions:          s.documentActions(r.PathValue("token")),
 		},
 	}
 	meta.Document.WireMode, meta.Document.Helpers = s.helperDiscovery(f.AbsPath)

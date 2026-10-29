@@ -84,6 +84,18 @@ type Hooks struct {
 	// helpers. Nil refuses a request for an unanswered helper without asking,
 	// which is what a standalone server (every server test) wants.
 	AskHelper func(file, name string) bool
+
+	// Reveal shows a document's file in the OS file manager, selected. Nil hides
+	// the action, which is what a standalone server (every server test) wants.
+	Reveal func(absPath string) error
+
+	// OpenFolder opens a folder in the OS file manager. Nil hides the versions
+	// action.
+	OpenFolder func(dir string) error
+
+	// ExportDocument zips a document with its uploads into Downloads and shows it.
+	// Nil hides the action.
+	ExportDocument func(absPath string) error
 }
 
 // SetHooks wires the app behind this server. Call once, before Start.
