@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -214,5 +215,28 @@ func TestHTMLWithoutRuntimeURLIsByteIdentical(t *testing.T) {
 	projection := ProjectRuntimeHTML([]byte(input), options)
 	if len(projection.Mappings) != 0 || projection.HTML != input {
 		t.Fatalf("projection rewrote a document with no runtime URL")
+	}
+}
+
+// A large document that names no runtime URL must not be parsed: the fast path
+// scans for the strings that could name one and hands back the bytes untouched.
+func TestLargeHTMLWithoutRuntimeURLIsNotParsed(t *testing.T) {
+	_, options := loadReleases(t)
+	var builder strings.Builder
+	builder.WriteString("<!DOCTYPE html>\n<html><head><title>Big</title></head><body>\n")
+	for builder.Len() < 4<<20 {
+		builder.WriteString("<p class=\"row\">a plain paragraph with some words in it</p>\n")
+	}
+	builder.WriteString("</body></html>\n")
+	source := []byte(builder.String())
+
+	projection := ProjectRuntimeHTML(source, options)
+	if projection.HTML != string(source) || len(projection.Mappings) != 0 {
+		t.Fatal("projection rewrote a document with no runtime URL")
+	}
+
+	allocs := testing.AllocsPerRun(3, func() { ProjectRuntimeHTML(source, options) })
+	if allocs > 100 {
+		t.Fatalf("projecting a %d byte document with no runtime URL took %v allocations per call, want the tokenizer scan skipped", len(source), allocs)
 	}
 }

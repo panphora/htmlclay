@@ -77,6 +77,11 @@ func writeFixtures(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(root, "notes", "2026", "doc.html"), []byte(plainFixture), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// A .htmlclay fixture: the authoring extension names a document too, so it must be
+	// listed and served like .html.
+	if err := os.WriteFile(filepath.Join(root, "notes", "2026", "draft.htmlclay"), []byte(plainFixture), 0644); err != nil {
+		t.Fatal(err)
+	}
 	return root
 }
 
@@ -209,7 +214,7 @@ func TestOfflineFixtureServerServesTheContract(t *testing.T) {
 	})
 
 	t.Run("served documents", func(t *testing.T) {
-		for _, rel := range []string{"board.html", "notes/2026/doc.html"} {
+		for _, rel := range []string{"board.html", "notes/2026/doc.html", "notes/2026/draft.htmlclay"} {
 			if _, ok := f.documents[rel]; !ok {
 				t.Fatalf("READY lists no %q: %v", rel, f.documents)
 			}
@@ -228,6 +233,14 @@ func TestOfflineFixtureServerServesTheContract(t *testing.T) {
 		}
 		if strings.Contains(string(served), `src="https://clayjs.com/v1/`) {
 			t.Errorf("board.html still loads the public runtime:\n%s", served)
+		}
+
+		resp, draft := f.get(t, f.documents["notes/2026/draft.htmlclay"].URL)
+		if resp.StatusCode != 200 {
+			t.Errorf("GET draft.htmlclay = %d, want 200", resp.StatusCode)
+		}
+		if !strings.Contains(string(draft), `<p>note</p>`) {
+			t.Errorf("the served .htmlclay fixture lost its body:\n%s", draft)
 		}
 
 		_, plain := f.get(t, f.documents["notes/2026/doc.html"].URL)
