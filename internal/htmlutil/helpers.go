@@ -25,7 +25,7 @@ func ReadHelperNames(data []byte) []string {
 
 // ReadHelperFolders returns, per declared helper name, the folder its
 // declaration suggests for the program picker (data-program-folder), relative
-// to the document. Only the first declaration of a name counts, as for
+// to the document or, with a ~/ prefix, to the home folder. Only the first declaration of a name counts, as for
 // ReadHelperNames, and a name without the attribute is absent.
 func ReadHelperFolders(data []byte) map[string]string {
 	_, folders := readHelperDeclarations(data)

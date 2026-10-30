@@ -721,6 +721,8 @@ func TestHelperPickerFolderStartsInTheDocumentFolderUnlessTheHintIsUsable(t *tes
 		want   string
 	}{
 		{"hinted folder inside home", "../var/bin", hinted},
+		{"home-relative hint", "~/var/bin", hinted},
+		{"home-relative hint that leaves home", "~/../elsewhere", docs},
 		{"hint that leaves home", "../../elsewhere", docs},
 		{"hinted folder that does not exist", "../var/missing", docs},
 		{"no hint", "", docs},

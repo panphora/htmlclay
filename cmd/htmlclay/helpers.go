@@ -311,8 +311,8 @@ func readDocumentHelperFolders(document string) map[string]string {
 }
 
 // helperPickerFolder is where the file picker for name starts: the folder the
-// document's declaration suggests, relative to the document, else the
-// document's own folder. It only chooses where the picker opens. The person
+// document's declaration suggests, relative to the document or, when it starts
+// with ~/, to the home folder, else the document's own folder. It only chooses where the picker opens. The person
 // still picks the file, and the next dialog shows its full path. A suggestion
 // outside home, or one that is not a folder, falls back to the document's.
 func (a *app) helperPickerFolder(document, name string) string {
@@ -321,7 +321,10 @@ func (a *app) helperPickerFolder(document, name string) string {
 	if hint == "" {
 		return dir
 	}
-	candidate := filepath.Clean(filepath.Join(dir, filepath.FromSlash(hint)))
+	candidate := filepath.Join(dir, filepath.FromSlash(hint))
+	if rest, ok := strings.CutPrefix(hint, "~/"); ok {
+		candidate = filepath.Join(a.rt.home, filepath.FromSlash(rest))
+	}
 	if _, ok := session.ContainWithinHome(a.rt.home, candidate); !ok {
 		return dir
 	}
