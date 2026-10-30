@@ -5,6 +5,23 @@ Releases before 1.9.0 are recorded in the ecosystem changelog at
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-10-30
+
+### Added
+- A page's first request to a declared helper program that nobody has answered now opens the permission dialog and waits, instead of failing until the file is reopened.
+- Requests for the same program name share one dialog, and answering a dialog no longer cancels another helper's running request.
+- A new optional `data-program-folder` attribute on a helper declaration sets where the program picker opens. A value starting with `~/` opens that folder under your home folder from any document, and other values stay relative to the document.
+- The `/_/meta/{token}` endpoint takes `reveal`, `versions-folder` and `export` actions, so a page can ask HTML Clay to show its file in the file manager, open its versions folder, or zip it into Downloads.
+
+### Changed
+- A dialog that grants nothing spaces the next page-raised dialog by a minute per document, and Deny stops page-raised dialogs until the page is opened directly again.
+- HTML Clay no longer advertises live-data or page-room capability to pages.
+- The project is now released under the Competing Service license.
+
+### Fixed
+- Assets in a folder that was deleted and recreated under the same name now serve from the new folder instead of answering 404 until the app restarts.
+- A page saved with a compacted v1 page tag reopens byte-identical.
+
 ## [1.14.0] - 2026-10-27
 
 ### Added
