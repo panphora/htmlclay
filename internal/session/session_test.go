@@ -1008,6 +1008,9 @@ func TestProbeOnCaseSensitiveVolume(t *testing.T) {
 // installed, must serve the new folder's files. The held handle still points at
 // the old directory, so without a reopen every asset in the new folder 404s.
 func TestOpenAssetFollowsFolderReplacedByNewDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows refuses to rename a folder while the read root holds it open")
+	}
 	home, _ := filepath.EvalSymlinks(t.TempDir())
 	root := filepath.Join(home, "proj")
 	if err := os.MkdirAll(root, 0755); err != nil {
